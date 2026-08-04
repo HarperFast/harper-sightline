@@ -17,7 +17,11 @@ if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 const auth = 'Basic ' + Buffer.from(`${HARPER_USER}:${HARPER_PASS}`).toString('base64');
 const op = async (b) => {
 	try {
-		const r = await fetch(HARPER_OPS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: auth }, body: JSON.stringify(b) });
+		const r = await fetch(HARPER_OPS_URL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: auth },
+			body: JSON.stringify(b),
+		});
 		const t = await r.text();
 		try {
 			return JSON.parse(t);

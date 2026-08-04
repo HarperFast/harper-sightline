@@ -27,7 +27,10 @@ test('rejects wrong audience', () => {
 });
 
 test('rejects iss/dest host mismatch', () => {
-	assert.throws(() => verifySessionToken(mintToken(validClaims({ iss: 'https://evil.myshopify.com/admin' }), { secret: SECRET }), opts), /host/i);
+	assert.throws(
+		() => verifySessionToken(mintToken(validClaims({ iss: 'https://evil.myshopify.com/admin' }), { secret: SECRET }), opts),
+		/host/i,
+	);
 });
 
 test('rejects expired token', () => {
