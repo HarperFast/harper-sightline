@@ -14,5 +14,5 @@
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true
 	},
-	"include": ["resources.ts", "src/**/*.ts", "test/**/*.ts", "types/**/*.d.ts", "web/src/**/*.ts"]
+	"include": ["resources.ts", "jobs.ts", "src/**/*.ts", "test/**/*.ts", "types/**/*.d.ts", "web/src/**/*.ts"]
 }

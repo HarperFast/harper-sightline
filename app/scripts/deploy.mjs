@@ -35,7 +35,7 @@ const op = async (b) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const appDir = fileURLToPath(new URL('..', import.meta.url));
-const files = ['config.yaml', 'schema.graphql', 'resources.ts', 'src', 'package.json'];
+const files = ['config.yaml', 'schema.graphql', 'resources.ts', 'jobs.ts', 'src', 'package.json'];
 if (existsSync(join(appDir, 'web/dist/index.html'))) files.push('web/dist');
 const tarPath = join(tmpdir(), 'sightline-deploy.tar');
 execSync(`tar -cf ${tarPath} -C ${appDir} ${files.join(' ')}`, { stdio: 'ignore' });
