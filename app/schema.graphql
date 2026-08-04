@@ -1,5 +1,124 @@
-# Placeholder so the schema file is non-empty. Real sealed, private tables
-# (Shop, ShopCredential, OperationalEvent, ...) land in issue #6.
-type SightlineMeta @table @export {
+# Sightline data model (dev plan §9). All tables are @sealed and PRIVATE — no
+# @export; every merchant-facing read goes through a guarded custom resource
+# (#5/#14). Retention is an explicit purge job (ADR-003), so tables carry NO
+# `expiration` directive — Harper TTL is caching, not compliant deletion.
+# Epoch-ms timestamps are Float: GraphQL Int is 32-bit and overflows ms (Spike C).
+
+type Shop @table @sealed {
+	shopId: ID @primaryKey
+	status: String @indexed # active | reauthorization_required | uninstalled
+	scopes: String
+	installedAt: Float
+	uninstalledAt: Float
+	lastReconciledAt: Float
+	reconciliationState: String
+}
+
+type ShopCredential @table @sealed {
+	# Encrypted offline-token envelope. Never @export, never returned/logged.
+	shopId: ID @primaryKey
+	accessTokenEnc: String
+	refreshTokenEnc: String
+	keyVersion: Int
+	expiresAt: Float
+	refreshTokenExpiresAt: Float
+	version: Int
+	status: String # active | reauthorization_required
+}
+
+type WebhookDelivery @table @sealed {
+	# id = `${shopId}:${webhookId}` — idempotency key. Seven-day lifecycle (purge).
 	id: ID @primaryKey
+	shopId: String @indexed
+	topic: String
+	webhookId: String
+	receivedAt: Float @indexed
+	status: String @indexed # accepted | processed | dead_letter
+	attempts: Int
+	hmacVerified: Boolean
+}
+
+type OperationalEvent @table @sealed {
+	# Normalized, append-only business event. No customer PII.
+	eventId: ID @primaryKey
+	shopId: String @indexed
+	domain: String # order | fulfillment | inventory | refund
+	topic: String
+	resourceId: String @indexed # e.g. order id
+	sku: String
+	quantity: Int
+	state: String
+	source: String # webhook | reconciliation
+	occurredAt: Float @indexed
+	receivedAt: Float
+}
+
+type OrderProjection @table @sealed {
+	# id = `${shopId}:${orderId}` — latest evidence for detector + UI.
+	id: ID @primaryKey
+	shopId: String @indexed
+	orderId: String
+	financialStatus: String
+	fulfillmentStatus: String
+	paidAt: Float
+	cancelledAt: Float
+	fullyRefundedAt: Float
+	fulfillableItemCount: Int
+	state: String @indexed # pending | awaiting_window | confirmed | unconfirmed
+	deadline: Float @indexed
+	lastEventAt: Float
+	lastSourceVersion: Float
+}
+
+type Expectation @table @sealed {
+	# id = `${detector}:${orderId}:${ruleVersion}` — deterministic.
+	id: ID @primaryKey
+	shopId: String @indexed
+	orderId: String
+	detector: String
+	ruleVersion: Int
+	state: String @indexed # pending | resolved | suppressed | expired
+	deadline: Float @indexed
+	createdAt: Float
+	resolvedAt: Float
+}
+
+type GapFinding @table @sealed {
+	# id deterministic per (detector, order, ruleVersion).
+	id: ID @primaryKey
+	shopId: String @indexed
+	orderId: String
+	ruleVersion: Int
+	status: String @indexed # pending | unconfirmed | resolved | suppressed
+	detectedAt: Float @indexed
+	resolvedAt: Float
+	evidenceEventIds: [String]
+}
+
+type FlowAggregate @table @sealed {
+	# id = `${shopId}:${bucket}:${lane}` — bounded time-bucket counts.
+	id: ID @primaryKey
+	shopId: String @indexed
+	bucket: Float @indexed # start-of-bucket epoch ms
+	lane: String # orders | fulfillment | inventory | refunds
+	count: Int
+}
+
+type WorkerCheckpoint @table @sealed {
+	# id = `${worker}:${partition}` — durable cursor + lease.
+	id: ID @primaryKey
+	cursor: String
+	leaseHolder: String
+	leaseExpiresAt: Float @indexed
+	retryCount: Int
+	updatedAt: Float
+}
+
+type AppAuditEvent @table @sealed {
+	# Security / lifecycle actions. No payload / PII.
+	id: ID @primaryKey
+	shopId: String @indexed
+	action: String @indexed
+	at: Float @indexed
+	detail: String
 }
