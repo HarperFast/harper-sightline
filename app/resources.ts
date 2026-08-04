@@ -2,6 +2,32 @@ import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import { Resource, contentTypes } from 'harper';
 import './jobs.ts'; // starts the background processing loop on component load
+
+// App Bridge forces the Shopify session token into `Authorization: Bearer` on
+// same-origin calls, and Harper's auth middleware hard-401s an unrecognized
+// Bearer BEFORE the resource runs (ADR-001; verified in harper source). Run a
+// middleware BEFORE 'authentication' that moves the token to a custom header and
+// drops Authorization, so the request reaches our resource which verifies it
+// itself. Scoped to /api/v1 so other routes keep normal Harper auth. `server` is
+// a Harper-injected global; guarded so a missing global can never 404 the app.
+if (typeof server !== 'undefined' && server) {
+	server.http(
+		(request, next) => {
+			// Global pre-processor (no urlPath, so it forwards to normal routing).
+			// Only touch our API's Bearer tokens; leave everything else (Basic auth,
+			// Harper tokens, other routes) untouched.
+			if ((request.url ?? '').startsWith('/api/v1/')) {
+				const auth = request.headers.get('authorization');
+				if (auth && auth.startsWith('Bearer ')) {
+					request.headers.set('x-shopify-session-token', auth.slice(7));
+					request.headers.delete('authorization');
+				}
+			}
+			return next(request);
+		},
+		{ before: 'authentication' },
+	);
+}
 import { createShopifyIdentityAdapter } from './src/identity.ts';
 import { capabilitiesFor } from './src/capabilities.ts';
 import { ensureShopRecord } from './src/lifecycle.ts';
