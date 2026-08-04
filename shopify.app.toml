@@ -1,0 +1,27 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "e446bda5edb3ee3bae6e0ba280ef8b12"
+name = "Harper Sightline"
+application_url = "https://ayoo.josh-test.harperfabric.com"
+embedded = true
+
+[access_scopes]
+# Minimal read set (docs/shopify-contract.md §2). No write scopes; no read_all_orders.
+scopes = "read_orders,read_fulfillments,read_inventory"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ "https://ayoo.josh-test.harperfabric.com/api/v1/auth/callback" ]
+
+[webhooks]
+api_version = "2026-07"
+
+  # Operational webhook subscriptions are added in issue #7.
+  [webhooks.privacy_compliance]
+  customer_data_request_url = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/compliance/customers/data_request"
+  customer_deletion_url = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/compliance/customers/redact"
+  shop_deletion_url = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/compliance/shop/redact"
+
+[app_home]
+embedded_app_url = "https://ayoo.josh-test.harperfabric.com"

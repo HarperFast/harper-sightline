@@ -102,7 +102,7 @@ Development follows Harper engineering guidelines and Harper application best pr
 
 ## Development setup
 
-The runtime application has not been scaffolded yet, so there is no local start command. [Issue #4](https://github.com/HarperFast/harper-sightline/issues/4) owns the reproducible Harper v5 and Shopify CLI setup and will add:
+The application scaffold lives in [`app/`](app/) — see [`app/README.md`](app/README.md) for setup, scripts, and the Fabric-hosted dev loop. Phase 0 is complete (see [`docs/adr`](docs/adr) and [`docs/threat-model.md`](docs/threat-model.md)). Remaining foundation work ([issue #4](https://github.com/HarperFast/harper-sightline/issues/4) and follow-ons) will continue to add:
 
 - supported Node.js and Harper versions;
 - dependency installation and local run commands;
