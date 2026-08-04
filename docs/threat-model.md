@@ -1,0 +1,118 @@
+# Sightline — Phase 0 Threat Model (draft)
+
+- Status: **Draft** (Phase 0 exit artifact). A full security review is issue #22; this draft precedes and informs the scaffold.
+- Date: 2026-08-04
+- Inputs: [ADR-001 auth](./adr/ADR-001-authentication.md), [ADR-002 worker/lease](./adr/ADR-002-worker-lease-scheduling.md), [ADR-003 retention/deletion](./adr/ADR-003-retention-deletion.md), [Shopify contract](./shopify-contract.md), [dev plan §12/§13](./free_mvp_development_plan.md)
+- Product posture: **read-only, off the synchronous path.** No Shopify writes, no billing, no downstream connectors in the MVP. Sightline being down must not affect merchant operations.
+
+## 1. Assets
+
+| Asset | Sensitivity |
+|---|---|
+| Shopify offline access/refresh tokens (per shop) | **Critical** — grant read access to a merchant's store |
+| Token-encryption keys / app secret (HMAC + JWT signing) | **Critical** |
+| Operational ledger (orders/fulfillment/inventory/refunds evidence) | **Level 1 PCD** — ids, statuses, timestamps, SKU/qty, tracking |
+| Tenant identity (`shopId`) and per-tenant isolation | **Critical** (correctness + privacy) |
+| Findings / projections | Level 1 PCD (derived) |
+| Deployment & ops credentials (Fabric, CI) | **Critical** |
+
+**Explicitly not stored:** customer name, email, phone, address (Level 2 PCD) — see [contract §5](./shopify-contract.md).
+
+## 2. Trust boundaries
+
+1. **Merchant browser (Admin iframe) → Harper resources** — authenticated by a Shopify session JWT in a custom header.
+2. **Shopify → Harper webhook ingress** — authenticated by HMAC over the raw body.
+3. **Harper → Shopify Admin API** — authenticated by the offline access token.
+4. **Operator/CI → Fabric deployment** — separate credential path, never shared with merchant traffic.
+5. **Tenant ↔ tenant** — logical isolation inside one shared multi-tenant Harper deployment (the load-bearing boundary; §4).
+
+## 3. Threat analysis by surface
+
+Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** = to build/verify in the scaffold; **R** = residual/monitored.
+
+### 3.1 Install, OAuth & session auth
+| Threat | Mitigation | Status |
+|---|---|---|
+| Forged/replayed session token → impersonate a shop | HS256 verify: signature (timing-safe), `alg`, `aud`=client_id, `iss`/`dest` host match, `exp`, `nbf`; short-lived tokens (ADR-001) | M |
+| `Authorization` header abused / token confusion | Token carried in `X-Shopify-Session-Token`; Harper's own auth layer rejects stray `Authorization` (ADR-001) | M |
+| `alg:none` / algorithm-confusion downgrade | `alg` must equal `HS256`; anything else rejected (ADR-001, tested) | M |
+| Stolen offline token → read merchant data | Tokens in Harper native secrets (encrypted, never logged/replicated as plaintext); least scopes; failed refresh → `reauthorization_required` (ADR-001, contract §2) | M |
+| Token exchange / refresh race → torn credential | Atomic version-guarded rotation / claim primitive (ADR-001/002) | M |
+| Over-broad access | Minimal read scopes; **no `read_all_orders`**; no write scopes (contract §2) | M |
+
+### 3.2 Embedded iframe / browser
+| Threat | Mitigation | Status |
+|---|---|---|
+| Clickjacking / framing by a hostile page | `frame-ancestors` limited to the Shopify Admin origin; no wildcard | S |
+| XSS in the SPA → token/data theft | Strict CSP, no inline/eval, framework escaping, Polaris components; session token is short-lived | S |
+| CORS / connect leakage | Strict `connect-src`; no wildcard origins (plan §12) | S |
+| Third-party-cookie dependence | Avoided by design — session-token flow, no cookies (ADR-001) | M |
+
+### 3.3 Webhook ingress
+| Threat | Mitigation | Status |
+|---|---|---|
+| Spoofed webhook (no valid HMAC) | Constant-time HMAC over the untouched raw body **before** parsing → 401 (plan §12) | S |
+| Replay / duplicate delivery | `(shopId, webhookId)` idempotency key; duplicate = 2xx no-op (plan §13) | S |
+| Ingress DoS / burst overload | Minimal durable handler, fast 2xx, backlog worker + reconciliation; burst test gate (plan §13) | S |
+| Payload tampering / unexpected shapes | Verify-before-parse; unknown additive fields tolerated; breaking shapes dead-letter (backlog #9) | S |
+| PII arriving in payloads | `include_fields` whitelists exclude PII; Level-2 fields redacted without approval (contract §5) | M |
+
+### 3.4 Background workers & processing
+| Threat | Mitigation | Status |
+|---|---|---|
+| Double-processing under multi-node/thread | Per-item atomic single-winner insert → exactly-once regardless of worker count (ADR-002) | M |
+| Work lost on restart | Durable inbox + startup recovery scan (ADR-002, proven) | M |
+| Duplicate active schedulers | Atomic-claim lease with TTL takeover (ADR-002) | M |
+| Poison message stalls the pipeline | TTL'd processing claim + attempt-count dead-letter (ADR-002 → #9) | S |
+
+### 3.5 Admin API access (Harper → Shopify)
+| Threat | Mitigation | Status |
+|---|---|---|
+| Reconciliation abused to exfiltrate beyond scope | Read-only least scopes; 60-day window; no `read_all_orders` (contract §2) | M |
+| Throttle/cost exhaustion | Respect Shopify cost/throttle feedback; durable cursors; resume-safe (backlog #12) | S |
+| Cursor advances past uncommitted work | Cursor never advances beyond committed projection (backlog #12) | S |
+
+### 3.6 Tenant data access (see §4)
+| Threat | Mitigation | Status |
+|---|---|---|
+| Cross-tenant read via manipulated id/filter (IDOR) | Every query derives `shopId` from the verified principal, never caller input; no `@export` tables; explicit field allowlists (ADR-001, plan §8) | M/S |
+| Enumeration via deep links | Deep links re-scoped to the principal; expired 7-day records handled gracefully (backlog #18) | S |
+
+### 3.7 Retention, deletion & compliance
+| Threat | Mitigation | Status |
+|---|---|---|
+| Data retained past 7 days / "deleted" but physically present | Explicit `DELETE`-by-age purge (removes data + index); **TTL not relied on** (ADR-003, proven) | M |
+| Redaction request not honored / not idempotent | Targeted `DELETE WHERE shopId/customer`, idempotent; mandatory privacy webhooks wired (ADR-003, contract §4) | M/S |
+| Purge silently fails | Purge-lag/failure metrics + alerts; verify-by-re-query (ADR-003 → #10/#21) | S |
+
+### 3.8 Deployment, ops & supply chain
+| Threat | Mitigation | Status |
+|---|---|---|
+| Secrets in git / CI logs | Secrets in Harper native secrets / deployment secret mgmt; never committed; nothing secret in spike files (ADR-001) | M |
+| Deploy creds share merchant trust path | Separate dev/staging/prod credentials; least-privilege deploy; tested rollback (backlog #24) | S |
+| Malicious/compromised dependency | Minimal-dependency policy (spikes are zero-dep); each dep justified; audit + secret scan in CI (backlog #22) | M/S |
+| Logs leak tokens/PII/HMAC | No tokens/HMAC/raw payloads/PII in logs; safe correlation IDs only (plan §12/§13) | S |
+
+## 4. The load-bearing control: tenant isolation
+
+Sightline is one shared multi-tenant Harper deployment; **every** privacy and correctness guarantee rests on `shopId` being derived from the verified principal and applied to every query, with no `@export` tables and explicit response allowlists. This must be enforced by a **cross-tenant test suite that attacks every query resource with manipulated ids/filters** (backlog #4/#14/#22). Treat any endpoint that can return another shop's data as a P0.
+
+## 5. Residual risks & assumptions
+
+- **Detector false positives** (absence ≠ downstream failure) — product/trust risk, mitigated by conservative eligibility + evidence + copy discipline (plan §17); not a security threat but a trust one.
+- **Quarterly API-version bump** — stale `api_version` can silently change payloads or cause delisting (contract §1); operational risk requiring a recurring task.
+- **Shared-cluster blast radius** — a tenant-isolation bug exposes all shops; mitigated by §4 testing; Scale-tier dedicated clusters are a future option.
+- **On-disk index residue** could not be directly inspected via the ops API; we rely on `DELETE` (not TTL) which removes index entries, plus verify-by-re-query (ADR-003).
+
+## 6. Top actions before the scaffold / before launch
+
+1. Cross-tenant isolation test harness against every query resource (§4) — **P0**.
+2. Raw-body HMAC verify-before-parse + idempotency + burst test (§3.3).
+3. CSP/`frame-ancestors`/CORS hardening for the embedded app (§3.2).
+4. Purge + redaction jobs on the worker/lease, with metrics and verify-by-re-query (§3.7).
+5. Secret-free logging + dependency audit/secret scan in CI (§3.8).
+6. Recurring `api_version` bump task (§5).
+
+## 7. Backlog mapping
+
+Auth #3/#4/#6 · webhook/ingress #7/#8/#9 · reconciliation #12 · retention/redaction #10/#20 · query isolation #4/#14 · observability #21 · security review #22 · reliability/backup #23 · deployment #24. This draft feeds the formal threat model in **issue #22**.

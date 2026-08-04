@@ -99,7 +99,9 @@ From plan §15: *"runnable spikes prove the auth, durable acceptance, worker rec
 - [x] Spike B proves restart recovery and single-active ownership under multiple workers. — proven live; see [ADR-002](../../adr/ADR-002-worker-lease-scheduling.md). Exactly-once via atomic single-winner insert (correctness independent of worker/node count); lease for scheduling.
 - [x] Spike C proves physical deletion, or specifies the explicit purge job required. — TTL is caching-oriented (unsuitable); explicit `DELETE` purge is the mechanism, proven live. See [ADR-003](../../adr/ADR-003-retention-deletion.md).
 - [x] Spike D pins API version, topics, fields, scopes, and protected-data request. — see [docs/shopify-contract.md](../../shopify-contract.md): pin `2026-07`, scopes `read_orders`/`read_fulfillments`/`read_inventory` (no `read_all_orders`), topics + `include_fields` whitelists, Level 1 PCD only.
-- [ ] ADR-001, ADR-002, ADR-003 written; `docs/shopify-contract.md` written; threat model drafted.
+- [x] ADR-001, ADR-002, ADR-003 written; `docs/shopify-contract.md` written; threat model drafted ([docs/threat-model.md](../../threat-model.md)).
+
+**Phase 0 is complete — all exit criteria met. The scaffold (issue #4) may begin.**
 - [x] Local dev Node/Harper version alignment resolved (Node 24.18.0, Harper 5.2.0).
 
 Only then does issue #4 (scaffold) begin.
