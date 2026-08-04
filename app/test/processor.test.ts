@@ -53,3 +53,27 @@ test('a transient failure stays accepted for retry', async () => {
 	assert.equal(state.get('y')!.status, 'accepted');
 	assert.equal(state.get('y')!.attempts, 1);
 });
+
+test('a permanent failure dead-letters immediately, without retries', async () => {
+	const state = new Map<string, DeliveryRow>([['z', { id: 'z', shopId: 's', status: 'accepted', attempts: 0 }]]);
+	const deps: ProcessDeps = {
+		async listAccepted() {
+			return [...state.values()].filter((r) => r.status === 'accepted');
+		},
+		async markProcessed(id) {
+			state.get(id)!.status = 'processed';
+		},
+		async markFailed(id, attempts, dead) {
+			const r = state.get(id)!;
+			r.attempts = attempts;
+			r.status = dead ? 'dead_letter' : 'accepted';
+		},
+		async handle() {
+			throw Object.assign(new Error('broken payload'), { permanent: true });
+		},
+	};
+	const r = await processAcceptedBatch(deps);
+	assert.equal(r.deadLettered, 1);
+	assert.equal(state.get('z')!.status, 'dead_letter');
+	assert.equal(state.get('z')!.attempts, 1); // dead-lettered on the first attempt
+});

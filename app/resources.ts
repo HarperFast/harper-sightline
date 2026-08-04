@@ -7,6 +7,7 @@ import { capabilitiesFor } from './src/capabilities.ts';
 import { ensureShopRecord } from './src/lifecycle.ts';
 import { verifyWebhookHmac } from './src/webhookHmac.ts';
 import { acceptDelivery } from './src/webhookIngress.ts';
+import { stripPii } from './src/pii.ts';
 import { readShopifySecret } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 
@@ -97,7 +98,17 @@ export class ShopifyWebhook extends Resource {
 		const topic = ctx.headers.get('x-shopify-topic') ?? '';
 		if (!shopId || !webhookId) throw httpError('missing webhook headers', 400);
 
-		const result = await acceptDelivery({ shopId, webhookId, topic });
+		// Persist the PII-stripped body so the worker can normalize it later
+		// (ADR-002: accept fast, process later). HMAC is already verified over the
+		// raw bytes; storage keeps only the whitelisted, non-PII fields (#10).
+		let payload: string | undefined;
+		try {
+			payload = JSON.stringify(stripPii(JSON.parse(rawBody.toString('utf8'))));
+		} catch {
+			// Non-JSON body — store nothing; an operational topic will dead-letter.
+		}
+
+		const result = await acceptDelivery({ shopId, webhookId, topic, payload });
 		return { ok: true, result };
 	}
 }

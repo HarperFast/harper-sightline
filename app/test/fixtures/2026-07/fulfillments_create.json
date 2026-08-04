@@ -1,0 +1,13 @@
+{
+	"id": 6200000000001,
+	"admin_graphql_api_id": "gid://shopify/Fulfillment/6200000000001",
+	"order_id": 5100000000001,
+	"status": "success",
+	"shipment_status": "in_transit",
+	"created_at": "2026-08-04T18:00:00-04:00",
+	"updated_at": "2026-08-04T18:00:00-04:00",
+	"tracking_company": "UPS",
+	"tracking_numbers": ["1Z999"],
+	"line_items": [{ "id": 111, "sku": "TSHIRT-BLK-M", "quantity": 2 }],
+	"destination": { "address1": "1 Main St", "city": "Springfield", "zip": "00000", "name": "Jane Doe" }
+}

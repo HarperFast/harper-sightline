@@ -51,6 +51,7 @@ export interface WebhookDelivery {
 	status: DeliveryStatus;
 	attempts?: number;
 	hmacVerified?: boolean;
+	payload?: string; // PII-stripped JSON body, for the worker to normalize (#10)
 }
 
 export interface OperationalEvent {
