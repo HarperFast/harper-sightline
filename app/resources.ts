@@ -1,4 +1,5 @@
 import { Resource, contentTypes } from 'harper';
+import './jobs.ts'; // starts the background processing loop on component load
 import { createShopifyIdentityAdapter } from './src/identity.ts';
 import { capabilitiesFor } from './src/capabilities.ts';
 import { ensureShopRecord } from './src/lifecycle.ts';
