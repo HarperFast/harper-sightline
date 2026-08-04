@@ -1,6 +1,8 @@
 import { Deliveries, Events } from './src/db.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
+import { purgeExpired, type PurgeResult } from './src/retention.ts';
+import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
 // into OperationalEvent rows (#10); the durable pipeline (#9) scans accepted
@@ -89,4 +91,45 @@ export function startProcessingLoop(): void {
 	}, INTERVAL_MS);
 }
 
+// Seven-day retention purge (ADR-003). Runs shortly after boot (to clear any
+// backlog from downtime, and so it is verifiable after a deploy) and then hourly.
+// The purge is idempotent, so concurrent runs across threads/nodes are safe — no
+// lease needed; the `purging` guard just avoids overlap on one thread.
+const PURGE_INTERVAL_MS = 3_600_000; // hourly
+const PURGE_INITIAL_DELAY_MS = 30_000;
+let purging = false;
+
+export function runPurge(now = Date.now()): Promise<PurgeResult> {
+	return purgeExpired(RETENTION_TARGETS, now);
+}
+
+function purgeTick(): void {
+	if (purging) return;
+	purging = true;
+	void runPurge()
+		.then((r) => {
+			if (r.deleted) {
+				const per = Object.entries(r.byTable)
+					.filter(([, x]) => x.deleted)
+					.map(([t, x]) => `${t}=${x.deleted}`)
+					.join(' ');
+				console.log(`[sightline:purge] deleted ${r.deleted} expired rows (${per})`);
+			}
+			if (r.residue) console.error(`[sightline:purge] purge-behind: ${r.residue} expired rows still present after run`);
+			if (r.failures.length) console.error(`[sightline:purge] failures: ${r.failures.join('; ')}`);
+		})
+		.catch((e: unknown) => {
+			console.error('[sightline:purge] error', (e as Error).message);
+		})
+		.finally(() => {
+			purging = false;
+		});
+}
+
+export function startPurgeLoop(): void {
+	setTimeout(purgeTick, PURGE_INITIAL_DELAY_MS);
+	setInterval(purgeTick, PURGE_INTERVAL_MS);
+}
+
 startProcessingLoop();
+startPurgeLoop();
