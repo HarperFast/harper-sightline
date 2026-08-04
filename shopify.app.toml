@@ -45,6 +45,3 @@ api_version = "2026-07"
   customer_data_request_url = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/compliance/customers/data_request"
   customer_deletion_url = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/compliance/customers/redact"
   shop_deletion_url = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/compliance/shop/redact"
-
-[app_home]
-embedded_app_url = "https://ayoo.josh-test.harperfabric.com"
