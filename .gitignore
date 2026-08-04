@@ -4,4 +4,10 @@
 !.env.example
 node_modules/
 web/
+!spikes/auth/web/
 coverage/
+
+# Spike-local Harper runtime state
+spikes/**/.harper-local/
+spikes/**/hdb/
+spikes/**/*.local.env
