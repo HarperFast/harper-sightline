@@ -14,7 +14,11 @@ Every dependency is justified here (Harper engineering guideline).
 - **prettier** — formatting (`format:write` / `format:check`), Harper convention.
 - **oxlint** — linting (`lint:required`), Harper convention.
 
-## Frontend (added in slice 2)
+## Frontend
 
-Vite, `@shopify/app-bridge`, and Polaris web components will be added for the
-embedded SPA and justified here when introduced.
+- **vite** (dev) — builds the embedded SPA (`web/` → `web/dist/`), served by Harper's static plugin.
+
+App Bridge and Polaris web components are **not npm dependencies** — Shopify requires
+them loaded from its CDN (`cdn.shopify.com/shopifycloud/app-bridge.js` and `polaris.js`)
+so the app always runs the latest version. They are plain `<script>` tags in
+`web/index.html`; nothing to bundle or install.

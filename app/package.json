@@ -5,6 +5,8 @@
 	"version": "0.1.0",
 	"scripts": {
 		"test": "node --test 'test/*.test.ts'",
+		"dev": "vite web",
+		"build": "vite build web",
 		"typecheck": "tsc --noEmit",
 		"lint:required": "oxlint",
 		"format:write": "prettier --write .",
@@ -16,6 +18,7 @@
 		"@types/node": "^26.1.2",
 		"oxlint": "^1.77.0",
 		"prettier": "^3.9.6",
-		"typescript": "^7.0.2"
+		"typescript": "^7.0.2",
+		"vite": "^8.2.0"
 	}
 }
