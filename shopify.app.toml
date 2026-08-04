@@ -17,10 +17,26 @@ redirect_urls = [ "https://ayoo.josh-test.harperfabric.com/api/v1/auth/callback"
 [webhooks]
 api_version = "2026-07"
 
-  # NOTE: the orders/*, fulfillments/*, and refunds/create subscriptions are
-  # PROTECTED CUSTOMER DATA and require PCD Level 1 approval (Partner Dashboard →
-  # API access → Protected Customer Data Access). Restore them (from
-  # docs/shopify-contract.md §3) once approved. Non-PCD topics remain below.
+  # orders/*, fulfillments/*, and refunds/create are PROTECTED CUSTOMER DATA and
+  # require PCD Level 1 access (Partner Dashboard → API access → Protected
+  # Customer Data Access). include_fields whitelists exclude all PII (Level 2);
+  # everything we receive is Level 1 (ids, statuses, timestamps, SKU/qty). See
+  # docs/shopify-contract.md §3.
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/create", "orders/paid", "orders/updated", "orders/cancelled" ]
+  uri = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/events"
+  include_fields = [ "id", "admin_graphql_api_id", "name", "order_number", "created_at", "updated_at", "processed_at", "cancelled_at", "closed_at", "confirmed", "financial_status", "fulfillment_status", "currency", "line_items" ]
+
+  [[webhooks.subscriptions]]
+  topics = [ "fulfillments/create", "fulfillments/update" ]
+  uri = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/events"
+  include_fields = [ "id", "admin_graphql_api_id", "order_id", "status", "shipment_status", "created_at", "updated_at", "tracking_company", "tracking_numbers", "line_items" ]
+
+  [[webhooks.subscriptions]]
+  topics = [ "refunds/create" ]
+  uri = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/events"
+  include_fields = [ "id", "admin_graphql_api_id", "order_id", "created_at", "processed_at", "refund_line_items", "transactions" ]
 
   [[webhooks.subscriptions]]
   topics = [ "inventory_levels/update" ]
