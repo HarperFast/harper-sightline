@@ -1,6 +1,7 @@
 import { Resource } from 'harper';
 import { createShopifyIdentityAdapter } from './src/identity.ts';
 import { capabilitiesFor } from './src/capabilities.ts';
+import { ensureShopRecord } from './src/lifecycle.ts';
 
 // Public app API key (client_id) — not a secret.
 const API_KEY = process.env.SHOPIFY_API_KEY ?? 'e446bda5edb3ee3bae6e0ba280ef8b12';
@@ -31,6 +32,8 @@ export class Session extends Resource {
 	}
 	async get() {
 		const principal = await identity.authenticate(this.getContext());
+		// Bootstrap the shop record on first authenticated call (no token exchange).
+		await ensureShopRecord(principal.shopId);
 		return {
 			shop: principal.shopId,
 			user: principal.userId,
