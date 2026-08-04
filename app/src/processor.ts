@@ -6,6 +6,16 @@ export interface DeliveryRow {
 	topic?: string;
 	status: DeliveryStatus;
 	attempts?: number;
+	webhookId?: string;
+	receivedAt?: number;
+	payload?: string; // PII-stripped JSON body to normalize (#10)
+}
+
+// A thrown error is "permanent" when re-running can never succeed (a broken or
+// unsupported payload shape). Duck-typed so the processor stays decoupled from
+// the normalizer's error class. Permanent errors dead-letter immediately.
+function isPermanent(err: unknown): boolean {
+	return typeof err === 'object' && err !== null && (err as { permanent?: unknown }).permanent === true;
 }
 
 // Injected side effects — backed by Harper tables in the component, and by an
@@ -36,9 +46,11 @@ export async function processAcceptedBatch(
 			await deps.handle(row);
 			await deps.markProcessed(row.id);
 			processed += 1;
-		} catch {
+		} catch (err) {
 			const attempts = (row.attempts ?? 0) + 1;
-			const dead = attempts >= MAX_ATTEMPTS;
+			// A broken payload can never succeed — dead-letter it now rather than
+			// burning MAX_ATTEMPTS. Transient failures retry until the ceiling.
+			const dead = isPermanent(err) || attempts >= MAX_ATTEMPTS;
 			await deps.markFailed(row.id, attempts, dead);
 			failed += 1;
 			if (dead) deadLettered += 1;

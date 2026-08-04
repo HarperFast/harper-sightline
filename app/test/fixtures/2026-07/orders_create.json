@@ -1,0 +1,16 @@
+{
+	"id": 5100000000002,
+	"admin_graphql_api_id": "gid://shopify/Order/5100000000002",
+	"name": "#1002",
+	"order_number": 1002,
+	"created_at": "2026-08-04T15:00:00-04:00",
+	"updated_at": "2026-08-04T15:00:00-04:00",
+	"processed_at": null,
+	"financial_status": "pending",
+	"fulfillment_status": null,
+	"currency": "USD",
+	"line_items": [{ "id": 222, "sku": "MUG-01", "title": "Mug", "quantity": 1, "fulfillable_quantity": 1, "requires_shipping": true }],
+	"email": "buyer2@example.com",
+	"customer": { "id": 1000, "first_name": "John", "last_name": "Roe" },
+	"shipping_address": { "address1": "2 Oak Ave", "zip": "11111" }
+}

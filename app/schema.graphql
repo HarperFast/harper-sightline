@@ -55,6 +55,7 @@ type WebhookDelivery @table(database: "sightline_ledger") @sealed {
 	status: String! @indexed # accepted | processed | dead_letter
 	attempts: Int
 	hmacVerified: Boolean
+	payload: String # PII-stripped JSON body, kept until the worker normalizes it (7-day purge)
 }
 
 type OperationalEvent @table(database: "sightline_ledger") @sealed {

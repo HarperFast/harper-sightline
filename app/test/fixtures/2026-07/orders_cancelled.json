@@ -1,0 +1,17 @@
+{
+	"id": 5100000000003,
+	"admin_graphql_api_id": "gid://shopify/Order/5100000000003",
+	"name": "#1003",
+	"order_number": 1003,
+	"created_at": "2026-08-03T09:00:00-04:00",
+	"updated_at": "2026-08-04T10:15:00-04:00",
+	"processed_at": "2026-08-03T09:01:00-04:00",
+	"cancelled_at": "2026-08-04T10:15:00-04:00",
+	"financial_status": "refunded",
+	"fulfillment_status": null,
+	"currency": "USD",
+	"line_items": [{ "id": 333, "sku": "HAT-01", "title": "Hat", "quantity": 1, "fulfillable_quantity": 0 }],
+	"email": "buyer3@example.com",
+	"customer": { "id": 1001, "first_name": "Sam", "last_name": "Poe" },
+	"billing_address": { "address1": "3 Pine Rd", "zip": "22222" }
+}

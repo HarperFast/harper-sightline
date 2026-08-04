@@ -9,7 +9,12 @@ export function deliveryKey(shopDomain: string, webhookId: string): string {
 // one row per (shop, webhookId), so a duplicate delivery is a no-op. No
 // normalization or Admin API calls happen here — the handler acks fast and a
 // worker processes accepted rows later (ADR-002).
-export async function acceptDelivery(args: { shopId: string; webhookId: string; topic: string }): Promise<'accepted' | 'duplicate'> {
+export async function acceptDelivery(args: {
+	shopId: string;
+	webhookId: string;
+	topic: string;
+	payload?: string;
+}): Promise<'accepted' | 'duplicate'> {
 	const id = deliveryKey(args.shopId, args.webhookId);
 	const existing = await Deliveries.get(id);
 	if (existing) return 'duplicate';
@@ -22,6 +27,7 @@ export async function acceptDelivery(args: { shopId: string; webhookId: string; 
 		status: 'accepted',
 		attempts: 0,
 		hmacVerified: true,
+		payload: args.payload,
 	});
 	return 'accepted';
 }
