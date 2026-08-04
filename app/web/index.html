@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- App Bridge must be the first script; API key via meta tag.
+		     client_id is PUBLIC (also visible in the page), so it is inlined here. -->
+		<meta name="shopify-api-key" content="e446bda5edb3ee3bae6e0ba280ef8b12" />
+		<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+		<!-- Polaris web components (s-* elements). -->
+		<script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
+		<title>Sightline</title>
+	</head>
+	<body>
+		<s-app-nav>
+			<s-link href="/" rel="home">Overview</s-link>
+			<s-link href="/events">Events</s-link>
+			<s-link href="/findings">Findings</s-link>
+			<s-link href="/privacy">Privacy</s-link>
+		</s-app-nav>
+
+		<s-page heading="Sightline">
+			<s-button slot="primary-action" id="refresh">Refresh</s-button>
+
+			<s-section>
+				<s-heading>Recording</s-heading>
+				<s-text id="status">Connecting…</s-text>
+			</s-section>
+
+			<s-section>
+				<s-heading>What Sightline records</s-heading>
+				<s-text>
+					Seven days of order, fulfillment, inventory, and refund activity. Read-only — Sightline never sits in your fulfillment path.
+				</s-text>
+			</s-section>
+		</s-page>
+
+		<script type="module" src="/src/main.ts"></script>
+	</body>
+</html>

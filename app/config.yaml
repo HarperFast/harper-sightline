@@ -3,3 +3,12 @@ graphqlSchema:
   files: './schema.graphql'
 jsResource:
   files: './resources.ts'
+# Serve the built SPA at the site root, AFTER the REST handler so /api/v1/* is
+# never shadowed. Unknown non-API paths fall back to index.html (SPA routing).
+static:
+  files: 'web/dist/**'
+  after: 'rest'
+  fallthrough: false
+  notFound:
+    file: 'web/dist/index.html'
+    statusCode: 200

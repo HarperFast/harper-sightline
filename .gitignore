@@ -5,6 +5,7 @@
 node_modules/
 web/
 !spikes/auth/web/
+!app/web/
 coverage/
 
 # Spike-local Harper runtime state

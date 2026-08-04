@@ -1,0 +1,3 @@
+{
+	"ignorePatterns": ["web/dist/**", "node_modules/**"]
+}
