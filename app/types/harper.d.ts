@@ -4,7 +4,10 @@ declare module 'harper' {
 	export interface RequestContext {
 		headers: { get(name: string): string | null };
 		response: { status: number };
+		body?: import('node:stream').Readable;
+		data?: Promise<unknown>;
 	}
+	export const contentTypes: Map<string, { serialize?: (data: unknown) => Buffer; deserialize?: (buffer: Buffer) => unknown; q?: number }>;
 	export class Resource {
 		static path?: string;
 		getContext(): RequestContext;
