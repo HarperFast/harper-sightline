@@ -2,38 +2,13 @@ import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import { Resource, contentTypes } from 'harper';
 import './jobs.ts'; // starts the background processing loop on component load
-
-// App Bridge forces the Shopify session token into `Authorization: Bearer` on
-// same-origin calls, and Harper's auth middleware hard-401s an unrecognized
-// Bearer BEFORE the resource runs (ADR-001; verified in harper source). Run a
-// middleware BEFORE 'authentication' that moves the token to a custom header and
-// drops Authorization, so the request reaches our resource which verifies it
-// itself. Scoped to /api/v1 so other routes keep normal Harper auth. `server` is
-// a Harper-injected global; guarded so a missing global can never 404 the app.
-if (typeof server !== 'undefined' && server) {
-	server.http(
-		(request, next) => {
-			// Global pre-processor (no urlPath, so it forwards to normal routing).
-			// Only touch our API's Bearer tokens; leave everything else (Basic auth,
-			// Harper tokens, other routes) untouched.
-			if ((request.url ?? '').startsWith('/api/v1/')) {
-				const auth = request.headers.get('authorization');
-				if (auth && auth.startsWith('Bearer ')) {
-					request.headers.set('x-shopify-session-token', auth.slice(7));
-					request.headers.delete('authorization');
-				}
-			}
-			return next(request);
-		},
-		{ before: 'authentication' },
-	);
-}
 import { createShopifyIdentityAdapter } from './src/identity.ts';
 import { capabilitiesFor } from './src/capabilities.ts';
 import { ensureShopRecord } from './src/lifecycle.ts';
 import { verifyWebhookHmac } from './src/webhookHmac.ts';
 import { acceptDelivery } from './src/webhookIngress.ts';
 import { readShopifySecret } from './src/readSecret.ts';
+import { verifySessionToken } from './src/verifySessionToken.ts';
 
 // Preserve the RAW request body so webhook HMAC can be verified before parsing
 // (Harper otherwise parses application/json and consumes the bytes). We keep the
@@ -155,14 +130,16 @@ export class AppHome extends Resource {
 	allowRead() {
 		return true;
 	}
-	get() {
+	async get() {
 		const ctx = this.getContext();
 		let pathname = '/';
 		let shop = '';
+		let idToken: string | null = null;
 		try {
 			const u = new URL(ctx.url ?? '/', 'https://placeholder');
 			pathname = u.pathname;
 			shop = u.searchParams.get('shop') ?? '';
+			idToken = u.searchParams.get('id_token');
 		} catch {
 			// defaults
 		}
@@ -177,9 +154,29 @@ export class AppHome extends Resource {
 			}
 		}
 
-		// SPA entry / history fallback with the embedding CSP.
+		// Embedded load: Shopify passes the session token as `?id_token=<JWT>`.
+		// Verify it server-side and inject the session into the HTML so the SPA
+		// renders without an App Bridge fetch (App Bridge forces Authorization:
+		// Bearer, which Harper's auth layer rejects — ADR-001). Client-side
+		// navigation keeps the session in memory, so only the initial load needs it.
+		let sessionScript = '';
+		if (idToken) {
+			try {
+				const secret = await readShopifySecret();
+				const principal = verifySessionToken(idToken, { apiKey: API_KEY, secret });
+				await ensureShopRecord(principal.shopId);
+				const session = { shop: principal.shopId, user: principal.userId, capabilities: capabilitiesFor(principal.shopId) };
+				const json = JSON.stringify(session).replace(/</g, '\\u003c');
+				sessionScript = `<script>window.__SIGHTLINE_SESSION__=${json}</script>`;
+				if (!shop) shop = principal.shopId;
+			} catch {
+				// invalid/expired id_token — the SPA shows "not connected"
+			}
+		}
+
 		const ancestors = shop ? `https://${shop} https://admin.shopify.com` : 'https://*.myshopify.com https://admin.shopify.com';
-		return new Response(INDEX_HTML, {
+		const html = sessionScript ? INDEX_HTML.replace('</head>', `${sessionScript}</head>`) : INDEX_HTML;
+		return new Response(html, {
 			status: 200,
 			headers: {
 				'content-type': 'text/html; charset=utf-8',
