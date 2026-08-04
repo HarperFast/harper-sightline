@@ -67,6 +67,7 @@ type OperationalEvent @table(database: "sightline_ledger") @sealed {
 	resourceId: String @indexed # e.g. order id
 	sku: String
 	quantity: Int
+	fulfillableItemCount: Int # order events: units still requiring fulfillment (from line_items) — drives projection eligibility
 	state: String
 	source: String! # webhook | reconciliation
 	occurredAt: Float! @indexed
@@ -80,9 +81,11 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	orderId: String!
 	financialStatus: String
 	fulfillmentStatus: String
-	paidAt: Float
-	cancelledAt: Float
-	fullyRefundedAt: Float
+	paidAt: Float # earliest paid time (latch)
+	cancelledAt: Float # earliest cancellation (latch)
+	fullyRefundedAt: Float # earliest full-refund (latch)
+	fulfilledAt: Float # earliest successful fulfillment (latch)
+	requiresFulfillment: Boolean # any line item required shipping (latch) — detector eligibility
 	fulfillableItemCount: Int
 	state: String @indexed # pending | awaiting_window | confirmed | unconfirmed
 	deadline: Float @indexed

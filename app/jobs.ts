@@ -1,8 +1,30 @@
-import { Deliveries, Events } from './src/db.ts';
+import { Deliveries, Events, Projections } from './src/db.ts';
+import type { OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
+import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
+
+// Rebuild an order's projection from ALL its normalized events (#12). Rebuilding
+// from the ledger (rather than an incremental read-modify-write) is order-safe
+// and far more robust to concurrent writers: every writer recomputes the full
+// state from the persisted events, so a lost write self-heals on the next event.
+// The reducer is commutative, so query order is irrelevant.
+async function updateOrderProjection(event: OperationalEvent): Promise<void> {
+	const events: OperationalEvent[] = [];
+	for await (const e of Events.search({
+		conditions: [
+			{ attribute: 'shopId', value: event.shopId },
+			{ attribute: 'resourceId', value: event.resourceId },
+		],
+		operator: 'and',
+	})) {
+		events.push(e as unknown as OperationalEvent);
+	}
+	const projection = rebuildProjection(events);
+	if (projection) await Projections.put(projection);
+}
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
 // into OperationalEvent rows (#10); the durable pipeline (#9) scans accepted
@@ -55,6 +77,8 @@ const deps: ProcessDeps = {
 		// Deterministic eventId → idempotent upsert on reprocessing (ADR-002).
 		for (const event of normalizeDelivery(meta, payload)) {
 			await Events.put(event);
+			// Maintain the order projection from the persisted ledger (#12).
+			if (isOrderLinked(event)) await updateOrderProjection(event);
 		}
 	},
 };
