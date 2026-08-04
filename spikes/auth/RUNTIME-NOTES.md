@@ -60,6 +60,12 @@ These are observed facts, and several directly shape the scaffold (issue #4).
 **TypeStrip (confirmed live):**
 - `.ts` resources with `.ts`-extension relative imports load and run on Fabric 5.2.0 (proven with a minimal `probe-ts` component that returned 200). The TypeStrip engineering assumption holds; no build step needed.
 
+## Atomic credential rotation (Task 6 — confirmed live)
+
+- **Primitive:** Harper's unique primary-key `insert` is an atomic compare-and-claim. Proof (`live/atomicClaim.mjs`, run against Fabric 5.2.0): 12 concurrent inserts of the same key → **won=1, lost=11 (skipped_hashes), other=0**, final row count 1.
+- **Rotation design this backs:** to rotate, a worker atomically claims `(shopId, nextVersion)` via a unique-PK insert; the single winner performs the Shopify token exchange and writes the new `ShopCredential`; losers observe the winner and back off. The `refreshCredential` unit test proves the surrounding algorithm; this proves Harper supplies the atomicity.
+- **Follow-up for the scaffold (issue #6), not a Phase 0 blocker:** confirm Shopify's exact *refresh* request params for expiring offline tokens against the offline-access-tokens doc. `refreshCredential` injects `fetchNewToken`, so the store/rotation logic is decoupled from that detail.
+
 ## Task 1 status
 
 Component files created and the runtime facts pinned — now confirmed live rather than from docs alone (see above).
