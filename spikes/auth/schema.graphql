@@ -1,0 +1,4 @@
+# Placeholder type so the schema file is non-empty; real tables come in Task 6.
+type SpikePing @table @export {
+	id: ID @primaryKey
+}
