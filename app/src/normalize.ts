@@ -67,6 +67,24 @@ interface EventFields {
 	state?: string;
 	sku?: string;
 	quantity?: number;
+	fulfillableItemCount?: number;
+}
+
+// Units of an order still requiring physical fulfillment, from line_items.
+// `requires_shipping` defaults to true when absent; a line's remaining count is
+// `fulfillable_quantity`, falling back to `quantity` on a fresh order. Returns a
+// number when line_items is present (0 for a digital order) so the projection can
+// distinguish "no fulfillment needed" from "no line-item data" (undefined).
+function fulfillableUnits(lineItems: unknown): number | undefined {
+	if (!Array.isArray(lineItems)) return undefined;
+	let total = 0;
+	for (const line of lineItems) {
+		if (!line || typeof line !== 'object') continue;
+		const item = line as Payload;
+		if (item.requires_shipping === false) continue;
+		total += asNumber(item.fulfillable_quantity) ?? asNumber(item.quantity) ?? 0;
+	}
+	return total;
 }
 
 // One event per delivery, keyed deterministically by (shop, webhookId) so a
@@ -81,6 +99,7 @@ function toEvent(meta: DeliveryMeta, fields: EventFields): OperationalEvent {
 		resourceId: fields.resourceId,
 		sku: fields.sku,
 		quantity: fields.quantity,
+		fulfillableItemCount: fields.fulfillableItemCount,
 		state: fields.state,
 		source: 'webhook',
 		occurredAt: fields.occurredAt,
@@ -97,6 +116,7 @@ function normalizeOrder(payload: Payload, meta: DeliveryMeta): OperationalEvent 
 		domain: 'order',
 		resourceId: orderId,
 		state: asString(payload.financial_status) ?? asString(payload.fulfillment_status),
+		fulfillableItemCount: fulfillableUnits(payload.line_items),
 		occurredAt: occurredAt(payload, ['updated_at', 'processed_at', 'cancelled_at', 'created_at'], meta),
 	});
 }

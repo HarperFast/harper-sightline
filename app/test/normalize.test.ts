@@ -136,6 +136,23 @@ for (const c of CASES) {
 	});
 }
 
+test('order events carry fulfillment eligibility from line_items (#12)', () => {
+	// orders_paid: one shippable line, fulfillable_quantity 2.
+	const paid = normalizeDelivery(meta('orders/paid'), stripPii(fixture('orders_paid')))[0];
+	assert.equal(paid.fulfillableItemCount, 2);
+	// A digital order (no line requires shipping) yields 0, not undefined.
+	const digital = normalizeDelivery(meta('orders/paid'), {
+		id: 42,
+		financial_status: 'paid',
+		updated_at: '2026-08-04T14:05:00Z',
+		line_items: [{ sku: 'EBOOK', quantity: 1, requires_shipping: false }],
+	})[0];
+	assert.equal(digital.fulfillableItemCount, 0);
+	// Non-order events do not carry the field.
+	const inv = normalizeDelivery(meta('inventory_levels/update'), { inventory_item_id: 5, available: 3 })[0];
+	assert.equal(inv.fulfillableItemCount, undefined);
+});
+
 test('additive unknown payload fields do not break normalization or leak', () => {
 	const raw = fixture('orders_paid') as Record<string, unknown>;
 	assert.ok('__future_additive_field__' in raw, 'fixture carries an additive field');

@@ -62,6 +62,7 @@ export interface OperationalEvent {
 	resourceId?: string;
 	sku?: string;
 	quantity?: number;
+	fulfillableItemCount?: number; // order events: units still requiring fulfillment (#12)
 	state?: string;
 	source: EventSource;
 	occurredAt: number;
@@ -77,6 +78,8 @@ export interface OrderProjection {
 	paidAt?: number;
 	cancelledAt?: number;
 	fullyRefundedAt?: number;
+	fulfilledAt?: number;
+	requiresFulfillment?: boolean;
 	fulfillableItemCount?: number;
 	state?: ProjectionState;
 	deadline?: number;
