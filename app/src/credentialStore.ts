@@ -1,9 +1,6 @@
-import { tables, type Table } from 'harper';
 import { encryptToken, decryptToken, type Envelope } from './crypto.ts';
 import type { OfflineToken } from './exchangeToken.ts';
-import type { ShopCredential } from './model.ts';
-
-const Credentials = tables.ShopCredential as unknown as Table<ShopCredential>;
+import { Credentials } from './db.ts';
 
 // Store the offline token as an encrypted envelope (ADR-001). version increments
 // each rotation. Tokens/PII never returned or logged.
