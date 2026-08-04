@@ -97,7 +97,7 @@ From plan §15: *"runnable spikes prove the auth, durable acceptance, worker rec
 - [x] Spike A proves session-JWT verification (with negative cases) and atomic offline-token rotation on Harper v5.2.0. — proven live; see [ADR-001](../../adr/ADR-001-authentication.md). (Confirmatory real-Admin App Bridge token test deferred — ADR-001 §7.)
 - [x] `@harperfast/oauth` Shopify-provider question answered and recorded. — no Shopify provider; session JWT authoritative; [ADR-001](../../adr/ADR-001-authentication.md) §4.
 - [x] Spike B proves restart recovery and single-active ownership under multiple workers. — proven live; see [ADR-002](../../adr/ADR-002-worker-lease-scheduling.md). Exactly-once via atomic single-winner insert (correctness independent of worker/node count); lease for scheduling.
-- [ ] Spike C proves physical deletion, or specifies the explicit purge job required.
+- [x] Spike C proves physical deletion, or specifies the explicit purge job required. — TTL is caching-oriented (unsuitable); explicit `DELETE` purge is the mechanism, proven live. See [ADR-003](../../adr/ADR-003-retention-deletion.md).
 - [ ] Spike D pins API version, topics, fields, scopes, and protected-data request.
 - [ ] ADR-001, ADR-002, ADR-003 written; `docs/shopify-contract.md` written; threat model drafted.
 - [x] Local dev Node/Harper version alignment resolved (Node 24.18.0, Harper 5.2.0).
