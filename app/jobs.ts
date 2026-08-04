@@ -1,8 +1,9 @@
-import { Deliveries, Events, Projections } from './src/db.ts';
-import type { OperationalEvent } from './src/model.ts';
+import { Deliveries, Events, Projections, Expectations, Findings } from './src/db.ts';
+import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
 import { isOrderLinked, rebuildProjection } from './src/projection.ts';
+import { evaluateOrder, detectorKey } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 
@@ -24,6 +25,37 @@ async function updateOrderProjection(event: OperationalEvent): Promise<void> {
 	}
 	const projection = rebuildProjection(events);
 	if (projection) await Projections.put(projection);
+}
+
+// Run the fulfillment-confirmation detector for one order (#14): evaluate its
+// projection against the rule and upsert the expectation + finding. Deterministic
+// keys make this idempotent; evidence is the order's normalized event ids.
+async function runDetectorForOrder(shopId: string, orderId: string, now = Date.now()): Promise<void> {
+	const projection = await Projections.get(`${shopId}:${orderId}`);
+	if (!projection) return;
+	const id = detectorKey(orderId);
+	const [expectation, finding] = await Promise.all([Expectations.get(id), Findings.get(id)]);
+	const evidenceEventIds: string[] = [];
+	for await (const e of Events.search({
+		conditions: [
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'resourceId', value: orderId },
+		],
+		operator: 'and',
+		select: ['eventId'],
+	})) {
+		const eid = (e as { eventId?: unknown }).eventId;
+		if (typeof eid === 'string') evidenceEventIds.push(eid);
+	}
+	evidenceEventIds.sort();
+	const result = evaluateOrder({
+		projection,
+		now,
+		evidenceEventIds,
+		prior: { expectation: expectation as Expectation | undefined, finding: finding as GapFinding | undefined },
+	});
+	if (result.expectation) await Expectations.put(result.expectation);
+	if (result.finding) await Findings.put(result.finding);
 }
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
@@ -77,8 +109,12 @@ const deps: ProcessDeps = {
 		// Deterministic eventId → idempotent upsert on reprocessing (ADR-002).
 		for (const event of normalizeDelivery(meta, payload)) {
 			await Events.put(event);
-			// Maintain the order projection from the persisted ledger (#12).
-			if (isOrderLinked(event)) await updateOrderProjection(event);
+			// Maintain the order projection (#12), then evaluate the detector (#14)
+			// so paid/fulfilled/cancelled transitions are reflected immediately.
+			if (isOrderLinked(event)) {
+				await updateOrderProjection(event);
+				await runDetectorForOrder(event.shopId, event.resourceId as string);
+			}
 		}
 	},
 };
@@ -155,5 +191,47 @@ export function startPurgeLoop(): void {
 	setInterval(purgeTick, PURGE_INTERVAL_MS);
 }
 
+// Detector sweep (#14). Event-driven evaluation in handle() catches paid/
+// fulfilled/cancelled transitions immediately; this periodic sweep catches
+// pending expectations whose deadline passes with NO new event, flipping them to
+// expired and creating the unconfirmed finding. Idempotent (deterministic keys).
+const DETECTOR_INTERVAL_MS = 300_000; // every 5 minutes
+let detecting = false;
+
+export async function runDetectorSweep(now = Date.now()): Promise<number> {
+	const pending: Expectation[] = [];
+	for await (const exp of Expectations.search({ conditions: [{ attribute: 'state', value: 'pending' }] })) {
+		pending.push(exp as unknown as Expectation);
+	}
+	let due = 0;
+	for (const exp of pending) {
+		if ((exp.deadline ?? Number.POSITIVE_INFINITY) <= now) {
+			await runDetectorForOrder(exp.shopId, exp.orderId, now);
+			due += 1;
+		}
+	}
+	return due;
+}
+
+function detectorTick(): void {
+	if (detecting) return;
+	detecting = true;
+	void runDetectorSweep()
+		.then((due) => {
+			if (due) console.log(`[sightline:detect] evaluated ${due} due expectation(s)`);
+		})
+		.catch((e: unknown) => {
+			console.error('[sightline:detect] error', (e as Error).message);
+		})
+		.finally(() => {
+			detecting = false;
+		});
+}
+
+export function startDetectorLoop(): void {
+	setInterval(detectorTick, DETECTOR_INTERVAL_MS);
+}
+
 startProcessingLoop();
 startPurgeLoop();
+startDetectorLoop();
