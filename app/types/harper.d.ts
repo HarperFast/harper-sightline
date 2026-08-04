@@ -6,6 +6,7 @@ declare module 'harper' {
 		response: { status: number };
 		body?: import('node:stream').Readable;
 		data?: Promise<unknown>;
+		url?: string;
 	}
 	export const contentTypes: Map<string, { serialize?: (data: unknown) => Buffer; deserialize?: (buffer: Buffer) => unknown; q?: number }>;
 	export class Resource {

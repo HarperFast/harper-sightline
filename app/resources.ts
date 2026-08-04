@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { extname } from 'node:path';
 import { Resource, contentTypes } from 'harper';
 import './jobs.ts'; // starts the background processing loop on component load
 import { createShopifyIdentityAdapter } from './src/identity.ts';
@@ -96,5 +98,67 @@ export class ShopifyWebhook extends Resource {
 
 		const result = await acceptDelivery({ shopId, webhookId, topic });
 		return { ok: true, result };
+	}
+}
+
+// The built SPA, loaded once at component start.
+let INDEX_HTML = '<!doctype html><meta charset="utf-8"><title>Sightline</title>';
+try {
+	INDEX_HTML = readFileSync(new URL('./web/dist/index.html', import.meta.url), 'utf8');
+} catch {
+	// dist not present (e.g. pre-build) — keep the placeholder
+}
+
+const MIME: Record<string, string> = {
+	'.js': 'text/javascript',
+	'.css': 'text/css',
+	'.svg': 'image/svg+xml',
+	'.ico': 'image/x-icon',
+	'.json': 'application/json',
+	'.map': 'application/json',
+	'.woff2': 'font/woff2',
+};
+
+// Serves the embedded SPA and its assets from the site root. A resource matches
+// as a prefix before the static handler, so this catches all non-/api/v1 GETs.
+// The HTML entry/fallback carries a frame-ancestors CSP so Shopify Admin can
+// iframe the app (required for embedded apps); real asset files are served with
+// their content-type and no CSP.
+export class AppHome extends Resource {
+	static path = '/';
+	allowRead() {
+		return true;
+	}
+	get() {
+		const ctx = this.getContext();
+		let pathname = '/';
+		let shop = '';
+		try {
+			const u = new URL(ctx.url ?? '/', 'https://placeholder');
+			pathname = u.pathname;
+			shop = u.searchParams.get('shop') ?? '';
+		} catch {
+			// defaults
+		}
+
+		// Real static asset (no path traversal; only under /assets/).
+		if (pathname.startsWith('/assets/') && !pathname.includes('..')) {
+			try {
+				const file = readFileSync(new URL(`./web/dist${pathname}`, import.meta.url));
+				return new Response(file, { status: 200, headers: { 'content-type': MIME[extname(pathname)] ?? 'application/octet-stream' } });
+			} catch {
+				// fall through to the SPA
+			}
+		}
+
+		// SPA entry / history fallback with the embedding CSP.
+		const ancestors = shop ? `https://${shop} https://admin.shopify.com` : 'https://*.myshopify.com https://admin.shopify.com';
+		return new Response(INDEX_HTML, {
+			status: 200,
+			headers: {
+				'content-type': 'text/html; charset=utf-8',
+				'content-security-policy': `frame-ancestors ${ancestors};`,
+			},
+		});
 	}
 }
