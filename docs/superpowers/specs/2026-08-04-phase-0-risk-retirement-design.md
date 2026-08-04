@@ -94,8 +94,8 @@ One PR / checkpoint per output:
 
 From plan §15: *"runnable spikes prove the auth, durable acceptance, worker recovery, and purge assumptions."*
 
-- [ ] Spike A proves session-JWT verification (with negative cases) and atomic offline-token rotation on Harper v5.2.0.
-- [ ] `@harperfast/oauth` Shopify-provider question answered and recorded.
+- [x] Spike A proves session-JWT verification (with negative cases) and atomic offline-token rotation on Harper v5.2.0. — proven live; see [ADR-001](../../adr/ADR-001-authentication.md). (Confirmatory real-Admin App Bridge token test deferred — ADR-001 §7.)
+- [x] `@harperfast/oauth` Shopify-provider question answered and recorded. — no Shopify provider; session JWT authoritative; [ADR-001](../../adr/ADR-001-authentication.md) §4.
 - [ ] Spike B proves restart recovery and single-active ownership under multiple workers.
 - [ ] Spike C proves physical deletion, or specifies the explicit purge job required.
 - [ ] Spike D pins API version, topics, fields, scopes, and protected-data request.
