@@ -1,0 +1,5 @@
+# Placeholder so the schema file is non-empty. Real sealed, private tables
+# (Shop, ShopCredential, OperationalEvent, ...) land in issue #6.
+type SightlineMeta @table @export {
+	id: ID @primaryKey
+}

@@ -1,0 +1,15 @@
+{
+	"name": "sightline",
+	"private": true,
+	"type": "module",
+	"version": "0.1.0",
+	"scripts": {
+		"test": "node --test 'test/*.test.ts'",
+		"typecheck": "tsc --noEmit",
+		"lint:required": "oxlint",
+		"format:write": "prettier --write .",
+		"format:check": "prettier --check .",
+		"deploy": "node scripts/deploy.mjs",
+		"smoke": "node scripts/smoke.mjs"
+	}
+}
