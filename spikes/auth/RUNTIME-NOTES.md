@@ -66,6 +66,12 @@ These are observed facts, and several directly shape the scaffold (issue #4).
 - **Rotation design this backs:** to rotate, a worker atomically claims `(shopId, nextVersion)` via a unique-PK insert; the single winner performs the Shopify token exchange and writes the new `ShopCredential`; losers observe the winner and back off. The `refreshCredential` unit test proves the surrounding algorithm; this proves Harper supplies the atomicity.
 - **Follow-up for the scaffold (issue #6), not a Phase 0 blocker:** confirm Shopify's exact *refresh* request params for expiring offline tokens against the offline-access-tokens doc. `refreshCredential` injects `fetchNewToken`, so the store/rotation logic is decoupled from that detail.
 
+## @harperfast/oauth Shopify-provider decision (Task 7 — resolved)
+
+- Inspected `HarperFast/oauth` (default branch `main`). Built-in providers: **GitHub, Google, Azure AD, Auth0, Okta, generic/custom OIDC** (`src/lib/providers/`). **No Shopify provider**; no session-token or Shopify token-exchange support. It is a standard OAuth 2.0 / OIDC redirect + authorization-code plugin (redirect → callback → code exchange), plus an MCP OAuth server mode.
+- **Decision (matches the plan):** the Shopify session JWT stays **authoritative on the MVP request path**; `@harperfast/oauth` is **not** on that path. Shopify's embedded session-token/token-exchange flow is redirectless and cannot depend on third-party cookies, which this plugin's flow assumes.
+- **Seam preserved:** the normalized `Principal { shopId, userId, roles, source }` boundary lets `@harperfast/oauth` (Google/Azure/Auth0/Okta/OIDC) supply identity later for standalone/agency access without changing resource business logic.
+
 ## Task 1 status
 
 Component files created and the runtime facts pinned — now confirmed live rather than from docs alone (see above).
