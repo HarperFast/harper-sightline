@@ -21,9 +21,25 @@ async function apiGet(path: string): Promise<ApiResult> {
 	return { ok: res.ok, status: res.status, text: await res.text() };
 }
 
+declare global {
+	interface Window {
+		__SIGHTLINE_SESSION__?: { shop: string; user: string; capabilities: Record<string, boolean> };
+	}
+}
+
 async function load(): Promise<void> {
 	const status = document.getElementById('status');
 	if (!status) return;
+
+	// Preferred path: the server verified the id_token on the embedded load and
+	// injected the session — no App Bridge fetch (which Harper's auth rejects).
+	const injected = window.__SIGHTLINE_SESSION__;
+	if (injected?.shop) {
+		status.textContent = `Recording ${injected.shop} — signed in as user ${injected.user}.`;
+		return;
+	}
+
+	// Fallback (dev / non-embedded): call the API with a fresh token.
 	status.textContent = 'Connecting…';
 	try {
 		const res = await apiGet('/api/v1/session');
