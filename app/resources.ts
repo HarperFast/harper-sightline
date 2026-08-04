@@ -8,6 +8,30 @@ import { ensureShopRecord } from './src/lifecycle.ts';
 import { verifyWebhookHmac } from './src/webhookHmac.ts';
 import { acceptDelivery } from './src/webhookIngress.ts';
 import { stripPii } from './src/pii.ts';
+import {
+	Events as EventsTable,
+	Findings as FindingsTable,
+	Projections as ProjectionsTable,
+	Expectations as ExpectationsTable,
+	Deliveries as DeliveriesTable,
+} from './src/db.ts';
+import {
+	listEvents,
+	getEventDetail,
+	listFindings,
+	getFindingDetail,
+	getSummary,
+	computeFlows,
+	getPrivacy,
+	type QueryTable,
+} from './src/queries.ts';
+
+// db.ts types tables as Table<T>; the read layer needs only the search/get subset.
+const EventsQ = EventsTable as unknown as QueryTable;
+const FindingsQ = FindingsTable as unknown as QueryTable;
+const ProjectionsQ = ProjectionsTable as unknown as QueryTable;
+const ExpectationsQ = ExpectationsTable as unknown as QueryTable;
+const DeliveriesQ = DeliveriesTable as unknown as QueryTable;
 import { readShopifySecret } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 
@@ -64,6 +88,127 @@ function httpError(message: string, statusCode: number): Error & { statusCode: n
 	const e = new Error(message) as Error & { statusCode: number };
 	e.statusCode = statusCode;
 	return e;
+}
+
+// ── Read API (#15) ────────────────────────────────────────────────────────────
+// Every resource derives shopId from the verified principal and passes it to the
+// query layer, which constrains every search by it (tenant isolation). Responses
+// are field-allowlisted in queries.ts. Standard 7-day bounded windows + cursor
+// pagination. Classes are *Resource-suffixed to avoid colliding with the table
+// imports; routing comes from `static path`.
+
+// Parse a URL, returning its pathname and search params (defensive).
+function parseUrl(url: string | undefined): URL {
+	try {
+		return new URL(url ?? '/', 'https://sightline.local');
+	} catch {
+		return new URL('https://sightline.local/');
+	}
+}
+
+// The single path segment after `base`, decoded, or undefined for the collection.
+function trailingId(pathname: string, base: string): string | undefined {
+	if (!pathname.startsWith(base + '/')) return undefined;
+	const rest = pathname.slice(base.length + 1);
+	if (!rest || rest.includes('/')) return undefined;
+	try {
+		return decodeURIComponent(rest);
+	} catch {
+		return rest;
+	}
+}
+
+function numParam(params: URLSearchParams, name: string): number | undefined {
+	const raw = params.get(name);
+	if (raw === null) return undefined;
+	const n = Number(raw);
+	return Number.isFinite(n) ? n : undefined;
+}
+
+export class SummaryResource extends Resource {
+	static path = '/api/v1/summary';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const shopId = (await identity.authenticate(this.getContext())).shopId;
+		return getSummary({ events: EventsQ, projections: ProjectionsQ, findings: FindingsQ, deliveries: DeliveriesQ }, shopId, Date.now());
+	}
+}
+
+export class EventsResource extends Resource {
+	static path = '/api/v1/events';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const url = parseUrl(ctx.url);
+		const id = trailingId(url.pathname, '/api/v1/events');
+		if (id) {
+			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id);
+			if (!detail) throw httpError('event not found', 404);
+			return detail;
+		}
+		const p = url.searchParams;
+		return listEvents(EventsQ, shopId, Date.now(), {
+			domain: p.get('domain') ?? undefined,
+			topic: p.get('topic') ?? undefined,
+			resourceId: p.get('resourceId') ?? undefined,
+			sku: p.get('sku') ?? undefined,
+			since: numParam(p, 'since'),
+			until: numParam(p, 'until'),
+			cursor: p.get('cursor') ?? undefined,
+			limit: p.get('limit') ?? undefined,
+		});
+	}
+}
+
+export class FlowsResource extends Resource {
+	static path = '/api/v1/flows';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const shopId = (await identity.authenticate(this.getContext())).shopId;
+		return computeFlows(ProjectionsQ, shopId, Date.now());
+	}
+}
+
+export class FindingsResource extends Resource {
+	static path = '/api/v1/findings';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const url = parseUrl(ctx.url);
+		const id = trailingId(url.pathname, '/api/v1/findings');
+		if (id) {
+			const detail = await getFindingDetail(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, id);
+			if (!detail) throw httpError('finding not found', 404);
+			return detail;
+		}
+		const p = url.searchParams;
+		return listFindings(FindingsQ, shopId, {
+			status: p.get('status') ?? undefined,
+			cursor: p.get('cursor') ?? undefined,
+			limit: p.get('limit') ?? undefined,
+		});
+	}
+}
+
+export class PrivacyResource extends Resource {
+	static path = '/api/v1/privacy';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const shopId = (await identity.authenticate(this.getContext())).shopId;
+		return getPrivacy({ events: EventsQ, findings: FindingsQ, projections: ProjectionsQ }, shopId);
+	}
 }
 
 // Shopify webhook ingress. Authenticated by HMAC over the RAW body (NOT the

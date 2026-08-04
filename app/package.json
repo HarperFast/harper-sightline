@@ -12,7 +12,8 @@
 		"format:write": "prettier --write .",
 		"format:check": "prettier --check .",
 		"deploy": "node scripts/deploy.mjs",
-		"smoke": "node scripts/smoke.mjs"
+		"smoke": "node scripts/smoke.mjs",
+		"contract:gen": "node scripts/gen-contract.mjs"
 	},
 	"devDependencies": {
 		"@types/node": "^26.1.2",
