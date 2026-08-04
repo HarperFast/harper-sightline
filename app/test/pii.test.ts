@@ -58,3 +58,30 @@ test('passes through non-objects unchanged', () => {
 	assert.equal(stripPii(42), 42);
 	assert.deepEqual(stripPii([1, 2, 3]), [1, 2, 3]);
 });
+
+test('removes PII nested inside arrays and objects, keeping evidence', () => {
+	const payload = {
+		id: 1,
+		name: '#1001',
+		fulfillments: [
+			{
+				id: 9,
+				status: 'success',
+				destination: { address1: '1 Main St', name: 'Jane Doe' },
+				line_items: [{ sku: 'A', quantity: 1, title: 'Widget' }],
+			},
+		],
+		refunds: [{ id: 3, transactions: [{ amount: '5.00' }], note: 'gift receipt' }],
+	};
+	const result = stripPii(payload) as Record<string, unknown>;
+	const serialized = JSON.stringify(result);
+	for (const marker of ['Main St', 'Jane Doe', 'gift receipt']) {
+		assert.ok(!serialized.includes(marker), `nested PII "${marker}" survived`);
+	}
+	// Nested Level-1 evidence is preserved.
+	const fulfillment = (result.fulfillments as Record<string, unknown>[])[0];
+	assert.equal(fulfillment.status, 'success');
+	assert.ok(!('destination' in fulfillment));
+	assert.deepEqual(fulfillment.line_items, [{ sku: 'A', quantity: 1, title: 'Widget' }]);
+	assert.equal(result.name, '#1001');
+});
