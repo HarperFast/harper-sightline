@@ -1,4 +1,14 @@
-# Placeholder type so the schema file is non-empty; real tables come in Task 6.
+# Placeholder type so the schema file is non-empty.
 type SpikePing @table @export {
 	id: ID @primaryKey
+}
+
+# Task 6: encrypted credential envelope for atomic offline-token rotation.
+type ShopCredential @table @sealed {
+	shopId: ID @primaryKey
+	accessToken: String
+	refreshToken: String
+	expiresAt: Int
+	refreshTokenExpiresAt: Int
+	version: Int
 }
