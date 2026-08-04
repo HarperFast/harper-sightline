@@ -10,7 +10,7 @@ is the fast-start map for anyone (human or agent) working in `app/`.
   (blocked in our sandbox); the Fabric instance is the runtime.
 - **Resources** (`resources.ts`) extend `Resource` from `'harper'`, are
   deny-by-default (`allowRead()` to open a GET), and route at their `static path`
-  (e.g. `/api/v1/health`). A bad top-level import silently 404s *all* routes while
+  (e.g. `/api/v1/health`). A bad top-level import silently 404s _all_ routes while
   the component still reports "healthy" → `scripts/smoke.mjs` runs after every
   deploy as a guard (ADR-001).
 - **Auth:** the Shopify session token rides in `X-Shopify-Session-Token`, NOT

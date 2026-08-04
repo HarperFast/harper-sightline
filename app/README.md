@@ -20,14 +20,14 @@ npm ci
 
 ## Scripts
 
-| Script | What |
-|---|---|
-| `npm test` | unit tests (`node --test`) |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint:required` | oxlint |
-| `npm run format:write` / `format:check` | prettier |
-| `npm run deploy` | package + `deploy_component` + restart + wait-for-health (env creds) |
-| `npm run smoke` | post-deploy route smoke test (`/api/v1/health` 200, `/api/v1/session` 401) |
+| Script                                  | What                                                                       |
+| --------------------------------------- | -------------------------------------------------------------------------- |
+| `npm test`                              | unit tests (`node --test`)                                                 |
+| `npm run typecheck`                     | `tsc --noEmit`                                                             |
+| `npm run lint:required`                 | oxlint                                                                     |
+| `npm run format:write` / `format:check` | prettier                                                                   |
+| `npm run deploy`                        | package + `deploy_component` + restart + wait-for-health (env creds)       |
+| `npm run smoke`                         | post-deploy route smoke test (`/api/v1/health` 200, `/api/v1/session` 401) |
 
 ## Dev loop (Fabric-hosted)
 
