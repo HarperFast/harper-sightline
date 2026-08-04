@@ -1,0 +1,39 @@
+import { tables, type Table } from 'harper';
+import { exchangeOfflineToken } from './exchangeToken.ts';
+import { saveCredential, deleteCredential, markCredentialStatus } from './credentialStore.ts';
+import type { Shop } from './model.ts';
+
+const Shops = tables.Shop as unknown as Table<Shop>;
+
+// Managed install: exchange the verified session token for an offline token,
+// create/update the Shop record, store the encrypted credential. (The live
+// token exchange requires a real Admin session token — verified at dev-store
+// install time.)
+export async function installShop(args: { shop: string; sessionToken: string; apiKey: string; secret: string }): Promise<void> {
+	const tok = await exchangeOfflineToken({ shop: args.shop, sessionToken: args.sessionToken, apiKey: args.apiKey, secret: args.secret });
+	await Shops.put({ shopId: args.shop, status: 'active', scopes: tok.scope, installedAt: Date.now(), reconciliationState: 'pending' });
+	await saveCredential(args.shop, tok);
+}
+
+// app/uninstalled: mark inactive and invalidate the credential (documented
+// redaction timing handled by the compliance flow, #20/#21).
+export async function uninstallShop(shopId: string): Promise<void> {
+	const shop = await Shops.get(shopId);
+	if (shop) await Shops.patch(shopId, { status: 'uninstalled', uninstalledAt: Date.now() });
+	await deleteCredential(shopId);
+}
+
+// Refresh failure → stop Admin API jobs, surface reauthorization_required.
+export async function markReauthRequired(shopId: string): Promise<void> {
+	await Shops.patch(shopId, { status: 'reauthorization_required' });
+	await markCredentialStatus(shopId, 'reauthorization_required');
+}
+
+// Safe bootstrap on an authenticated request: ensure a Shop row exists. Does NOT
+// do token exchange, so it works on the first authenticated call regardless.
+export async function ensureShopRecord(shopId: string): Promise<void> {
+	const shop = await Shops.get(shopId);
+	if (!shop) {
+		await Shops.put({ shopId, status: 'active', installedAt: Date.now(), reconciliationState: 'pending' });
+	}
+}
