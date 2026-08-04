@@ -1,9 +1,6 @@
-import { tables, type Table } from 'harper';
 import { exchangeOfflineToken } from './exchangeToken.ts';
 import { saveCredential, deleteCredential, markCredentialStatus } from './credentialStore.ts';
-import type { Shop } from './model.ts';
-
-const Shops = tables.Shop as unknown as Table<Shop>;
+import { Shops } from './db.ts';
 
 // Managed install: exchange the verified session token for an offline token,
 // create/update the Shop record, store the encrypted credential. (The live
