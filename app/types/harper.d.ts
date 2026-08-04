@@ -9,6 +9,9 @@ declare module 'harper' {
 		url?: string;
 	}
 	export const contentTypes: Map<string, { serialize?: (data: unknown) => Buffer; deserialize?: (buffer: Buffer) => unknown; q?: number }>;
+	export interface MiddlewareRequest {
+		headers: { get(name: string): string | null; set(name: string, value: string): void; delete(name: string): void };
+	}
 	export class Resource {
 		static path?: string;
 		getContext(): RequestContext;
@@ -37,3 +40,17 @@ declare module 'harper' {
 	export function transaction<R>(callback: (txn: unknown) => Promise<R>): Promise<R>;
 	export function getContext(): RequestContext;
 }
+
+// Harper injects `server` as a global into component modules (not a `harper`
+// export). Used to register HTTP middleware.
+declare const server:
+	| {
+			http(
+				listener: (
+					request: { url?: string; headers: { get(n: string): string | null; set(n: string, v: string): void; delete(n: string): void } },
+					next: (request: unknown) => unknown,
+				) => unknown,
+				options?: { before?: string; after?: string; urlPath?: string; port?: string | number },
+			): void;
+	  }
+	| undefined;
