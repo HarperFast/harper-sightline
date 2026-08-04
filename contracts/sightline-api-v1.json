@@ -1,0 +1,128 @@
+{
+	"version": "v1",
+	"windowDays": 7,
+	"pagination": {
+		"style": "cursor",
+		"defaultLimit": 25,
+		"maxLimit": 100
+	},
+	"resources": {
+		"session": {
+			"path": "/api/v1/session",
+			"fields": [
+				"shop",
+				"user",
+				"capabilities"
+			]
+		},
+		"summary": {
+			"path": "/api/v1/summary",
+			"fields": [
+				"shop",
+				"windowDays",
+				"events",
+				"orders",
+				"findings",
+				"recorder"
+			]
+		},
+		"events": {
+			"path": "/api/v1/events",
+			"item": [
+				"eventId",
+				"domain",
+				"topic",
+				"resourceId",
+				"sku",
+				"quantity",
+				"fulfillableItemCount",
+				"state",
+				"source",
+				"occurredAt",
+				"receivedAt"
+			],
+			"paginated": true,
+			"filters": [
+				"domain",
+				"topic",
+				"resourceId",
+				"sku",
+				"since",
+				"until",
+				"cursor",
+				"limit"
+			]
+		},
+		"eventDetail": {
+			"path": "/api/v1/events/:id",
+			"fields": [
+				"eventId",
+				"domain",
+				"topic",
+				"resourceId",
+				"sku",
+				"quantity",
+				"fulfillableItemCount",
+				"state",
+				"source",
+				"occurredAt",
+				"receivedAt",
+				"relatedEventIds",
+				"affectedProjection",
+				"affectedFinding"
+			]
+		},
+		"flows": {
+			"path": "/api/v1/flows",
+			"fields": [
+				"shop",
+				"windowDays",
+				"lanes"
+			]
+		},
+		"findings": {
+			"path": "/api/v1/findings",
+			"item": [
+				"id",
+				"orderId",
+				"ruleVersion",
+				"status",
+				"detectedAt",
+				"resolvedAt",
+				"evidenceEventIds"
+			],
+			"paginated": true,
+			"filters": [
+				"status",
+				"cursor",
+				"limit"
+			]
+		},
+		"findingDetail": {
+			"path": "/api/v1/findings/:id",
+			"fields": [
+				"id",
+				"orderId",
+				"ruleVersion",
+				"status",
+				"detectedAt",
+				"resolvedAt",
+				"evidenceEventIds",
+				"description",
+				"projection",
+				"expectation"
+			]
+		},
+		"privacy": {
+			"path": "/api/v1/privacy",
+			"fields": [
+				"shop",
+				"retentionDays",
+				"storesCustomerPii",
+				"dataCategories",
+				"deletion",
+				"footprint"
+			]
+		}
+	}
+}
