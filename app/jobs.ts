@@ -1,6 +1,6 @@
 import { Deliveries, Events } from './src/db.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
-import { normalizeDelivery, PermanentNormalizeError } from './src/normalize.ts';
+import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
 // into OperationalEvent rows (#10); the durable pipeline (#9) scans accepted
@@ -32,13 +32,22 @@ const deps: ProcessDeps = {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
 			throw new PermanentNormalizeError(`delivery ${row.id} missing normalization metadata`);
 		}
+		// Lifecycle/compliance topics carry no operational payload — nothing to do.
+		if (!isOperationalTopic(row.topic)) return;
+		// Operational topic with no stored payload: treat as TRANSIENT (retry),
+		// not permanent. The realistic cause is an infra glitch — e.g. the payload
+		// column momentarily missing after a redeploy — where retrying recovers
+		// once the schema heals; a genuinely body-less delivery just retries to the
+		// MAX_ATTEMPTS ceiling and then dead-letters. Losing evidence on the first
+		// attempt would be worse than a bounded retry.
+		if (row.payload === undefined) {
+			throw new Error(`delivery ${row.id} has no stored payload yet`);
+		}
 		let payload: unknown;
-		if (row.payload !== undefined) {
-			try {
-				payload = JSON.parse(row.payload);
-			} catch {
-				throw new PermanentNormalizeError(`delivery ${row.id} payload is not valid JSON`);
-			}
+		try {
+			payload = JSON.parse(row.payload);
+		} catch {
+			throw new PermanentNormalizeError(`delivery ${row.id} payload is not valid JSON`);
 		}
 		const meta = { shopId: row.shopId, topic: row.topic, webhookId: row.webhookId, receivedAt: row.receivedAt };
 		// Deterministic eventId → idempotent upsert on reprocessing (ADR-002).
