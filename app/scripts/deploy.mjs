@@ -60,3 +60,23 @@ for (let i = 0; i < 25; i++) {
 	}
 	if (i === 24) console.log('timeout waiting for /api/v1/health');
 }
+
+// Self-heal the Harper Fabric @sealed column-add flake: deploy_component
+// intermittently fails to (re)add optional columns to an existing sealed table,
+// which silently drops data and degrades the detector. Verify the columns added
+// after initial table creation and re-create any that are missing. Idempotent.
+const EXPECTED_COLUMNS = [
+	['sightline_ledger', 'WebhookDelivery', 'payload'],
+	['sightline_ledger', 'OperationalEvent', 'fulfillableItemCount'],
+	['sightline_ledger', 'OrderProjection', 'requiresFulfillment'],
+	['sightline_ledger', 'OrderProjection', 'fulfilledAt'],
+];
+for (const [database, table, attribute] of EXPECTED_COLUMNS) {
+	const desc = await op({ operation: 'describe_table', database, table });
+	const has = Array.isArray(desc?.attributes) && desc.attributes.some((a) => a.attribute === attribute);
+	if (!has) {
+		const r = await op({ operation: 'create_attribute', database, table, attribute });
+		console.log(`healed missing column ${table}.${attribute}: ${r.message ?? JSON.stringify(r)}`);
+	}
+}
+console.log('schema columns verified');
