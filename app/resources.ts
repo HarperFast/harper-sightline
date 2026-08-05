@@ -4,7 +4,7 @@ import { Resource, contentTypes } from 'harper';
 import './jobs.ts'; // starts the background processing loop on component load
 import { createShopifyIdentityAdapter } from './src/identity.ts';
 import { capabilitiesFor } from './src/capabilities.ts';
-import { ensureShopRecord } from './src/lifecycle.ts';
+import { ensureShopRecord, ensureCredential } from './src/lifecycle.ts';
 import { verifyWebhookHmac } from './src/webhookHmac.ts';
 import { acceptDelivery } from './src/webhookIngress.ts';
 import { stripPii } from './src/pii.ts';
@@ -373,6 +373,10 @@ export class AppHome extends Resource {
 				const secret = await readShopifySecret();
 				const principal = verifySessionToken(idToken, { apiKey: API_KEY, secret });
 				await ensureShopRecord(principal.shopId);
+				// One-time (per install, until expiry): exchange this real id_token for
+				// an offline Admin API token so reconciliation (#13) can run. Best-effort
+				// — a failure never blocks the embed (webhook capture works regardless).
+				await ensureCredential({ shop: principal.shopId, sessionToken: idToken, apiKey: API_KEY, secret });
 				const session = { shop: principal.shopId, user: principal.userId, capabilities: capabilitiesFor(principal.shopId) };
 				const json = JSON.stringify(session).replace(/</g, '\\u003c');
 				sessionScript = `<script>window.__SIGHTLINE_SESSION__=${json}</script>`;

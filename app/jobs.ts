@@ -1,4 +1,4 @@
-import { Deliveries, Events, Projections, Expectations, Findings } from './src/db.ts';
+import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
@@ -7,18 +7,21 @@ import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
+import { loadAccessToken } from './src/credentialStore.ts';
+import { fetchOrdersUpdatedSince } from './src/adminApi.ts';
+import { synthesizeEvents } from './src/reconcile.ts';
 
 // Rebuild an order's projection from ALL its normalized events (#12). Rebuilding
 // from the ledger (rather than an incremental read-modify-write) is order-safe
 // and far more robust to concurrent writers: every writer recomputes the full
 // state from the persisted events, so a lost write self-heals on the next event.
 // The reducer is commutative, so query order is irrelevant.
-async function updateOrderProjection(event: OperationalEvent): Promise<void> {
+async function updateOrderProjection(shopId: string, orderId: string): Promise<void> {
 	const events: OperationalEvent[] = [];
 	for await (const e of Events.search({
 		conditions: [
-			{ attribute: 'shopId', value: event.shopId },
-			{ attribute: 'resourceId', value: event.resourceId },
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'resourceId', value: orderId },
 		],
 		operator: 'and',
 	})) {
@@ -118,7 +121,7 @@ const deps: ProcessDeps = {
 			// Maintain the order projection (#12), then evaluate the detector (#14)
 			// so paid/fulfilled/cancelled transitions are reflected immediately.
 			if (isOrderLinked(event)) {
-				await updateOrderProjection(event);
+				await updateOrderProjection(event.shopId, event.resourceId as string);
 				await runDetectorForOrder(event.shopId, event.resourceId as string);
 			}
 		}
@@ -238,6 +241,76 @@ export function startDetectorLoop(): void {
 	setInterval(detectorTick, DETECTOR_INTERVAL_MS);
 }
 
+// Reconciliation (#13). Reads authoritative order state from the Admin GraphQL
+// API and fills gaps from missed webhooks; the first run per shop backfills the
+// retention window (install backfill). Synthesized reconciliation events feed the
+// SAME projection reducer + detector, so they merge idempotently with webhook
+// state (the reducer is monotonic — reconciliation never regresses a projection).
+// Requires the offline token (bootstrapped on app load); shops without one are
+// skipped. A durable checkpoint tracks the updated-at cursor per shop.
+const RECONCILE_INTERVAL_MS = 600_000; // 10 minutes
+const RECONCILE_INITIAL_DELAY_MS = 40_000;
+const RECONCILE_BACKFILL_MS = 7 * 24 * 60 * 60 * 1000; // first run: last 7 days
+let reconciling = false;
+
+export async function reconcileShop(shopId: string, now = Date.now()): Promise<{ orders: number } | null> {
+	const token = await loadAccessToken(shopId);
+	if (!token) return null; // no Admin credential yet — capture-only
+	const checkpointId = `reconcile:${shopId}`;
+	const checkpoint = await Checkpoints.get(checkpointId);
+	const sinceMs = checkpoint?.cursor ? Number(checkpoint.cursor) : now - RECONCILE_BACKFILL_MS;
+	let cursor: string | undefined;
+	let latest = sinceMs;
+	let orders = 0;
+	do {
+		const page = await fetchOrdersUpdatedSince(shopId, token, sinceMs, cursor);
+		for (const order of page.orders) {
+			for (const event of synthesizeEvents(shopId, order)) await Events.put(event);
+			await updateOrderProjection(shopId, order.orderId);
+			await runDetectorForOrder(shopId, order.orderId, now);
+			if (order.updatedAt && order.updatedAt > latest) latest = order.updatedAt;
+			orders += 1;
+		}
+		cursor = page.nextCursor;
+	} while (cursor);
+	await Checkpoints.put({ id: checkpointId, cursor: String(latest), updatedAt: now });
+	return { orders };
+}
+
+export async function runReconcileSweep(now = Date.now()): Promise<{ shops: number; orders: number }> {
+	let shops = 0;
+	let orders = 0;
+	for await (const s of Shops.search({ conditions: [{ attribute: 'status', value: 'active' }] })) {
+		const result = await reconcileShop((s as { shopId: string }).shopId, now);
+		if (result) {
+			shops += 1;
+			orders += result.orders;
+		}
+	}
+	return { shops, orders };
+}
+
+function reconcileTick(): void {
+	if (reconciling) return;
+	reconciling = true;
+	void runReconcileSweep()
+		.then((r) => {
+			if (r.orders) console.log(`[sightline:reconcile] ${r.shops} shop(s), ${r.orders} order(s) reconciled`);
+		})
+		.catch((e: unknown) => {
+			console.error('[sightline:reconcile] error', (e as Error).message);
+		})
+		.finally(() => {
+			reconciling = false;
+		});
+}
+
+export function startReconcileLoop(): void {
+	setTimeout(reconcileTick, RECONCILE_INITIAL_DELAY_MS);
+	setInterval(reconcileTick, RECONCILE_INTERVAL_MS);
+}
+
 startProcessingLoop();
 startPurgeLoop();
 startDetectorLoop();
+startReconcileLoop();
