@@ -1,7 +1,9 @@
-# Sightline — Phase 0 Threat Model (draft)
+# Sightline — Threat Model
 
-- Status: **Draft** (Phase 0 exit artifact). A full security review is issue #22; this draft precedes and informs the scaffold.
-- Date: 2026-08-04
+- Status: **Reviewed for launch** (issue #23 security & tenant-isolation review). Began as the Phase 0 exit draft; §8 below records the verification of every surface against the now-built code.
+- Date: 2026-08-04 (draft) · 2026-08-05 (review, issue #23)
+- Companion: [security review report](./security-review.md) — findings, dependency audit, secret scan, and encryption evidence.
+- Note on numbering: this document originally referenced *backlog-item* numbers; GitHub issue numbers differ (security review = **#23**, observability = **#22**, query API/isolation = **#15**).
 - Inputs: [ADR-001 auth](./adr/ADR-001-authentication.md), [ADR-002 worker/lease](./adr/ADR-002-worker-lease-scheduling.md), [ADR-003 retention/deletion](./adr/ADR-003-retention-deletion.md), [Shopify contract](./shopify-contract.md), [dev plan §12/§13](./free_mvp_development_plan.md)
 - Product posture: **read-only, off the synchronous path.** No Shopify writes, no billing, no downstream connectors in the MVP. Sightline being down must not affect merchant operations.
 
@@ -112,6 +114,25 @@ Sightline is one shared multi-tenant Harper deployment; **every** privacy and co
 4. Purge + redaction jobs on the worker/lease, with metrics and verify-by-re-query (§3.7).
 5. Secret-free logging + dependency audit/secret scan in CI (§3.8).
 6. Recurring `api_version` bump task (§5).
+
+## 8. Verification status (issue #23)
+
+Each Phase-0 **S** ("to build/verify") is now resolved against shipped code. Full detail in the [security review report](./security-review.md).
+
+| Surface (§) | Control now in place | Evidence |
+|---|---|---|
+| Install/OAuth/session (3.1) | JWT verify incl. alg/aud/iss/exp/nbf; offline-token envelope encryption; atomic rotation | `verifySessionToken.ts`, `identity.ts`, `rotateCredential.ts` + tests |
+| Iframe/browser (3.2) | `frame-ancestors` limited to the shop + Shopify Admin; session-token flow (no 3P cookies) | `resources.ts` `AppHome` CSP; `identity`/`verifySessionToken` |
+| Webhook ingress (3.3) | Constant-time HMAC verify-before-parse → 401 no-mutation; `(shopId,webhookId)` idempotency | `webhookHmac.ts`, `webhookIngress.ts` + tests |
+| Workers (3.4) | Idempotent, deterministically-keyed processing; durable inbox; dead-letter visibility | `processor.ts`, `jobs.ts` + `processor.test.ts` |
+| Admin API (3.5) | Read-only least scopes; durable cursor never past committed work; throttle-aware | `adminApi.ts`, `reconcile.ts` + `reconcile.test.ts` |
+| **Tenant data access (3.6)** | Every query derives `shopId` from the principal; **shop-namespaced keys**; field allowlists; no `@export` | **`test/crossTenant.test.ts`** (every endpoint attacked), `queries.ts`, `tenant.ts` |
+| Retention/deletion (3.7) | `DELETE`-by-age purge (data+index); idempotent redaction; purge-lag metrics | `retention.ts`, `redaction.ts` + tests; observability #22 |
+| Deployment/supply chain (3.8) | **0 npm runtime deps** (`npm audit`: 0 vulns); PII/secret-safe logging; fail-closed secret guards | `package.json`, `observe.ts` redaction, `secretsPolicy.ts` |
+
+**Issue #23 changes:**
+- **Cross-tenant integrity fix (P1):** `detectorKey` was `${detector}:${orderId}:${ruleVersion}` — *not* shop-namespaced, so two tenants sharing an order id would collide on one finding/expectation row (only latent because Shopify order ids are globally unique, but exploitable if the app secret leaks). Now `${detector}:${shopId}:${orderId}:${ruleVersion}`, matching every other table key. Regression-tested in `crossTenant.test.ts`.
+- **Fail-closed secret guards (P0 mitigation):** `SIGHTLINE_REQUIRE_SECRETS=1` makes the app refuse the dev-fallback app secret and the deterministic dev token key, so a prod deploy cannot silently run on known-weak material. See §3.8 and the review report for the two committed-dev-secret findings (owner action: rotate + set real secrets + enable the flag).
 
 ## 7. Backlog mapping
 

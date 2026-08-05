@@ -68,7 +68,7 @@ function fixtures() {
 	]);
 	const findings = new FakeTable('id', [
 		{
-			id: detectorKey('o2'),
+			id: detectorKey('s1', 'o2'),
 			shopId: 's1',
 			orderId: 'o2',
 			ruleVersion: 1,
@@ -76,11 +76,11 @@ function fixtures() {
 			detectedAt: NOW - 100,
 			evidenceEventIds: ['s1:eX'],
 		},
-		{ id: detectorKey('oZ'), shopId: 's2', orderId: 'oZ', ruleVersion: 1, status: 'unconfirmed', detectedAt: NOW - 50 },
+		{ id: detectorKey('s2', 'oZ'), shopId: 's2', orderId: 'oZ', ruleVersion: 1, status: 'unconfirmed', detectedAt: NOW - 50 },
 	]);
 	const expectations = new FakeTable('id', [
 		{
-			id: detectorKey('o2'),
+			id: detectorKey('s1', 'o2'),
 			shopId: 's1',
 			orderId: 'o2',
 			detector: 'fulfillment_confirmation',
@@ -173,8 +173,12 @@ test('listFindings is tenant-scoped and filterable by status', async () => {
 
 test('getFindingDetail joins expectation + projection, cross-tenant safe', async () => {
 	const { findings, expectations, projections } = fixtures();
-	assert.equal(await getFindingDetail(findings, expectations, projections, 's2', detectorKey('o2')), null, 's2 cannot read s1 finding');
-	const d = await getFindingDetail(findings, expectations, projections, 's1', detectorKey('o2'));
+	assert.equal(
+		await getFindingDetail(findings, expectations, projections, 's2', detectorKey('s1', 'o2')),
+		null,
+		's2 cannot read s1 finding',
+	);
+	const d = await getFindingDetail(findings, expectations, projections, 's1', detectorKey('s1', 'o2'));
 	assert.equal(d?.status, 'unconfirmed');
 	assert.match(String(d?.description), /no shopify fulfillment confirmation/i);
 	assert.equal((d?.expectation as Record<string, unknown>)?.deadline, NOW - 200);

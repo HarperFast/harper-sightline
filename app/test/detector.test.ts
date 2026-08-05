@@ -5,7 +5,7 @@ import type { Expectation, GapFinding, OrderProjection } from '../src/model.ts';
 
 const PAID = 1_000_000_000_000;
 const DUE = PAID + FULFILLMENT_DEADLINE_MS; // the moment the deadline is reached
-const KEY = detectorKey('o1');
+const KEY = detectorKey('s', 'o1');
 
 function projection(over: Partial<OrderProjection> = {}): OrderProjection {
 	return { id: 's:o1', shopId: 's', orderId: 'o1', paidAt: PAID, requiresFulfillment: true, ...over };
