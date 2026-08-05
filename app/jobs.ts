@@ -3,6 +3,7 @@ import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
 import { isOrderLinked, rebuildProjection } from './src/projection.ts';
+import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
@@ -88,8 +89,13 @@ const deps: ProcessDeps = {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
 			throw new PermanentNormalizeError(`delivery ${row.id} missing normalization metadata`);
 		}
-		// Lifecycle/compliance topics carry no operational payload — nothing to do.
-		if (!isOperationalTopic(row.topic)) return;
+		// Lifecycle topics: app/uninstalled invalidates the shop (idempotent);
+		// other non-operational topics (compliance) are handled by their own
+		// endpoint and produce no operational event here.
+		if (!isOperationalTopic(row.topic)) {
+			if (row.topic === 'app/uninstalled') await uninstallShop(row.shopId);
+			return;
+		}
 		// Operational topic with no stored payload: treat as TRANSIENT (retry),
 		// not permanent. The realistic cause is an infra glitch — e.g. the payload
 		// column momentarily missing after a redeploy — where retrying recovers
