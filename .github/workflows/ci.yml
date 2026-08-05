@@ -19,8 +19,47 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
-      - run: npm run format:check
-      - run: npm run lint:required
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - name: Format
+        run: npm run format:check
+      - name: Lint
+        run: npm run lint:required
+      - name: Typecheck
+        run: npm run typecheck
+      # Unit + integration + contract tests (contract.test.ts fails if the checked-in
+      # contracts/sightline-api-v1.json drifts from src/apiContract.ts).
+      - name: Test
+        run: npm test
+      - name: Coverage
+        run: npm run coverage
+      - name: Build (embedded SPA)
+        run: npm run build
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # Dependency audit — the app has zero runtime deps, so this must stay clean.
+      - name: Dependency audit
+        working-directory: app
+        run: npm audit --audit-level=high
+      # Secret scan: fail on any committed Shopify access token (shpat_*, which must
+      # NEVER be committed) or an app secret (shpss_*) outside the known, tracked dev
+      # fallback in src/readSecret.ts (rotation tracked in docs/security-review.md).
+      - name: Secret scan
+        run: |
+          set -euo pipefail
+          # Match the REAL token shapes (32 hex), not short test fixtures like 'shpat_x'.
+          if git grep -nE 'shpat_[0-9a-f]{32}' -- . ':(exclude).github/workflows/ci.yml'; then
+            echo "::error::Committed Shopify access token (shpat_) found."; exit 1
+          fi
+          leaked=$(git grep -lE 'shpss_[0-9a-f]{32}' -- . \
+            ':(exclude)app/src/readSecret.ts' \
+            ':(exclude)docs/security-review.md' \
+            ':(exclude).github/workflows/ci.yml' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::Shopify app secret (shpss_) found outside the tracked dev fallback:"; echo "$leaked"; exit 1
+          fi
+          echo "secret scan clean"
