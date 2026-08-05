@@ -25,6 +25,10 @@ import {
 	getPrivacy,
 	type QueryTable,
 } from './src/queries.ts';
+import { redactShop, redactOrders } from './src/redaction.ts';
+import { REDACT_TARGETS } from './src/ledgerTargets.ts';
+import { writeAudit } from './src/audit.ts';
+import { handleCompliance, type ComplianceDeps } from './src/compliance.ts';
 
 // db.ts types tables as Table<T>; the read layer needs only the search/get subset.
 const EventsQ = EventsTable as unknown as QueryTable;
@@ -208,6 +212,54 @@ export class PrivacyResource extends Resource {
 	async get() {
 		const shopId = (await identity.authenticate(this.getContext())).shopId;
 		return getPrivacy({ events: EventsQ, findings: FindingsQ, projections: ProjectionsQ }, shopId);
+	}
+}
+
+// Shopify mandatory privacy/compliance webhooks (#21). Separate URIs from the
+// operational events endpoint (shopify.app.toml [webhooks.privacy_compliance]).
+// Authenticated by HMAC over the RAW body — an invalid HMAC 401s and performs NO
+// mutation (verification precedes any dispatch). Retry-safe: redaction is
+// idempotent and audits are keyed by webhook id.
+export class ComplianceWebhook extends Resource {
+	static path = '/webhooks/shopify/compliance';
+	allowRead() {
+		return true;
+	}
+	allowCreate() {
+		return true;
+	}
+	allowUpdate() {
+		return true;
+	}
+	async post() {
+		const ctx = this.getContext();
+		const resolved = await ctx.data;
+		const rawBody = Buffer.isBuffer(resolved) ? resolved : Buffer.from(typeof resolved === 'string' ? resolved : '', 'utf8');
+
+		const secret = await readShopifySecret();
+		if (!verifyWebhookHmac(rawBody, ctx.headers.get('x-shopify-hmac-sha256'), secret)) {
+			throw httpError('invalid webhook hmac', 401);
+		}
+
+		const topic = ctx.headers.get('x-shopify-topic') ?? '';
+		const webhookId = ctx.headers.get('x-shopify-webhook-id') ?? '';
+		const shopId = ctx.headers.get('x-shopify-shop-domain') ?? '';
+		let payload: Record<string, unknown> = {};
+		try {
+			const parsed = JSON.parse(rawBody.toString('utf8'));
+			if (parsed && typeof parsed === 'object') payload = parsed as Record<string, unknown>;
+		} catch {
+			// tolerate an empty/invalid body — HMAC already proved authenticity
+		}
+
+		const deps: ComplianceDeps = {
+			redactShop: (sid) => redactShop(REDACT_TARGETS, sid),
+			redactOrders: (sid, ids) => redactOrders(REDACT_TARGETS, sid, ids),
+			// Keyed by webhook id → a Shopify retry upserts the same audit row.
+			audit: (action, sid, detail) => writeAudit(`${action}:${webhookId}`, sid, action, Date.now(), detail),
+		};
+		const result = await handleCompliance(topic, shopId, payload, deps);
+		return { ok: true, result };
 	}
 }
 
