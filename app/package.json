@@ -13,6 +13,7 @@
 		"format:check": "prettier --check .",
 		"deploy": "node scripts/deploy.mjs",
 		"smoke": "node scripts/smoke.mjs",
+		"loadtest": "node scripts/loadtest.mjs",
 		"contract:gen": "node scripts/gen-contract.mjs"
 	},
 	"devDependencies": {
