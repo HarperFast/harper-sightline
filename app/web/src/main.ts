@@ -41,16 +41,41 @@ function badge(text: string, tone = 'muted'): string {
 }
 
 function loading(): void {
-	app().innerHTML = `<p class="muted">Loading…</p>`;
+	app().innerHTML = `<p class="muted" role="status">Loading…</p>`;
+}
+// Auth-expired (401) is distinct from a recoverable error: the merchant needs to
+// reopen the app so Shopify re-issues a session token (screen spec: every screen
+// supports an authorization-expired state with a reauthorization action).
+function authExpiredView(): void {
+	app().innerHTML = `<div class="notice notice-warn" role="alert"><strong>Session expired.</strong> Your Shopify session timed out. Reload Sightline in Shopify Admin to reconnect — recording continued in the background the whole time.</div>`;
 }
 function errorView(err: unknown): void {
-	app().innerHTML = `<div class="notice notice-warn"><strong>Couldn’t load.</strong> ${esc((err as Error).message)}</div>`;
+	app().innerHTML = `<div class="notice notice-warn" role="alert"><strong>Couldn’t load.</strong> ${esc((err as Error).message)} <button id="retry" type="button">Retry</button></div>`;
+	document.getElementById('retry')?.addEventListener('click', () => void route());
+}
+
+// Make whole-row links keyboard-operable (screen spec: filters/navigation are
+// keyboard accessible). Rows carry role="link" + tabindex; Enter/Space activate.
+function bindRowLinks(): void {
+	for (const row of document.querySelectorAll<HTMLElement>('.rowlink')) {
+		const go = (): void => {
+			location.hash = row.dataset.href ?? '#/';
+		};
+		row.addEventListener('click', go);
+		row.addEventListener('keydown', (ev) => {
+			if (ev.key === 'Enter' || ev.key === ' ') {
+				ev.preventDefault();
+				go();
+			}
+		});
+	}
 }
 
 // ── screens ──────────────────────────────────────────────────────────────────
 async function overview(): Promise<void> {
 	loading();
-	const [s, f] = await Promise.all([apiSummary(), apiFlows()]);
+	const [s, f, unconfirmed] = await Promise.all([apiSummary(), apiFlows(), apiFindings({ status: 'unconfirmed' })]);
+	const now = Date.now();
 	const health = s.recorder.healthy
 		? `<div class="notice notice-ok"><strong>Recorder healthy.</strong> Capturing order, fulfillment, inventory and refund activity.</div>`
 		: `<div class="notice notice-warn"><strong>Recorder needs attention:</strong> ${s.recorder.deadLetteredDeliveries} deliver(ies) could not be processed. Gap results may be incomplete.</div>`;
@@ -71,7 +96,27 @@ async function overview(): Promise<void> {
 		<div class="lanes">
 			${lane('Paid', f.lanes.paid)}${lane('Fulfilled', f.lanes.fulfilled)}${lane('Awaiting confirmation', f.lanes.awaitingConfirmation)}${lane('Cancelled', f.lanes.cancelled)}${lane('Refunded', f.lanes.refunded)}
 		</div>
+		${needsAttention(unconfirmed.items, now)}
 		<p class="muted">${s.events.total} normalized events recorded in the window.</p>`;
+	bindRowLinks();
+}
+
+// The overview's "needs attention" list: recent orders with no observed Shopify
+// fulfillment confirmation. Copy is non-accusatory (screen spec §2) — it never
+// says a warehouse/carrier failed, only that Shopify has not shown confirmation.
+function needsAttention(items: FindingItem[], now: number): string {
+	if (!items.length) return `<h2>Needs attention</h2><p class="muted">Nothing is awaiting confirmation.</p>`;
+	const rows = items
+		.slice(0, 5)
+		.map(
+			(
+				x,
+			) => `<tr class="rowlink" tabindex="0" role="link" aria-label="Order ${esc(x.orderId)}, open finding detail" data-href="#/findings/${encodeURIComponent(x.id)}">
+			<td>${esc(x.orderId)}</td><td>No Shopify fulfillment confirmation observed</td><td>${elapsed(x.detectedAt, now)}</td></tr>`,
+		)
+		.join('');
+	return `<h2>Needs attention</h2>
+		<table class="grid"><thead><tr><th>Order</th><th>Observation</th><th>Open for</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 const DOMAINS = ['', 'order', 'fulfillment', 'inventory', 'refund'];
@@ -91,22 +136,24 @@ async function eventsList(params: Record<string, string>): Promise<void> {
 function renderEvents(params: Record<string, string>): void {
 	const rows = eventItems
 		.map(
-			(e) => `<tr class="rowlink" data-href="#/events/${encodeURIComponent(e.eventId)}">
+			(
+				e,
+			) => `<tr class="rowlink" tabindex="0" role="link" aria-label="${esc(e.topic ?? e.domain)} ${esc(e.resourceId ?? '')}, open event detail" data-href="#/events/${encodeURIComponent(e.eventId)}">
 			<td>${fmt(e.occurredAt)}</td><td>${esc(e.domain)}</td><td>${esc(e.topic ?? '')}</td>
 			<td>${esc(e.resourceId ?? '')}</td><td>${esc(e.sku ?? '')}${e.quantity !== undefined ? ` ×${e.quantity}` : ''}</td>
-			<td>${e.state ? badge(e.state) : ''}</td></tr>`,
+			<td>${e.state ? badge(e.state) : ''}</td><td>${esc(e.source)}</td></tr>`,
 		)
 		.join('');
 	const sel = (v: string) => DOMAINS.map((d) => `<option value="${d}"${d === v ? ' selected' : ''}>${d || 'Any domain'}</option>`).join('');
 	app().innerHTML = `
-		<form id="eventFilters" class="filters">
-			<select name="domain">${sel(params.domain ?? '')}</select>
-			<input name="resourceId" placeholder="Order / resource ID" value="${esc(params.resourceId ?? '')}" />
-			<input name="sku" placeholder="SKU" value="${esc(params.sku ?? '')}" />
+		<form id="eventFilters" class="filters" role="search">
+			<select name="domain" aria-label="Filter by domain">${sel(params.domain ?? '')}</select>
+			<input name="resourceId" placeholder="Order / resource ID" aria-label="Order or resource ID" value="${esc(params.resourceId ?? '')}" />
+			<input name="sku" placeholder="SKU" aria-label="SKU" value="${esc(params.sku ?? '')}" />
 			<button type="submit">Search</button>
 		</form>
-		<table class="grid"><thead><tr><th>Time</th><th>Domain</th><th>Topic</th><th>Resource</th><th>SKU</th><th>State</th></tr></thead>
-		<tbody>${rows || `<tr><td colspan="6" class="muted">No events match.</td></tr>`}</tbody></table>
+		<table class="grid"><thead><tr><th>Time</th><th>Domain</th><th>Topic</th><th>Resource</th><th>SKU</th><th>State</th><th>Source</th></tr></thead>
+		<tbody>${rows || `<tr><td colspan="7" class="muted">No events match.</td></tr>`}</tbody></table>
 		${eventCursor ? `<button id="loadMore">Load more</button>` : ''}`;
 	document.getElementById('eventFilters')?.addEventListener('submit', (ev) => {
 		ev.preventDefault();
@@ -124,11 +171,7 @@ function renderEvents(params: Record<string, string>): void {
 		eventCursor = page.nextCursor;
 		renderEvents(params);
 	});
-	for (const row of document.querySelectorAll<HTMLElement>('.rowlink')) {
-		row.addEventListener('click', () => {
-			location.hash = row.dataset.href ?? '#/events';
-		});
-	}
+	bindRowLinks();
 }
 
 async function eventDetail(id: string): Promise<void> {
@@ -163,7 +206,9 @@ async function findingsList(params: Record<string, string>): Promise<void> {
 	const now = Date.now();
 	const rows = page.items
 		.map(
-			(x: FindingItem) => `<tr class="rowlink" data-href="#/findings/${encodeURIComponent(x.id)}">
+			(
+				x: FindingItem,
+			) => `<tr class="rowlink" tabindex="0" role="link" aria-label="Order ${esc(x.orderId)}, ${esc(x.status)}, open finding detail" data-href="#/findings/${encodeURIComponent(x.id)}">
 			<td>${esc(x.orderId)}</td><td>${badge(x.status)}</td><td>${fmt(x.detectedAt)}</td>
 			<td>${x.status === 'unconfirmed' ? elapsed(x.detectedAt, now) : '—'}</td></tr>`,
 		)
@@ -180,11 +225,7 @@ async function findingsList(params: Record<string, string>): Promise<void> {
 		const v = String(new FormData(ev.target as HTMLFormElement).get('status') ?? '');
 		location.hash = `#/findings${v ? `?status=${v}` : ''}`;
 	});
-	for (const row of document.querySelectorAll<HTMLElement>('.rowlink')) {
-		row.addEventListener('click', () => {
-			location.hash = row.dataset.href ?? '#/findings';
-		});
-	}
+	bindRowLinks();
 }
 
 async function findingDetail(id: string): Promise<void> {
@@ -194,10 +235,25 @@ async function findingDetail(id: string): Promise<void> {
 	const evidence = (f.evidenceEventIds ?? []).length
 		? (f.evidenceEventIds ?? []).map((e) => `<a href="#/events/${encodeURIComponent(e)}">${esc(e.split(':').pop())}</a>`).join(', ')
 		: '<span class="muted">none</span>';
+	// "Why this qualified" (screen spec §4): the eligibility rule, shown from the
+	// projection/expectation already in the payload. Only meaningful while the
+	// order is unconfirmed — resolved/suppressed findings explain themselves via
+	// the (retained) description.
+	const p = f.projection;
+	const why =
+		f.status === 'unconfirmed' && p
+			? `<h2>Why this qualified</h2><ul>
+				${p.requiresFulfillment ? '<li>Contains fulfillment-eligible items</li>' : ''}
+				${p.paidAt !== undefined ? '<li>Payment was observed</li>' : ''}
+				${p.cancelledAt === undefined && p.fullyRefundedAt === undefined ? '<li>Not canceled or fully refunded</li>' : ''}
+				<li>The confirmation window elapsed without an observed fulfillment</li>
+			</ul>`
+			: '';
 	app().innerHTML = `
 		<a href="#/findings" class="back">← Findings</a>
 		<h2>Order ${esc(f.orderId)} ${badge(f.status)}</h2>
 		<div class="notice">${esc(f.description)}</div>
+		${why}
 		<dl class="fields">
 			${field('Paid', fmt(f.projection?.paidAt))}
 			${field('Expected confirmation by', fmt(f.expectation?.deadline))}
@@ -260,7 +316,10 @@ async function route(): Promise<void> {
 		else if (path === '/privacy') await privacy();
 		else app().innerHTML = `<p class="muted">Not found.</p>`;
 	} catch (err) {
-		errorView(err);
+		// api.ts prefixes the thrown message with the HTTP status; a 401 means the
+		// short-lived session token expired → show the reauthorization state.
+		if (String((err as Error).message).startsWith('401')) authExpiredView();
+		else errorView(err);
 	}
 }
 
