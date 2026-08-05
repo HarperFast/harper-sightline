@@ -38,6 +38,7 @@ const ExpectationsQ = ExpectationsTable as unknown as QueryTable;
 const DeliveriesQ = DeliveriesTable as unknown as QueryTable;
 import { readShopifySecret } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
+import { log, metrics, M } from './src/observe.ts';
 
 // Preserve the RAW request body so webhook HMAC can be verified before parsing
 // (Harper otherwise parses application/json and consumes the bytes). We keep the
@@ -280,6 +281,8 @@ export class ShopifyWebhook extends Resource {
 	}
 	async post() {
 		const ctx = this.getContext();
+		const startedAt = Date.now();
+		metrics.inc(M.webhookReceived);
 		// With the raw content-type handler above, ctx.data resolves to the raw
 		// Buffer of the request body (not parsed).
 		const resolved = await ctx.data;
@@ -287,13 +290,17 @@ export class ShopifyWebhook extends Resource {
 
 		const secret = await readShopifySecret();
 		if (!verifyWebhookHmac(rawBody, ctx.headers.get('x-shopify-hmac-sha256'), secret)) {
+			metrics.inc(M.webhookHmacFail);
 			throw httpError('invalid webhook hmac', 401);
 		}
 
 		const shopId = ctx.headers.get('x-shopify-shop-domain') ?? '';
 		const webhookId = ctx.headers.get('x-shopify-webhook-id') ?? '';
 		const topic = ctx.headers.get('x-shopify-topic') ?? '';
-		if (!shopId || !webhookId) throw httpError('missing webhook headers', 400);
+		if (!shopId || !webhookId) {
+			metrics.inc(M.webhookBadRequest);
+			throw httpError('missing webhook headers', 400);
+		}
 
 		// Persist the PII-stripped body so the worker can normalize it later
 		// (ADR-002: accept fast, process later). HMAC is already verified over the
@@ -306,6 +313,10 @@ export class ShopifyWebhook extends Resource {
 		}
 
 		const result = await acceptDelivery({ shopId, webhookId, topic, payload });
+		metrics.inc(result === 'duplicate' ? M.webhookDuplicate : M.webhookAccepted);
+		metrics.observeMs(M.webhookAckMs, Date.now() - startedAt);
+		// cid = webhookId ties this ack to the worker's later processing lines.
+		log('trace', 'webhook.accepted', { cid: webhookId, topic, result });
 		return { ok: true, result };
 	}
 }

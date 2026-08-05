@@ -1,4 +1,4 @@
-import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops } from './src/db.ts';
+import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops, Credentials } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
@@ -10,6 +10,9 @@ import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { loadAccessToken } from './src/credentialStore.ts';
 import { fetchOrdersUpdatedSince } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
+import { log, metrics, M } from './src/observe.ts';
+import { computeOpsHealth } from './src/opsHealth.ts';
+import type { QueryTable } from './src/queries.ts';
 
 // Rebuild an order's projection from ALL its normalized events (#12). Rebuilding
 // from the ledger (rather than an incremental read-modify-write) is order-safe
@@ -147,12 +150,15 @@ export function startProcessingLoop(): void {
 		running = true;
 		void processDeliveries()
 			.then((r) => {
-				if (r.processed || r.failed) {
-					console.log(`[sightline:process] processed=${r.processed} failed=${r.failed} dead=${r.deadLettered}`);
-				}
+				metrics.inc(M.processProcessed, r.processed);
+				metrics.inc(M.processFailed, r.failed);
+				metrics.inc(M.processDeadLettered, r.deadLettered);
+				if (r.processed || r.failed)
+					log('trace', 'process.tick', { processed: r.processed, failed: r.failed, deadLettered: r.deadLettered });
 			})
 			.catch((e: unknown) => {
-				console.error('[sightline:process] error', (e as Error).message);
+				metrics.inc(M.processError);
+				log('error', 'process.error', { message: (e as Error).message });
 			})
 			.finally(() => {
 				running = false;
@@ -177,18 +183,24 @@ function purgeTick(): void {
 	purging = true;
 	void runPurge()
 		.then((r) => {
+			metrics.inc(M.purgeDeleted, r.deleted);
+			if (r.failures.length) metrics.inc(M.purgeFailure, r.failures.length);
 			if (r.deleted) {
-				const per = Object.entries(r.byTable)
-					.filter(([, x]) => x.deleted)
-					.map(([t, x]) => `${t}=${x.deleted}`)
-					.join(' ');
-				console.log(`[sightline:purge] deleted ${r.deleted} expired rows (${per})`);
+				const perTable = Object.fromEntries(
+					Object.entries(r.byTable)
+						.filter(([, x]) => x.deleted)
+						.map(([t, x]) => [t, x.deleted]),
+				);
+				log('trace', 'purge.tick', { deleted: r.deleted, perTable });
 			}
-			if (r.residue) console.error(`[sightline:purge] purge-behind: ${r.residue} expired rows still present after run`);
-			if (r.failures.length) console.error(`[sightline:purge] failures: ${r.failures.join('; ')}`);
+			// Residue = expired rows still present after a run (purge lag). Alertable
+			// via this warn line; the ops.snapshot also reflects it via backlog/age.
+			if (r.residue) log('warn', 'purge.residue', { residue: r.residue });
+			if (r.failures.length) log('warn', 'purge.failures', { count: r.failures.length, failures: r.failures });
 		})
 		.catch((e: unknown) => {
-			console.error('[sightline:purge] error', (e as Error).message);
+			metrics.inc(M.purgeError);
+			log('error', 'purge.error', { message: (e as Error).message });
 		})
 		.finally(() => {
 			purging = false;
@@ -227,10 +239,12 @@ function detectorTick(): void {
 	detecting = true;
 	void runDetectorSweep()
 		.then((due) => {
-			if (due) console.log(`[sightline:detect] evaluated ${due} due expectation(s)`);
+			metrics.inc(M.detectEvaluated, due);
+			if (due) log('trace', 'detect.tick', { evaluated: due });
 		})
 		.catch((e: unknown) => {
-			console.error('[sightline:detect] error', (e as Error).message);
+			metrics.inc(M.detectError);
+			log('error', 'detect.error', { message: (e as Error).message });
 		})
 		.finally(() => {
 			detecting = false;
@@ -293,12 +307,17 @@ export async function runReconcileSweep(now = Date.now()): Promise<{ shops: numb
 function reconcileTick(): void {
 	if (reconciling) return;
 	reconciling = true;
+	const startedAt = Date.now();
 	void runReconcileSweep()
 		.then((r) => {
-			if (r.orders) console.log(`[sightline:reconcile] ${r.shops} shop(s), ${r.orders} order(s) reconciled`);
+			metrics.observeMs(M.reconcileMs, Date.now() - startedAt);
+			metrics.inc(M.reconcileShops, r.shops);
+			metrics.inc(M.reconcileOrders, r.orders);
+			if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
 		})
 		.catch((e: unknown) => {
-			console.error('[sightline:reconcile] error', (e as Error).message);
+			metrics.inc(M.reconcileError);
+			log('error', 'reconcile.error', { message: (e as Error).message });
 		})
 		.finally(() => {
 			reconciling = false;
@@ -310,7 +329,46 @@ export function startReconcileLoop(): void {
 	setInterval(reconcileTick, RECONCILE_INTERVAL_MS);
 }
 
+// Observability heartbeat (#22). Periodically derives the aggregate ops-health
+// (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
+// and emits it — with the cumulative metrics tally — as a single structured line.
+// The staging log pipeline turns these snapshots into dashboards/alerts (#25).
+// A warn line when unhealthy so an operator alert can key off it directly.
+const OPS_SNAPSHOT_INTERVAL_MS = 60_000; // once a minute
+const OPS_SNAPSHOT_INITIAL_DELAY_MS = 20_000;
+let snapshotting = false;
+
+export async function runOpsSnapshot(now = Date.now()): Promise<void> {
+	const health = await computeOpsHealth(
+		{
+			deliveries: Deliveries as unknown as QueryTable,
+			checkpoints: Checkpoints as unknown as QueryTable,
+			credentials: Credentials as unknown as QueryTable,
+		},
+		now,
+	);
+	log(health.healthy ? 'info' : 'warn', 'ops.snapshot', { health, metrics: metrics.snapshot() });
+}
+
+function opsSnapshotTick(): void {
+	if (snapshotting) return;
+	snapshotting = true;
+	void runOpsSnapshot()
+		.catch((e: unknown) => {
+			log('error', 'ops.snapshot.error', { message: (e as Error).message });
+		})
+		.finally(() => {
+			snapshotting = false;
+		});
+}
+
+export function startOpsSnapshotLoop(): void {
+	setTimeout(opsSnapshotTick, OPS_SNAPSHOT_INITIAL_DELAY_MS);
+	setInterval(opsSnapshotTick, OPS_SNAPSHOT_INTERVAL_MS);
+}
+
 startProcessingLoop();
 startPurgeLoop();
 startDetectorLoop();
 startReconcileLoop();
+startOpsSnapshotLoop();

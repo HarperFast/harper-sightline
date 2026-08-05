@@ -35,6 +35,32 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
 `format:write` (prettier), `lint:required` (oxlint), `typecheck` (tsc), `test`
 (node --test). See /docs and the ADRs for the decisions this app must honor.
 
+## Observability (#22)
+
+`src/observe.ts` is the single observability primitive: a PII-safe structured
+logger and an in-process metrics registry. There is **no external metrics
+backend** in the MVP — metrics are a cumulative in-process tally emitted as
+`ops.snapshot` log lines (see below); the staging log pipeline turns them into
+dashboards/alerts under #25.
+
+- **Logging**: `log(level, event, fields)` writes one line
+  `[sightline] {"level","event",...}`. Every field passes through
+  `redactFields`, which masks sensitive keys (token/HMAC/secret/payload/PII) and
+  caps long strings, so a careless caller cannot leak a token or raw payload.
+  `trace` is the default level; top-level handlers log an error once.
+  The sink is swappable (`setLogSink`) for tests / a Harper-logger adapter.
+- **Metrics**: the `metrics` registry (`inc`, `observeMs`, `snapshot`) keyed by
+  the `M` name constants. **No merchant-identifying labels** — a metric is a bare
+  name, never keyed by shop (plan §13).
+- **Ops health**: `src/opsHealth.ts` `computeOpsHealth` derives an aggregate,
+  merchant-label-free health view from tables (backlog age/count, dead letters,
+  reconciliation staleness, reauth). `jobs.ts` runs it once a minute as the
+  `ops.snapshot` heartbeat (emitted at `warn` when unhealthy so alerts can key
+  off it). This is distinct from the per-shop merchant-facing `getSummary`.
+- **Runbooks**: `/docs/runbooks/` — one per alert condition, with an
+  alert→runbook→owner map in its README. Alert conditions name the exact
+  metric/`ops.snapshot` field to watch.
+
 ## Known environment note
 
 Harper native secrets custody can desync on the Fabric instance ("custody not
