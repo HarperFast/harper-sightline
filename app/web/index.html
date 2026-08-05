@@ -3,38 +3,252 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<!-- App Bridge must be the first script; API key via meta tag.
-		     client_id is PUBLIC (also visible in the page), so it is inlined here. -->
+		<!-- Capture the native fetch BEFORE App Bridge patches it. App Bridge auto-
+		     injects `Authorization: Bearer` on same-origin fetches, which Harper
+		     401s before our resource runs; the data client uses this pristine
+		     reference with our own X-Shopify-Session-Token instead. -->
+		<script>
+			window.__sightlineFetch = window.fetch;
+		</script>
 		<meta name="shopify-api-key" content="e446bda5edb3ee3bae6e0ba280ef8b12" />
 		<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
-		<!-- Polaris web components (s-* elements). -->
-		<script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
 		<title>Sightline</title>
+		<style>
+			:root {
+				color-scheme: light dark;
+				--bg: #fff;
+				--fg: #1a1a1a;
+				--muted: #6b7177;
+				--border: #e1e3e5;
+				--card: #f6f6f7;
+				--ok: #29845a;
+				--ok-bg: #ebf7f0;
+				--warn: #8a6116;
+				--warn-bg: #fdf6e3;
+				--accent: #2c6ecb;
+			}
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--bg: #1a1c1d;
+					--fg: #e3e5e7;
+					--muted: #9ba1a6;
+					--border: #2e3133;
+					--card: #232628;
+					--ok-bg: #16281e;
+					--warn-bg: #2a2410;
+				}
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				margin: 0;
+				font:
+					14px/1.5 -apple-system,
+					BlinkMacSystemFont,
+					'Segoe UI',
+					Roboto,
+					sans-serif;
+				color: var(--fg);
+				background: var(--bg);
+			}
+			header {
+				padding: 16px 20px 0;
+			}
+			header h1 {
+				font-size: 18px;
+				margin: 0;
+			}
+			header .sub {
+				color: var(--muted);
+				font-size: 13px;
+			}
+			nav {
+				display: flex;
+				gap: 4px;
+				padding: 12px 20px 0;
+				border-bottom: 1px solid var(--border);
+				flex-wrap: wrap;
+			}
+			nav a {
+				padding: 8px 14px;
+				text-decoration: none;
+				color: var(--muted);
+				border-bottom: 2px solid transparent;
+				font-weight: 500;
+			}
+			nav a[data-active] {
+				color: var(--fg);
+				border-bottom-color: var(--accent);
+			}
+			main {
+				padding: 20px;
+				max-width: 900px;
+			}
+			h2 {
+				font-size: 15px;
+				margin: 24px 0 8px;
+			}
+			.muted {
+				color: var(--muted);
+			}
+			.notice {
+				border: 1px solid var(--border);
+				border-radius: 8px;
+				padding: 12px 14px;
+				margin: 0 0 12px;
+				background: var(--card);
+			}
+			.notice-ok {
+				background: var(--ok-bg);
+				border-color: var(--ok);
+			}
+			.notice-warn {
+				background: var(--warn-bg);
+				border-color: var(--warn);
+			}
+			.stats {
+				display: flex;
+				gap: 12px;
+				flex-wrap: wrap;
+			}
+			.stat {
+				background: var(--card);
+				border: 1px solid var(--border);
+				border-radius: 8px;
+				padding: 12px 16px;
+				min-width: 110px;
+			}
+			.stat-value {
+				font-size: 24px;
+				font-weight: 600;
+			}
+			.stat-label {
+				color: var(--muted);
+				font-size: 12px;
+			}
+			.lanes {
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+				max-width: 360px;
+			}
+			.lane {
+				display: flex;
+				justify-content: space-between;
+				padding: 8px 12px;
+				background: var(--card);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+			}
+			.lane-count {
+				font-variant-numeric: tabular-nums;
+				font-weight: 600;
+			}
+			table.grid {
+				width: 100%;
+				border-collapse: collapse;
+				margin-top: 8px;
+			}
+			.grid th,
+			.grid td {
+				text-align: left;
+				padding: 8px 10px;
+				border-bottom: 1px solid var(--border);
+				font-size: 13px;
+			}
+			.grid th {
+				color: var(--muted);
+				font-weight: 600;
+			}
+			.rowlink {
+				cursor: pointer;
+			}
+			.rowlink:hover {
+				background: var(--card);
+			}
+			.badge {
+				display: inline-block;
+				padding: 1px 8px;
+				border-radius: 10px;
+				font-size: 12px;
+				font-weight: 500;
+			}
+			.badge-ok {
+				background: var(--ok-bg);
+				color: var(--ok);
+			}
+			.badge-warn {
+				background: var(--warn-bg);
+				color: var(--warn);
+			}
+			.badge-muted {
+				background: var(--card);
+				color: var(--muted);
+			}
+			.filters {
+				display: flex;
+				gap: 8px;
+				flex-wrap: wrap;
+				margin-bottom: 8px;
+			}
+			.filters input,
+			.filters select,
+			button {
+				padding: 7px 10px;
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				background: var(--bg);
+				color: var(--fg);
+				font: inherit;
+			}
+			button {
+				cursor: pointer;
+				background: var(--accent);
+				color: #fff;
+				border-color: var(--accent);
+				margin-top: 8px;
+			}
+			.filters button {
+				margin-top: 0;
+			}
+			dl.fields {
+				display: grid;
+				grid-template-columns: 220px 1fr;
+				gap: 4px 16px;
+				margin: 8px 0;
+			}
+			.field {
+				display: contents;
+			}
+			.field dt {
+				color: var(--muted);
+			}
+			.field dd {
+				margin: 0;
+			}
+			.back {
+				color: var(--accent);
+				text-decoration: none;
+				font-size: 13px;
+			}
+			a {
+				color: var(--accent);
+			}
+		</style>
 	</head>
 	<body>
-		<s-app-nav>
-			<s-link href="/" rel="home">Overview</s-link>
-			<s-link href="/events">Events</s-link>
-			<s-link href="/findings">Findings</s-link>
-			<s-link href="/privacy">Privacy</s-link>
-		</s-app-nav>
-
-		<s-page heading="Sightline">
-			<s-button slot="primary-action" id="refresh">Refresh</s-button>
-
-			<s-section>
-				<s-heading>Recording</s-heading>
-				<s-text id="status">Connecting…</s-text>
-			</s-section>
-
-			<s-section>
-				<s-heading>What Sightline records</s-heading>
-				<s-text>
-					Seven days of order, fulfillment, inventory, and refund activity. Read-only — Sightline never sits in your fulfillment path.
-				</s-text>
-			</s-section>
-		</s-page>
-
+		<header>
+			<h1>Sightline</h1>
+			<div class="sub" id="status">Connecting…</div>
+		</header>
+		<nav>
+			<a href="#/" data-nav="/">Overview</a>
+			<a href="#/events" data-nav="/events">Events</a>
+			<a href="#/findings" data-nav="/findings">Findings</a>
+			<a href="#/privacy" data-nav="/privacy">Privacy</a>
+		</nav>
+		<main id="app"><p class="muted">Loading…</p></main>
 		<script type="module" src="/src/main.ts"></script>
 	</body>
 </html>
