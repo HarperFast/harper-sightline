@@ -39,9 +39,12 @@ export const DEFAULT_RULE: DetectorRule = {
 	deadlineMs: FULFILLMENT_DEADLINE_MS,
 };
 
-// Deterministic key shared by an order's expectation and its finding.
-export function detectorKey(orderId: string, rule: DetectorRule = DEFAULT_RULE): string {
-	return `${rule.detector}:${orderId}:${rule.ruleVersion}`;
+// Deterministic key shared by an order's expectation and its finding. Namespaced
+// by shopId (like every other table key: WebhookDelivery, OrderProjection) so two
+// tenants that ever share an order id cannot collide on one finding/expectation
+// row — a tenant-isolation invariant, not merely a convenience (#23).
+export function detectorKey(shopId: string, orderId: string, rule: DetectorRule = DEFAULT_RULE): string {
+	return `${rule.detector}:${shopId}:${orderId}:${rule.ruleVersion}`;
 }
 
 export interface EvaluateInput {
@@ -79,7 +82,7 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 	else if (input.now >= deadline) state = 'expired';
 	else state = 'pending';
 
-	const id = detectorKey(p.orderId, rule);
+	const id = detectorKey(p.shopId, p.orderId, rule);
 	const terminal = state === 'resolved' || state === 'suppressed';
 	const expectation: Expectation = {
 		id,

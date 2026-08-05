@@ -138,7 +138,7 @@ export async function getEventDetail(
 	}
 	const orderId = row.resourceId;
 	const affectedProjection = orderId ? Boolean(await projections.get(`${shopId}:${orderId}`)) : false;
-	const affectedFinding = orderId ? Boolean(await findings.get(detectorKey(orderId))) : false;
+	const affectedFinding = orderId ? Boolean(await findings.get(detectorKey(shopId, orderId))) : false;
 
 	return { ...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS), relatedEventIds, affectedProjection, affectedFinding };
 }

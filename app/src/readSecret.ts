@@ -1,3 +1,5 @@
+import { requireRealSecrets, InsecureSecretError } from './secretsPolicy.ts';
+
 // TEMP DEV UNBLOCK — REMOVE BEFORE PROD. The Fabric instance's secrets custody
 // is broken (custody_fingerprint null cluster-wide), so no Harper-secrets path
 // works. This dev-only hardcoded fallback keeps the app-secret edges testable.
@@ -10,7 +12,8 @@ const DEV_FALLBACK_SECRET = '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';
 // Read the Shopify app secret from Harper native secrets (encrypted, never
 // logged/replicated as plaintext — ADR-001). Dynamic import + optional access
 // so a differing secrets API can never break module load / route registration.
-// Falls back to env, then the temporary dev constant above.
+// Falls back to env, then the temporary dev constant above. With
+// SIGHTLINE_REQUIRE_SECRETS=1 the dev-constant fallback is refused (fails closed).
 export async function readShopifySecret(): Promise<string> {
 	try {
 		const mod = (await import('harper')) as { secrets?: Record<string, string | undefined> };
@@ -19,5 +22,8 @@ export async function readShopifySecret(): Promise<string> {
 	} catch {
 		// fall through
 	}
-	return process.env.SHOPIFY_API_SECRET ?? DEV_FALLBACK_SECRET;
+	const fromEnv = process.env.SHOPIFY_API_SECRET;
+	if (fromEnv) return fromEnv;
+	if (requireRealSecrets()) throw new InsecureSecretError('Shopify app secret');
+	return DEV_FALLBACK_SECRET;
 }

@@ -40,7 +40,7 @@ async function updateOrderProjection(shopId: string, orderId: string): Promise<v
 async function runDetectorForOrder(shopId: string, orderId: string, now = Date.now()): Promise<void> {
 	const projection = await Projections.get(`${shopId}:${orderId}`);
 	if (!projection) return;
-	const id = detectorKey(orderId);
+	const id = detectorKey(shopId, orderId);
 	const [expectation, finding] = await Promise.all([Expectations.get(id), Findings.get(id)]);
 	const evidenceEventIds: string[] = [];
 	for await (const e of Events.search({
