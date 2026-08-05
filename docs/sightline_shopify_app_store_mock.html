@@ -3,7 +3,27 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sightline by Harper | Shopify App Store</title>
+  <title>[CONCEPT — NOT the shipped free MVP] Sightline by Harper | Shopify App Store</title>
+  <!--
+    ⚠️ PRODUCT-DIRECTION CONCEPT — NOT THE SHIPPED FREE PRODUCT (issue #16).
+    This page depicts the full paid/future vision (replay, recovery queues,
+    destination health, "failed flow" claims) plus illustrative reviews and a
+    5.0 rating. NONE of that ships in the free "Record" MVP. The implemented
+    free product is a read-only recorder; see docs/free_mvp_screen_spec.md and
+    docs/ux-review.md, and the actual UI in app/web/. Do not use this file as
+    acceptance criteria or as the App Store listing as-is: before publishing,
+    the listing must remove replay/recovery/"failed"/"1-click" claims and the
+    fictional reviews/rating, and label any paid-tier concept as future/paid
+    (see the App Store readiness issue #26).
+  -->
+  <style>
+    #concept-banner{position:sticky;top:0;z-index:9999;background:#7a1f1f;color:#fff;
+      font:600 14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      padding:12px 18px;border-bottom:3px solid #ffce00;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+    #concept-banner strong{color:#ffce00}
+    #concept-banner ul{margin:6px 0 0;padding-left:20px;font-weight:400}
+    #concept-banner a{color:#ffce00}
+  </style>
   <style>
     :root{
       --bg:#f6f6f3;
@@ -47,6 +67,17 @@
   </style>
 </head>
 <body>
+  <div id="concept-banner" role="alert">
+    ⚠️ <strong>PRODUCT-DIRECTION CONCEPT — not the shipped free MVP.</strong>
+    This page shows the full paid/future vision and illustrative reviews. The free
+    “Record” product is a <strong>read-only recorder</strong> — it does <strong>not</strong> ship:
+    <ul>
+      <li>replay / re-announcement, recovery queues, or repair actions</li>
+      <li>downstream “failed flow” / destination-health claims (findings say only “no Shopify confirmation observed”)</li>
+      <li>“1-click” recovery, billing/pricing, or the reviews &amp; 5.0 rating (illustrative)</li>
+    </ul>
+    Source of truth: <code>docs/free_mvp_screen_spec.md</code>, <code>docs/ux-review.md</code>, and the real UI in <code>app/web/</code>. Listing correction is tracked in issue&nbsp;#26.
+  </div>
   <div class="topbar">
     <div class="topbar-inner">
       <div class="shopify-mark"><div class="bag">S</div><span>Shopify App Store</span></div>
