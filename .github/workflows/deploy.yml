@@ -1,0 +1,67 @@
+name: Deploy
+
+# Versioned, auditable deploy to a Harper Fabric instance. Deliberately NOT
+# automatic on every main push (the target hosts a live store): deploys are a
+# manual dispatch or a published release. Rollback = dispatch with an earlier
+# `ref` (tag/sha) — deploy.mjs pushes whatever tree is checked out. Secrets and
+# the target host come from the selected GitHub Environment (least-privilege).
+# See docs/deployment.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        default: staging
+      ref:
+        description: Git ref to deploy (tag/sha/branch). Blank = the branch this runs on. Use an earlier tag to roll back.
+        type: string
+        default: ''
+  release:
+    types: [published]
+
+concurrency:
+  # One deploy per environment at a time; a newer run waits rather than racing.
+  group: deploy-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # A published release deploys to production; a manual run uses the chosen env.
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      # Build the embedded SPA so web/dist is included in the deployed component.
+      - name: Build
+        run: npm run build
+      # Deploy the component + restart + health-poll + heal the sealed-column flake.
+      - name: Deploy component
+        env:
+          HARPER_OPS_URL: ${{ secrets.HARPER_OPS_URL }}
+          HARPER_USER: ${{ secrets.HARPER_USER }}
+          HARPER_PASS: ${{ secrets.HARPER_PASS }}
+          SIGHTLINE_BASE: ${{ secrets.SIGHTLINE_BASE }}
+        run: npm run deploy
+      # Post-deploy smoke: live health/auth routes must respond (guards the
+      # "component healthy but no routes registered" failure). SHOPIFY_* enable the
+      # authenticated read checks; without them the smoke runs the unauthenticated subset.
+      - name: Smoke
+        env:
+          SIGHTLINE_BASE: ${{ secrets.SIGHTLINE_BASE }}
+          SHOPIFY_API_SECRET: ${{ secrets.SHOPIFY_API_SECRET }}
+          SHOPIFY_API_KEY: ${{ secrets.SHOPIFY_API_KEY }}
+        run: npm run smoke

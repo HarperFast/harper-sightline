@@ -5,6 +5,7 @@
 	"version": "0.1.0",
 	"scripts": {
 		"test": "node --test 'test/*.test.ts'",
+		"coverage": "node --test --experimental-test-coverage 'test/*.test.ts'",
 		"dev": "vite web",
 		"build": "vite build web",
 		"typecheck": "tsc --noEmit",
