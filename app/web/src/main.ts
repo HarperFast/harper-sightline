@@ -26,29 +26,68 @@ function esc(value: unknown): string {
 		.replace(/"/g, '&quot;');
 }
 
-// Timestamps render in the viewer's own timezone — inside Shopify Admin that is
-// the merchant's local time — and every one carries the exact absolute instant in
-// a <time datetime> plus a title, so assistive tech and hover both get an
-// unambiguous value (screen spec: "merchant timezone with an accessible exact
-// timestamp"). The active zone is named once in the global context strip so a
-// displayed time is never ambiguous about which zone it is in.
-const TZ = (() => {
+// Timestamps render in the STORE's configured timezone (screen spec: "merchant
+// timezone with an accessible exact timestamp"), which the session carries as
+// `timezone` once the reconcile sweep has cached it from the Admin API. Until
+// then — and if the zone is one this browser's ICU doesn't know — we fall back to
+// the viewer's own zone. Either way `zoneLabel()` names the zone actually used in
+// the global context strip, and every timestamp carries the exact absolute
+// instant in a <time datetime> plus a title, so no displayed time is ever
+// ambiguous about which zone it is in.
+const VIEWER_TZ = (() => {
 	try {
 		return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
 	} catch {
 		return 'local time';
 	}
 })();
-const SHORT_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const EXACT_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'long' });
-const CLOCK_FMT = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
-const DEADLINE_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-const DAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 
-function ts(ms: number | undefined, fmt: Intl.DateTimeFormat = SHORT_FMT): string {
+let activeTz: string | undefined; // undefined = viewer's zone
+let SHORT_FMT: Intl.DateTimeFormat;
+let EXACT_FMT: Intl.DateTimeFormat;
+let CLOCK_FMT: Intl.DateTimeFormat;
+let DEADLINE_FMT: Intl.DateTimeFormat;
+let DAY_FMT: Intl.DateTimeFormat;
+
+function buildFormatters(timeZone: string | undefined): void {
+	// `timeZone: undefined` is how Intl asks for the runtime default, so one code
+	// path serves both cases.
+	SHORT_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone });
+	EXACT_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'long', timeZone });
+	CLOCK_FMT = new Intl.DateTimeFormat(undefined, { timeStyle: 'short', timeZone });
+	DEADLINE_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone });
+	DAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone });
+	activeTz = timeZone;
+}
+
+// Adopt the shop's zone if this runtime actually supports it; an unknown zone
+// makes Intl throw, and silently keeping the viewer's zone is far better than a
+// blank app.
+export function useShopTimeZone(timeZone: string | undefined): void {
+	if (!timeZone) return;
+	try {
+		buildFormatters(timeZone);
+	} catch {
+		buildFormatters(undefined);
+	}
+}
+
+function zoneLabel(): string {
+	return activeTz ?? VIEWER_TZ;
+}
+
+// Say which zone the times are in AND whose it is, so "store time" vs "your
+// device" is never a guess.
+function zoneChip(): string {
+	return `<span class="chip chip-quiet">Times in ${esc(zoneLabel())} (${activeTz ? 'store time' : 'your device'})</span>`;
+}
+
+buildFormatters(undefined);
+
+function ts(ms: number | undefined, fmt?: Intl.DateTimeFormat): string {
 	if (ms === undefined || ms === null) return '—';
 	const date = new Date(ms);
-	return `<time datetime="${esc(date.toISOString())}" title="${esc(EXACT_FMT.format(date))}">${esc(fmt.format(date))}</time>`;
+	return `<time datetime="${esc(date.toISOString())}" title="${esc(EXACT_FMT.format(date))}">${esc((fmt ?? SHORT_FMT).format(date))}</time>`;
 }
 
 // A coarse duration ("4m", "3h", "2d") for elapsed-time columns.
@@ -157,14 +196,14 @@ async function renderContext(): Promise<void> {
 		s = await loadSummary();
 	} catch {
 		// The strip is supplementary — never let it replace a screen's own error.
-		el.innerHTML = `<span class="chip">Last 7 days</span><span class="chip chip-quiet">Times in ${esc(TZ)}</span>`;
+		el.innerHTML = `<span class="chip">Last 7 days</span>${zoneChip()}`;
 		return;
 	}
 	const now = Date.now();
 	const health = s.recorder.healthy
 		? `<span class="chip chip-ok">Recording healthy</span>`
 		: `<span class="chip chip-warn">Recorder needs attention</span>`;
-	el.innerHTML = `<span class="chip">Last ${s.windowDays} days</span>${health}${reconChip(s, now)}<span class="chip chip-quiet">Times in ${esc(TZ)}</span>`;
+	el.innerHTML = `<span class="chip">Last ${s.windowDays} days</span>${health}${reconChip(s, now)}${zoneChip()}`;
 }
 
 // ── setup / first open ───────────────────────────────────────────────────────
@@ -676,6 +715,9 @@ async function boot(): Promise<void> {
 	const status = document.getElementById('status');
 	try {
 		const session = window.__SIGHTLINE_SESSION__ ?? (await apiSession());
+		// Adopt the store's timezone before the first render, so no screen ever
+		// paints timestamps in one zone and then re-paints them in another.
+		useShopTimeZone(session.timezone);
 		if (status) status.textContent = `Recording ${session.shop}`;
 	} catch (err) {
 		if (status) status.textContent = `Not connected: ${(err as Error).message}`;

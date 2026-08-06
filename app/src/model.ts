@@ -19,6 +19,7 @@ export interface Shop {
 	uninstalledAt?: number;
 	lastReconciledAt?: number;
 	reconciliationState?: string;
+	ianaTimezone?: string;
 }
 
 export interface ShopCredential {

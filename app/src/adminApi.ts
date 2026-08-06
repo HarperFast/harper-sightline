@@ -123,3 +123,15 @@ export async function fetchShopName(shop: string, token: string, fetchImpl: type
 	const data = await adminGraphql<{ shop: { name: string } }>(shop, token, `{shop{name}}`, {}, fetchImpl);
 	return data.shop.name;
 }
+
+// The store's configured IANA timezone, so merchant-facing timestamps render in
+// the shop's zone rather than the viewer's (screen spec: "merchant timezone").
+// A shop-level setting, not protected customer data, and readable with the scopes
+// we already hold. Returns undefined rather than throwing when the field is
+// missing or malformed — a timezone is a display nicety and must never be able to
+// fail reconciliation.
+export async function fetchShopTimezone(shop: string, token: string, fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
+	const data = await adminGraphql<{ shop: { ianaTimezone?: unknown } }>(shop, token, `{shop{ianaTimezone}}`, {}, fetchImpl);
+	const tz = data.shop?.ianaTimezone;
+	return typeof tz === 'string' && tz.length > 0 ? tz : undefined;
+}

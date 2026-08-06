@@ -12,7 +12,8 @@
 			"fields": [
 				"shop",
 				"user",
-				"capabilities"
+				"capabilities",
+				"timezone"
 			]
 		},
 		"setup": {
