@@ -28,7 +28,7 @@ Spec: keyboard + screen-reader accessible; visualizations have equivalent text/t
 - **Screen reader:** loading uses `role="status"`; error/auth-expired use `role="alert"`; row links have descriptive `aria-label`s; data is in real `<table>`/`<dl>` semantics.
 - **No-color:** the "Flow" visualization is a **label + count list** — it is already its own table-equivalent and conveys magnitude by number, not color. Status **badges pair color with the status word** (e.g. "unconfirmed"), so they read without color. The overview's order/finding stats are numeric tiles. **Activity over time** encodes magnitude as bar *height* with a per-domain total beside it, carries the same numbers in its `role="img"` label, and ships an exact per-day table behind "View activity as a table".
 - **Contrast/theme:** light + dark via `prefers-color-scheme`; ok/warn tones have text labels, not color alone.
-- **Timestamps:** every rendered time is a `<time datetime="…">` element with the full absolute instant in its `title`, so hover and assistive tech both get an unambiguous value. Display uses the viewer's timezone — inside Admin, the merchant's own — and the active zone is named in the context strip so no displayed time is ambiguous. (Deviation: the spec says "merchant timezone," meaning the *shop's* configured zone. Rendering that would require fetching and storing `shop.ianaTimezone`, a `@sealed` column add; the viewer's zone plus an explicit zone label is the honest equivalent and is what ships. Tracked in §6.)
+- **Timestamps:** every rendered time is a `<time datetime="…">` element with the full absolute instant in its `title`, so hover and assistive tech both get an unambiguous value. Display uses the **store's configured timezone** — `shop.ianaTimezone`, read from the Admin API and cached on the Shop record by the reconcile sweep, delivered to the SPA on the session so the first paint is already correct. Until the first sweep caches it (and if the browser's ICU doesn't recognise the zone) the viewer's zone is used instead. The context strip always names the zone in force *and whose it is* — "Times in America/New_York (store time)" vs "(your device)" — so a displayed time is never ambiguous and never silently mislabelled.
 - **Narrow iframe:** every wide table is wrapped in an `overflow-x: auto` container, so tables scroll inside their own box and the iframe body never scrolls horizontally. A `max-width: 600px` breakpoint collapses the definition-list grid to one column, reflows filters, and tightens padding.
 
 ## 3. Content & terminology review (product + security sign-off)
@@ -70,11 +70,11 @@ One further open decision, not a defect: the spec's header line says "Use Shopif
 15. **Privacy screen completed to spec §5**: shop, granted scopes, a "what we never store" exclusion list, webhook capture health, reconciliation health. Two tests assert the payload carries no token material and no other tenant's counts.
 16. **Accessible exact timestamps** (`<time datetime>` + title + named zone) and **narrow-iframe behavior** (scroll containers, 600px breakpoint).
 
-## 6. Remaining deferral
+## 6. Deferrals — none outstanding
 
-One item is deliberately not shipped:
+The one item left open after the second pass, **true shop-timezone rendering**, is now implemented (§2): `Shop.ianaTimezone` added to the sealed schema, read via `shop { ianaTimezone }` and cached by the reconcile sweep, carried to the SPA on the session payload, with a labelled fallback to the viewer's zone. Recorded in the [pinned Shopify contract](./shopify-contract.md) §6 as a display-only read that can never fail reconciliation.
 
-- **True shop-timezone rendering.** The spec says "merchant timezone"; the app renders in the viewer's timezone with the zone named explicitly (§2). Rendering the *shop's* configured zone needs `shop.ianaTimezone` fetched from the Admin API and persisted — a `@sealed` column add, which is a schema/deploy change rather than a UI one. The shipped behavior is unambiguous (never a bare time with an unstated zone) and, inside Admin, is the merchant's own local time in the overwhelming majority of cases. Worth doing, not worth blocking submission on.
+> **Deploy note:** this added a column to a `@sealed` table, which `deploy_component` has intermittently dropped on an existing table. Verify with `describe_table` on `sightline_core.Shop` after deploying and confirm `ianaTimezone` is present; if it is missing, redeploy before relying on store-timezone rendering. The UI degrades to the viewer's zone (correctly labelled) if the column never materialises, so a dropped column is a cosmetic regression, not an outage.
 
 ## 7. Correction to the first pass
 

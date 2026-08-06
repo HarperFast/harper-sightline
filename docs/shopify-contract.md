@@ -90,6 +90,14 @@ Declare in the PCDA form: which protected data we use + reasons; Data-protection
 - **Confirmation evidence:** `fulfillments/create|update` `status` + tracking.
 - **Inventory lane / refund context:** `inventory_levels/update`, `refunds/create`.
 
+### Admin API reads (reconciliation only)
+
+| Query | Fields | Why | Scope |
+|---|---|---|---|
+| `orders(query: "updated_at:>=…", sortKey: UPDATED_AT)` | `id createdAt updatedAt cancelledAt displayFinancialStatus displayFulfillmentStatus lineItems{quantity requiresShipping} fulfillments{status createdAt}` | Gap-fill for missed webhooks + install backfill (#13) | `read_orders`, `read_fulfillments` |
+| `shop { ianaTimezone }` | `ianaTimezone` | Render merchant-facing timestamps in the store's configured timezone (screen spec). Cached once per install; **display only** — a failure never blocks reconciliation. Shop-level setting, **not** protected customer data. | none beyond the above |
+| `shop { name }` | `name` | Liveness probe that the offline token works | none beyond the above |
+
 ## 7. `shopify.app.toml` sketch (illustrative — not the final config)
 
 ```toml

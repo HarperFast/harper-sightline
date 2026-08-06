@@ -20,6 +20,10 @@ type Shop @table(database: "sightline_core") @sealed {
 	uninstalledAt: Float
 	lastReconciledAt: Float
 	reconciliationState: String
+	# The shop's own IANA zone (Admin API `shop.ianaTimezone`), so merchant-facing
+	# timestamps render in the store's configured timezone rather than the
+	# viewer's. Cached once per install; not PII.
+	ianaTimezone: String
 }
 
 type ShopCredential @table(database: "sightline_core") @sealed {

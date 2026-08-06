@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { synthesizeEvents } from '../src/reconcile.ts';
-import { toReconcileOrder, numericId, fetchOrdersUpdatedSince, type ReconcileOrder } from '../src/adminApi.ts';
+import { toReconcileOrder, numericId, fetchOrdersUpdatedSince, fetchShopTimezone, type ReconcileOrder } from '../src/adminApi.ts';
 import { rebuildProjection } from '../src/projection.ts';
 
 test('numericId extracts the numeric order id from a gid', () => {
@@ -105,4 +105,19 @@ test('adminGraphql surfaces GraphQL errors', async () => {
 	const fakeFetch = (async () =>
 		new Response(JSON.stringify({ errors: [{ message: 'Throttled' }] }), { status: 200 })) as unknown as typeof fetch;
 	await assert.rejects(() => fetchOrdersUpdatedSince('s', 'tok', 0, undefined, fakeFetch), /Throttled/);
+});
+
+test('fetchShopTimezone reads the store zone', async () => {
+	const fakeFetch = (async () =>
+		new Response(JSON.stringify({ data: { shop: { ianaTimezone: 'America/New_York' } } }), { status: 200 })) as unknown as typeof fetch;
+	assert.equal(await fetchShopTimezone('s.myshopify.com', 'tok', fakeFetch), 'America/New_York');
+});
+
+test('fetchShopTimezone returns undefined for a missing or blank zone rather than a bad value', async () => {
+	// The UI falls back to the viewer's zone on undefined; an empty string would
+	// make Intl throw, so it must never be passed through as if it were a zone.
+	for (const shop of [{}, { ianaTimezone: '' }, { ianaTimezone: 42 }]) {
+		const fakeFetch = (async () => new Response(JSON.stringify({ data: { shop } }), { status: 200 })) as unknown as typeof fetch;
+		assert.equal(await fetchShopTimezone('s', 'tok', fakeFetch), undefined);
+	}
 });

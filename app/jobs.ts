@@ -8,7 +8,7 @@ import { evaluateOrder, detectorKey } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { loadAccessToken } from './src/credentialStore.ts';
-import { fetchOrdersUpdatedSince } from './src/adminApi.ts';
+import { fetchOrdersUpdatedSince, fetchShopTimezone } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
@@ -270,6 +270,19 @@ let reconciling = false;
 export async function reconcileShop(shopId: string, now = Date.now()): Promise<{ orders: number } | null> {
 	const token = await loadAccessToken(shopId);
 	if (!token) return null; // no Admin credential yet — capture-only
+	// Cache the store's configured timezone once, so merchant-facing timestamps
+	// render in the shop's zone rather than the viewer's. Display-only: a failure
+	// is swallowed and simply retried on the next sweep — it must never be able to
+	// fail reconciliation, and the UI falls back to the viewer's zone meanwhile.
+	const shopRow = await Shops.get(shopId);
+	let ianaTimezone: string | undefined;
+	if (shopRow && !shopRow.ianaTimezone) {
+		try {
+			ianaTimezone = await fetchShopTimezone(shopId, token);
+		} catch {
+			// retried next sweep
+		}
+	}
 	const checkpointId = `reconcile:${shopId}`;
 	const checkpoint = await Checkpoints.get(checkpointId);
 	const sinceMs = checkpoint?.cursor ? Number(checkpoint.cursor) : now - RECONCILE_BACKFILL_MS;
@@ -292,7 +305,11 @@ export async function reconcileShop(shopId: string, now = Date.now()): Promise<{
 	// stepper and the Overview's "reconciled N ago" / stale banner read (#16
 	// follow-ups) — the checkpoint alone is an internal cursor, and a shop is only
 	// 'ready' once a full sweep has finished for it.
-	await Shops.patch(shopId, { lastReconciledAt: now, reconciliationState: 'ready' });
+	await Shops.patch(shopId, {
+		lastReconciledAt: now,
+		reconciliationState: 'ready',
+		...(ianaTimezone ? { ianaTimezone } : {}),
+	});
 	return { orders };
 }
 

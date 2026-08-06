@@ -79,6 +79,20 @@ export class Health extends Resource {
 // Verifies the Shopify session token via the identity adapter and returns the
 // tenant identity + capability profile. shopId is derived from the verified
 // principal, never from caller input (threat model §4).
+// The session payload the SPA boots from. `timezone` is the store's configured
+// IANA zone, cached by the reconcile sweep — it is absent until the first sweep
+// completes, and the SPA falls back to the viewer's zone (labelling whichever it
+// used) so a timestamp is never shown against an unstated zone.
+async function sessionPayload(shopId: string, userId: string): Promise<Record<string, unknown>> {
+	const shop = await ShopsTable.get(shopId);
+	return {
+		shop: shopId,
+		user: userId,
+		capabilities: capabilitiesFor(shopId),
+		...(shop?.ianaTimezone ? { timezone: shop.ianaTimezone } : {}),
+	};
+}
+
 export class Session extends Resource {
 	static path = '/api/v1/session';
 	allowRead() {
@@ -88,11 +102,7 @@ export class Session extends Resource {
 		const principal = await identity.authenticate(this.getContext());
 		// Bootstrap the shop record on first authenticated call (no token exchange).
 		await ensureShopRecord(principal.shopId);
-		return {
-			shop: principal.shopId,
-			user: principal.userId,
-			capabilities: capabilitiesFor(principal.shopId),
-		};
+		return sessionPayload(principal.shopId, principal.userId);
 	}
 }
 
@@ -416,7 +426,7 @@ export class AppHome extends Resource {
 				// an offline Admin API token so reconciliation (#13) can run. Best-effort
 				// — a failure never blocks the embed (webhook capture works regardless).
 				await ensureCredential({ shop: principal.shopId, sessionToken: idToken, apiKey: API_KEY, secret });
-				const session = { shop: principal.shopId, user: principal.userId, capabilities: capabilitiesFor(principal.shopId) };
+				const session = await sessionPayload(principal.shopId, principal.userId);
 				const json = JSON.stringify(session).replace(/</g, '\\u003c');
 				sessionScript = `<script>window.__SIGHTLINE_SESSION__=${json}</script>`;
 				if (!shop) shop = principal.shopId;
