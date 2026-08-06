@@ -62,6 +62,17 @@ check('GET /api/v1/health = 200', health.status === 200, `${health.status} ${hea
 const noAuth = await req('/api/v1/session');
 check('GET /api/v1/session unauthenticated = 401', noAuth.status === 401, String(noAuth.status));
 
+// The App Store listing links to this and a reviewer reads it WITHOUT installing,
+// so it must be 200 unauthenticated. Also guards the silent-404 failure mode: an
+// unregistered resource falls through to the SPA catch-all and returns 200 HTML,
+// so assert on the content, not just the status.
+const policy = await req('/privacy-policy');
+check(
+	'GET /privacy-policy unauthenticated = 200 and is the policy',
+	policy.status === 200 && /Privacy Policy/i.test(policy.body) && !/__SIGHTLINE_SESSION__|shopify-api-key/.test(policy.body),
+	`${policy.status} ${policy.body.slice(0, 120)}`,
+);
+
 // Webhook ingress rejects a bad HMAC with 401 and NO mutation (constant-time verify).
 const badHmac = await req('/webhooks/shopify/events', {
 	method: 'POST',

@@ -9,7 +9,7 @@ declare const shopify: { idToken(): Promise<string> };
 declare global {
 	interface Window {
 		__sightlineFetch?: typeof fetch;
-		__SIGHTLINE_SESSION__?: { shop: string; user: string; capabilities: Record<string, boolean>; timezone?: string };
+		__SIGHTLINE_SESSION__?: Session;
 	}
 }
 
@@ -37,6 +37,9 @@ export interface Session {
 	// The store's configured IANA timezone. Absent until the first reconcile sweep
 	// caches it; callers fall back to the viewer's zone.
 	timezone?: string;
+	// Support channels, absent when the deployment has not configured them. Never
+	// a fabricated address.
+	support?: { email?: string; url?: string };
 }
 export interface Reconciliation {
 	lastReconciledAt?: number;

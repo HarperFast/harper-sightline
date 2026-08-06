@@ -26,6 +26,7 @@ import {
 	overviewView,
 	parseHash,
 	privacyView,
+	setSupport,
 	setupView,
 	spinnerView,
 	useShopTimeZone,
@@ -249,6 +250,7 @@ async function boot(): Promise<void> {
 		// Adopt the store's timezone before the first render, so no screen ever
 		// paints timestamps in one zone and then re-paints them in another.
 		useShopTimeZone(session.timezone);
+		setSupport(session.support);
 	} catch {
 		// Not connected — the screens surface their own auth/error state.
 	}

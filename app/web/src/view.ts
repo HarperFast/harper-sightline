@@ -148,6 +148,36 @@ export function bullets(items: string[]): string {
 	return `<s-unordered-list>${items.map((c) => `<s-list-item>${esc(c)}</s-list-item>`).join('')}</s-unordered-list>`;
 }
 
+// ── support ──────────────────────────────────────────────────────────────────
+// The support contact comes from the session (server-configured, never a
+// fabricated address). It is offered on the Privacy screen and, more usefully, on
+// the two states where a merchant is actually stuck — an expired session and a
+// load failure.
+export interface Support {
+	email?: string;
+	url?: string;
+}
+let support: Support = {};
+export function setSupport(next: Support | undefined): void {
+	support = next ?? {};
+}
+export function supportKnown(): boolean {
+	return Boolean(support.email || support.url);
+}
+
+// Inline "get help" links, or nothing at all when unconfigured — an empty
+// promise of support is worse than none.
+export function supportLinks(): string {
+	const parts: string[] = [];
+	if (support.email) parts.push(`<s-link href="mailto:${esc(support.email)}">${esc(support.email)}</s-link>`);
+	if (support.url) parts.push(`<s-link href="${esc(support.url)}">Help centre</s-link>`);
+	return parts.join(' · ');
+}
+
+function supportLine(): string {
+	return supportKnown() ? `<s-paragraph>Need help? ${supportLinks()}</s-paragraph>` : '';
+}
+
 export function spinnerView(): string {
 	return `<s-page heading="Sightline"><s-section><s-stack direction="inline" gap="base" alignItems="center">
 		<s-spinner accessibilityLabel="Loading"></s-spinner><s-text>Loading…</s-text>
@@ -162,6 +192,7 @@ export function authExpiredView(): string {
 		'Sightline',
 		`<s-section><s-banner tone="warning" heading="Session expired">
 			<s-paragraph>Your Shopify session timed out. Reload Sightline in Shopify Admin to reconnect — recording continued in the background the whole time.</s-paragraph>
+			${supportLine()}
 		</s-banner></s-section>`,
 	);
 }
@@ -172,6 +203,7 @@ export function errorViewMarkup(message: string): string {
 		`<s-section><s-banner tone="critical" heading="Couldn’t load">
 			<s-paragraph>${esc(message)}</s-paragraph>
 			<s-button data-retry>Retry</s-button>
+			${supportLine()}
 		</s-banner></s-section>`,
 	);
 }
@@ -719,6 +751,14 @@ export function privacyView(p: Privacy, now: number, strip: string): string {
 		</s-section>
 		<s-section heading="Deletion">
 			${bullets(Object.entries(p.deletion).map(([k, v]) => `${k}: ${v}`))}
+		</s-section>
+		<s-section heading="Help and support">
+			${
+				supportKnown()
+					? `<s-paragraph>Questions about your data, or something not working? ${supportLinks()}</s-paragraph>`
+					: `<s-paragraph><s-text tone="warning">Support contact is not configured for this deployment.</s-text></s-paragraph>`
+			}
+			<s-paragraph><s-link href="/privacy-policy" target="_blank">Read the full privacy policy</s-link></s-paragraph>
 		</s-section>
 		<s-section heading="This shop’s footprint">
 			${statGrid([
