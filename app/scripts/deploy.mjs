@@ -70,6 +70,10 @@ const EXPECTED_COLUMNS = [
 	['sightline_ledger', 'OperationalEvent', 'fulfillableItemCount'],
 	['sightline_ledger', 'OrderProjection', 'requiresFulfillment'],
 	['sightline_ledger', 'OrderProjection', 'fulfilledAt'],
+	// Added in #62 for store-timezone rendering. Degrades to the viewer's zone if
+	// dropped, so it is cosmetic rather than an outage — but self-healing it here
+	// beats a manual describe_table check after every deploy.
+	['sightline_core', 'Shop', 'ianaTimezone'],
 ];
 for (const [database, table, attribute] of EXPECTED_COLUMNS) {
 	const desc = await op({ operation: 'describe_table', database, table });
