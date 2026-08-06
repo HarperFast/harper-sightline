@@ -43,7 +43,13 @@ The load-bearing product-truth boundary: an absence finding means **"Sightline h
 
 `docs/sightline_shopify_app_store_mock.html` is a **product-direction artifact**, not acceptance criteria (plan §"tone by design"). It is now **annotated**, not rewritten: a sticky high-contrast banner (and a `<title>` marker) states it is a concept, enumerates what does **not** ship in free Record (replay/recovery/repair, "failed flow"/destination-health claims, "1-click", pricing, and the illustrative reviews/5.0 rating), and points to this review + the screen spec + the real UI. The actual listing correction (removing those claims from the published creative) is tracked in **#26 (App Store readiness)**.
 
-One further open decision, not a defect: the spec's header line says "Use Shopify App Home page patterns, App Bridge, and Polaris web components." App Bridge is loaded, but the SPA is hand-rolled HTML with Polaris-approximating CSS tokens rather than Polaris web components. It is accessible and functional; it will not look native in Admin. That is not an App Store blocker but it is a Built-for-Shopify one, and it should be an explicit accept-or-port decision under #26 rather than an undocumented divergence.
+The spec's header line — "Use Shopify App Home page patterns, App Bridge, and Polaris web components" — is now satisfied. The SPA was ported off hand-rolled CSS onto Polaris web components (`polaris.js` from `cdn.shopify.com`): `s-page`/`s-section` structure, `s-banner`, `s-badge`, `s-table`, `s-select`/`s-text-field`, `s-grid`/`s-box`, `s-link`, `s-button`, `s-spinner`, `s-unordered-list`. Local CSS is down to the activity bars alone, which have no Polaris equivalent and are sized in `em`/`currentColor` so they inherit Admin typography and theming.
+
+Three notes on the port:
+
+- **Row navigation is now real links.** The pre-port tables used whole-row `role="link"` + `tabindex` + Enter/Space handlers. Each row's first cell is now an `s-link`, so keyboard operation, focus ring, and screen-reader semantics come from the platform instead of from our own handlers — the `bindRowLinks` shim is gone.
+- **Filters are read from element properties, not `FormData`.** Polaris fields hold their value as a property, so a native form submit cannot see them; each filter is read explicitly by id, and Enter within the filter group submits.
+- **Navigation is duplicated on purpose, for now.** `s-app-nav` puts the sections in Admin's own sidebar (the native pattern), but it renders only inside real Admin and cannot be verified from local dev. The in-page nav is kept as a guaranteed fallback so the app can never ship unnavigable. **Once `s-app-nav` is confirmed in the live embed, drop the in-page nav** (`.appnav` in `index.html`).
 
 ## 5. Changes made
 
@@ -75,6 +81,24 @@ One further open decision, not a defect: the spec's header line says "Use Shopif
 The one item left open after the second pass, **true shop-timezone rendering**, is now implemented (§2): `Shop.ianaTimezone` added to the sealed schema, read via `shop { ianaTimezone }` and cached by the reconcile sweep, carried to the SPA on the session payload, with a labelled fallback to the viewer's zone. Recorded in the [pinned Shopify contract](./shopify-contract.md) §6 as a display-only read that can never fail reconciliation.
 
 > **Deploy note:** this added a column to a `@sealed` table, which `deploy_component` has intermittently dropped on an existing table. Verify with `describe_table` on `sightline_core.Shop` after deploying and confirm `ianaTimezone` is present; if it is missing, redeploy before relying on store-timezone rendering. The UI degrades to the viewer's zone (correctly labelled) if the column never materialises, so a dropped column is a cosmetic regression, not an outage.
+
+## 6b. UI test coverage
+
+Until now the SPA was only ever *built* in CI, never exercised — the weakest layer in the MVP, and it had just grown. `app/web/src/view.ts` now holds every screen as a **pure function from data to markup**, with `main.ts` reduced to fetching, DOM writes, listener binding, and routing. That split makes the UI testable in plain node with no browser, DOM shim, or added dependency (the app still has zero runtime deps).
+
+`app/test/view.test.ts` (43 cases) covers what a screenshot review would otherwise have to catch by eye:
+
+- **Product truth** — the disclaimer appears verbatim on unconfirmed findings and is *absent* on resolved/suppressed, where its wording would be false; the boundary line is on the list; and no screen contains failure language or names a downstream party outside the two sentences that explicitly deny the claim.
+- **Per-state rendering** — unhealthy recorder never reads as "no gaps"; stale reconciliation; never-reconciled ≠ "reconciled just now"; incomplete initial check; partial data (singular and plural); and a healthy overview showing *none* of those banners.
+- **Setup** — quiet-store "Connected — no events yet" vs "Receiving events"; blocked steps offering reauthorization and *not* a pointless retry.
+- **Escaping** — hostile order ids, topics, and filter values cannot inject markup or break out of an attribute.
+- **Timezone** — the same instant under two zones renders differently (proving the zone is threaded through) while the `<time datetime>` instant is unchanged; an unknown zone falls back and says "your device" rather than claiming store time.
+- **Accessibility** — the activity graphic's `aria-label` carries the same per-day numbers as its table equivalent; zero-count days render no bar height.
+- **Polaris regression guard** — every screen is an `s-page` with `s-section`s, and the pre-port CSS class names cannot reappear.
+
+CI runs these as their own `UI tests` step, which closes the "CI runs … UI … checks" criterion on #25.
+
+Still open on #25, and deliberately not addressed here: the staging smoke script covers health, session (authed + unauthed), setup, summary, privacy, findings, and webhook HMAC, but not the install, reconciliation, or uninstall flows. Install is evidenced by the live dev-store install; reconciliation and uninstall remain unsmoked.
 
 ## 7. Correction to the first pass
 

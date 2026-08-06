@@ -12,440 +12,100 @@
 		</script>
 		<meta name="shopify-api-key" content="e446bda5edb3ee3bae6e0ba280ef8b12" />
 		<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+		<!-- Polaris web components — the Admin-native component set. Everything
+		     structural (page, section, banner, badge, table, fields, links) comes
+		     from here; the only local CSS below is for the activity bars, which
+		     Polaris has no equivalent for. -->
+		<script src="https://cdn.shopify.com/shopifycloud/polaris.js"></script>
 		<title>Sightline</title>
 		<style>
-			:root {
-				color-scheme: light dark;
-				--bg: #fff;
-				--fg: #1a1a1a;
-				--muted: #6b7177;
-				--border: #e1e3e5;
-				--card: #f6f6f7;
-				--ok: #29845a;
-				--ok-bg: #ebf7f0;
-				--warn: #8a6116;
-				--warn-bg: #fdf6e3;
-				--accent: #2c6ecb;
-			}
-			@media (prefers-color-scheme: dark) {
-				:root {
-					--bg: #1a1c1d;
-					--fg: #e3e5e7;
-					--muted: #9ba1a6;
-					--border: #2e3133;
-					--card: #232628;
-					--ok-bg: #16281e;
-					--warn-bg: #2a2410;
-				}
-			}
-			* {
-				box-sizing: border-box;
-			}
-			body {
-				margin: 0;
-				font:
-					14px/1.5 -apple-system,
-					BlinkMacSystemFont,
-					'Segoe UI',
-					Roboto,
-					sans-serif;
-				color: var(--fg);
-				background: var(--bg);
-			}
-			header {
-				padding: 16px 20px 0;
-			}
-			header h1 {
-				font-size: 18px;
-				margin: 0;
-			}
-			header .sub {
-				color: var(--muted);
-				font-size: 13px;
-			}
-			nav {
-				display: flex;
-				gap: 4px;
-				padding: 12px 20px 0;
-				border-bottom: 1px solid var(--border);
-				flex-wrap: wrap;
-			}
-			nav a {
-				padding: 8px 14px;
-				text-decoration: none;
-				color: var(--muted);
-				border-bottom: 2px solid transparent;
-				font-weight: 500;
-			}
-			nav a[data-active] {
-				color: var(--fg);
-				border-bottom-color: var(--accent);
-			}
-			main {
-				padding: 20px;
-				max-width: 900px;
-			}
-			h2 {
-				font-size: 15px;
-				margin: 24px 0 8px;
-			}
-			.muted {
-				color: var(--muted);
-			}
-			.notice {
-				border: 1px solid var(--border);
-				border-radius: 8px;
-				padding: 12px 14px;
-				margin: 0 0 12px;
-				background: var(--card);
-			}
-			.notice-ok {
-				background: var(--ok-bg);
-				border-color: var(--ok);
-			}
-			.notice-warn {
-				background: var(--warn-bg);
-				border-color: var(--warn);
-			}
-			.stats {
-				display: flex;
-				gap: 12px;
-				flex-wrap: wrap;
-			}
-			.stat {
-				background: var(--card);
-				border: 1px solid var(--border);
-				border-radius: 8px;
-				padding: 12px 16px;
-				min-width: 110px;
-			}
-			.stat-value {
-				font-size: 24px;
-				font-weight: 600;
-			}
-			.stat-label {
-				color: var(--muted);
-				font-size: 12px;
-			}
-			.lanes {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
-				max-width: 360px;
-			}
-			.lane {
-				display: flex;
-				justify-content: space-between;
-				padding: 8px 12px;
-				background: var(--card);
-				border: 1px solid var(--border);
-				border-radius: 6px;
-			}
-			.lane-count {
-				font-variant-numeric: tabular-nums;
-				font-weight: 600;
-			}
-			table.grid {
-				width: 100%;
-				border-collapse: collapse;
-				margin-top: 8px;
-			}
-			.grid th,
-			.grid td {
-				text-align: left;
-				padding: 8px 10px;
-				border-bottom: 1px solid var(--border);
-				font-size: 13px;
-			}
-			.grid th {
-				color: var(--muted);
-				font-weight: 600;
-			}
-			.rowlink {
-				cursor: pointer;
-			}
-			.rowlink:hover {
-				background: var(--card);
-			}
-			.rowlink:focus-visible {
-				outline: 2px solid var(--accent);
-				outline-offset: -2px;
-			}
-			.badge {
-				display: inline-block;
-				padding: 1px 8px;
-				border-radius: 10px;
-				font-size: 12px;
-				font-weight: 500;
-			}
-			.badge-ok {
-				background: var(--ok-bg);
-				color: var(--ok);
-			}
-			.badge-warn {
-				background: var(--warn-bg);
-				color: var(--warn);
-			}
-			.badge-muted {
-				background: var(--card);
-				color: var(--muted);
-			}
-			.filters {
-				display: flex;
-				gap: 8px;
-				flex-wrap: wrap;
-				margin-bottom: 8px;
-			}
-			.filters input,
-			.filters select,
-			button {
-				padding: 7px 10px;
-				border: 1px solid var(--border);
-				border-radius: 6px;
-				background: var(--bg);
-				color: var(--fg);
-				font: inherit;
-			}
-			button {
-				cursor: pointer;
-				background: var(--accent);
-				color: #fff;
-				border-color: var(--accent);
-				margin-top: 8px;
-			}
-			.filters button {
-				margin-top: 0;
-			}
-			dl.fields {
-				display: grid;
-				grid-template-columns: 220px 1fr;
-				gap: 4px 16px;
-				margin: 8px 0;
-			}
-			.field {
-				display: contents;
-			}
-			.field dt {
-				color: var(--muted);
-			}
-			.field dd {
-				margin: 0;
-			}
-			.back {
-				color: var(--accent);
-				text-decoration: none;
-				font-size: 13px;
-			}
-			a {
-				color: var(--accent);
-			}
-			/* Global context strip */
-			.context {
-				display: flex;
-				gap: 6px;
-				flex-wrap: wrap;
-				padding: 10px 20px 0;
-			}
-			.chip {
-				border: 1px solid var(--border);
-				border-radius: 12px;
-				padding: 2px 10px;
-				font-size: 12px;
-				background: var(--card);
-				color: var(--fg);
-			}
-			.chip-ok {
-				background: var(--ok-bg);
-				border-color: var(--ok);
-				color: var(--ok);
-			}
-			.chip-warn {
-				background: var(--warn-bg);
-				border-color: var(--warn);
-				color: var(--warn);
-			}
-			.chip-quiet {
-				background: transparent;
-				color: var(--muted);
-			}
-			/* Any wide table scrolls inside its own box so the iframe body never
-			   scrolls horizontally on a narrow Admin viewport. */
-			.tablewrap {
-				overflow-x: auto;
-				max-width: 100%;
-			}
-			.tablewrap table.grid {
-				min-width: 520px;
-			}
-			/* First-open setup stepper */
-			ol.steps {
-				list-style: none;
-				margin: 12px 0;
-				padding: 0;
-				display: flex;
-				flex-direction: column;
-				gap: 8px;
-			}
-			.step {
-				display: flex;
-				gap: 12px;
-				align-items: flex-start;
-				border: 1px solid var(--border);
-				border-left-width: 3px;
-				border-radius: 8px;
-				padding: 10px 14px;
-				background: var(--card);
-			}
-			.step-ok {
-				border-left-color: var(--ok);
-			}
-			.step-warn {
-				border-left-color: var(--warn);
-			}
-			.step-n {
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				width: 22px;
-				height: 22px;
-				border-radius: 50%;
-				border: 1px solid var(--border);
-				background: var(--bg);
-				font-size: 12px;
-				font-weight: 600;
-				flex: none;
-			}
-			.step-body {
-				font-size: 13px;
-			}
-			/* Activity-over-time bars. Magnitude is height, never colour; the
-			   <details> table beside them is the text equivalent. */
+			/* Activity-over-time bars. Magnitude is bar HEIGHT, never colour, and an
+			   exact per-day table sits beside them as the text equivalent. Sized in
+			   ems and coloured from currentColor so it inherits Polaris typography
+			   and theming (including dark mode) rather than hardcoding a palette. */
 			.spark {
 				display: flex;
 				flex-direction: column;
-				gap: 6px;
-				max-width: 560px;
+				gap: 0.4em;
 			}
 			.spark-row {
 				display: flex;
 				align-items: flex-end;
-				gap: 10px;
+				gap: 0.75em;
 			}
 			.spark-label {
-				width: 96px;
 				flex: none;
-				color: var(--muted);
-				font-size: 12px;
+				width: 7em;
+				font-size: 0.8125em;
+				opacity: 0.7;
 			}
 			.spark-bars {
 				display: flex;
 				align-items: flex-end;
-				gap: 3px;
-				height: 26px;
+				gap: 0.2em;
+				height: 1.75em;
 				flex: 1 1 auto;
+				min-width: 0;
 			}
 			.bar {
 				flex: 1 1 0;
 				height: 100%;
 				display: flex;
 				align-items: flex-end;
-				background: var(--card);
+				background: currentColor;
+				opacity: 0.12;
 				border-radius: 2px;
 			}
 			.bar-fill {
 				width: 100%;
-				background: var(--accent);
+				background: currentColor;
 				border-radius: 2px;
-				min-height: 0;
 			}
 			.spark-total {
-				width: 44px;
+				flex: none;
+				width: 3em;
 				text-align: right;
 				font-variant-numeric: tabular-nums;
-				font-weight: 600;
-				font-size: 13px;
+				font-size: 0.8125em;
 			}
-			details.alt {
-				margin: 10px 0;
+			.alt {
+				margin-top: 0.75em;
+				font-size: 0.8125em;
 			}
-			details.alt summary {
+			.alt summary {
 				cursor: pointer;
-				color: var(--accent);
-				font-size: 13px;
 			}
-			/* "What Sightline observed" evidence timeline */
-			ol.timeline {
-				list-style: none;
-				margin: 8px 0;
-				padding: 0 0 0 8px;
-				border-left: 2px solid var(--border);
-			}
-			ol.timeline li {
+			/* The in-page nav fallback (see index.html comment on s-app-nav). */
+			.appnav {
 				display: flex;
-				gap: 12px;
-				padding: 5px 0 5px 12px;
-				font-size: 13px;
-			}
-			.tl-at {
-				color: var(--muted);
-				min-width: 76px;
-				font-variant-numeric: tabular-nums;
-			}
-			code {
-				background: var(--card);
-				border: 1px solid var(--border);
-				border-radius: 4px;
-				padding: 0 4px;
-				font-size: 12px;
-			}
-			/* Narrow embedded iframe (Admin on mobile) */
-			@media (max-width: 600px) {
-				main {
-					padding: 16px 12px;
-				}
-				nav,
-				header,
-				.context {
-					padding-left: 12px;
-					padding-right: 12px;
-				}
-				dl.fields {
-					grid-template-columns: 1fr;
-					gap: 0 0;
-				}
-				.field dt {
-					margin-top: 8px;
-					font-size: 12px;
-				}
-				.filters input,
-				.filters select {
-					flex: 1 1 140px;
-					min-width: 0;
-				}
-				.spark-label {
-					width: 72px;
-				}
+				flex-wrap: wrap;
+				gap: 1em;
+				padding: 0.75em 1em 0;
 			}
 		</style>
 	</head>
 	<body>
-		<header>
-			<h1>Sightline</h1>
-			<div class="sub" id="status">Connecting…</div>
-		</header>
-		<nav>
-			<a href="#/" data-nav="/">Overview</a>
-			<a href="#/events" data-nav="/events">Events</a>
-			<a href="#/findings" data-nav="/findings">Findings</a>
-			<a href="#/privacy" data-nav="/privacy">Privacy</a>
+		<!-- Native Admin navigation: these render in Shopify's own app nav, not in
+		     the iframe. The first entry configures the home route and is not itself
+		     rendered (rel="home").
+		     NOTE: s-app-nav only renders inside real Admin, and it is not verifiable
+		     from local dev — so the in-page nav below is kept as a guaranteed
+		     fallback. Once s-app-nav is confirmed in the live embed, drop `.appnav`
+		     and its markup. -->
+		<s-app-nav>
+			<s-link href="/" rel="home">Sightline</s-link>
+			<s-link href="#/">Overview</s-link>
+			<s-link href="#/events">Events</s-link>
+			<s-link href="#/findings">Findings</s-link>
+			<s-link href="#/privacy">Privacy</s-link>
+		</s-app-nav>
+		<nav class="appnav" aria-label="Sightline sections">
+			<s-link href="#/" data-nav="/">Overview</s-link>
+			<s-link href="#/events" data-nav="/events">Events</s-link>
+			<s-link href="#/findings" data-nav="/findings">Findings</s-link>
+			<s-link href="#/privacy" data-nav="/privacy">Privacy</s-link>
 		</nav>
-		<!-- Global context: window, recording health, last reconciliation, timezone.
-		     Present on every screen (screen spec, global behavior). A labelled region
-		     rather than a live region: it re-renders on every route change, so
-		     announcing it each time would be noise — the state transitions that
-		     matter are announced by the screens' own role="alert" notices. -->
-		<div class="context" id="context" role="region" aria-label="Recording status"></div>
-		<main id="app"><p class="muted">Loading…</p></main>
+		<div id="app"></div>
 		<script type="module" src="/src/main.ts"></script>
 	</body>
 </html>

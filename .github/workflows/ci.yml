@@ -29,6 +29,13 @@ jobs:
       # contracts/sightline-api-v1.json drifts from src/apiContract.ts).
       - name: Test
         run: npm test
+      # UI checks (#25 acceptance criteria). view.ts is pure — every screen is a
+      # function from data to markup — so these render each screen and assert the
+      # product-truth copy, the per-state banners, escaping, and the Polaris
+      # markup, with no browser or DOM shim. Run as their own step for a fast,
+      # separately-visible signal; `npm test` covers them too.
+      - name: UI tests
+        run: node --test 'test/view.test.ts'
       - name: Coverage
         run: npm run coverage
       - name: Build (embedded SPA)
