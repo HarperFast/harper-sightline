@@ -331,6 +331,8 @@ Exit: release checklist is signed off and a staged production install passes smo
 
 Add a privacy-reviewed pilot exporter/analysis job over the same normalized events, findings, and rule versions. It reports incident frequency, duration, affected-record counts, resolution source, and lane—aggregated or pseudonymized—without changing ingestion or detector schemas. Gate 2 execution remains a commercial-validation project, not MVP delivery.
 
+Designed in full in the [Gate 2 pilot design](./gate2-pilot-design.md) (issue #27): measures, export contract, the 5–10 store protocol, pre-registered go/no-go thresholds, and the privacy review. Two details from that design worth knowing here: the two-week window is collected by **exporting periodically inside the 7-day retention window** rather than accumulating state in-cluster (so the retention promise and privacy disclosure are unchanged), and **Gate 1 re-announcement validation is the higher-priority prerequisite** for the paid tier — it is cheaper, more decisive, and currently untracked.
+
 ## 16. Extension seams for paid tiers
 
 These are contracts, not paid features to implement now:
