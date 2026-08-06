@@ -26,6 +26,10 @@ export const EVENT_FIELDS = [
 	'receivedAt',
 ] as const;
 export const FINDING_FIELDS = ['id', 'orderId', 'ruleVersion', 'status', 'detectedAt', 'resolvedAt', 'evidenceEventIds'] as const;
+// The findings LIST additionally carries the two order facts the screen spec's
+// list columns need (paid time, expected confirmation). They are joined from the
+// projection/expectation and allowlisted here so the join can never widen.
+export const FINDING_LIST_FIELDS = [...FINDING_FIELDS, 'paidAt', 'deadline'] as const;
 export const PROJECTION_FIELDS = [
 	'orderId',
 	'paidAt',
@@ -44,18 +48,36 @@ export const API_CONTRACT = {
 	pagination: { style: 'cursor', defaultLimit: DEFAULT_LIMIT, maxLimit: MAX_LIMIT },
 	resources: {
 		session: { path: '/api/v1/session', fields: ['shop', 'user', 'capabilities'] },
-		summary: { path: '/api/v1/summary', fields: ['shop', 'windowDays', 'events', 'orders', 'findings', 'recorder'] },
+		setup: { path: '/api/v1/setup', fields: ['shop', 'complete', 'steps', 'eventsObserved', 'action'] },
+		summary: {
+			path: '/api/v1/summary',
+			fields: ['shop', 'windowDays', 'events', 'orders', 'findings', 'recorder', 'reconciliation', 'activity'],
+		},
 		events: {
 			path: '/api/v1/events',
 			item: EVENT_FIELDS,
 			paginated: true,
-			filters: ['domain', 'topic', 'resourceId', 'sku', 'since', 'until', 'cursor', 'limit'],
+			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'since', 'until', 'cursor', 'limit'],
 		},
 		eventDetail: { path: '/api/v1/events/:id', fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding'] },
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
-		findings: { path: '/api/v1/findings', item: FINDING_FIELDS, paginated: true, filters: ['status', 'cursor', 'limit'] },
+		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'cursor', 'limit'] },
 		findingDetail: { path: '/api/v1/findings/:id', fields: [...FINDING_FIELDS, 'description', 'projection', 'expectation'] },
-		privacy: { path: '/api/v1/privacy', fields: ['shop', 'retentionDays', 'storesCustomerPii', 'dataCategories', 'deletion', 'footprint'] },
+		privacy: {
+			path: '/api/v1/privacy',
+			fields: [
+				'shop',
+				'retentionDays',
+				'storesCustomerPii',
+				'scopes',
+				'dataCategories',
+				'excludedFields',
+				'deletion',
+				'footprint',
+				'webhooks',
+				'reconciliation',
+			],
+		},
 	},
 } as const;
 

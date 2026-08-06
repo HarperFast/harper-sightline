@@ -14,6 +14,8 @@ import {
 	Projections as ProjectionsTable,
 	Expectations as ExpectationsTable,
 	Deliveries as DeliveriesTable,
+	Shops as ShopsTable,
+	Credentials as CredentialsTable,
 } from './src/db.ts';
 import {
 	listEvents,
@@ -23,6 +25,7 @@ import {
 	getSummary,
 	computeFlows,
 	getPrivacy,
+	getSetup,
 	type QueryTable,
 } from './src/queries.ts';
 import { redactShop, redactOrders } from './src/redaction.ts';
@@ -36,6 +39,10 @@ const FindingsQ = FindingsTable as unknown as QueryTable;
 const ProjectionsQ = ProjectionsTable as unknown as QueryTable;
 const ExpectationsQ = ExpectationsTable as unknown as QueryTable;
 const DeliveriesQ = DeliveriesTable as unknown as QueryTable;
+const ShopsQ = ShopsTable as unknown as QueryTable;
+// Read ONLY for the credential's `status` (reauthorization state) in /setup —
+// never for token material, which stays inside credentialStore.ts.
+const CredentialsQ = CredentialsTable as unknown as QueryTable;
 import { readShopifySecret } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 import { log, metrics, M } from './src/observe.ts';
@@ -137,7 +144,23 @@ export class SummaryResource extends Resource {
 	}
 	async get() {
 		const shopId = (await identity.authenticate(this.getContext())).shopId;
-		return getSummary({ events: EventsQ, projections: ProjectionsQ, findings: FindingsQ, deliveries: DeliveriesQ }, shopId, Date.now());
+		return getSummary(
+			{ events: EventsQ, projections: ProjectionsQ, findings: FindingsQ, deliveries: DeliveriesQ, shops: ShopsQ },
+			shopId,
+			Date.now(),
+		);
+	}
+}
+
+// First-open/setup progress (screen spec §1), derived from durable state only.
+export class SetupResource extends Resource {
+	static path = '/api/v1/setup';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const shopId = (await identity.authenticate(this.getContext())).shopId;
+		return getSetup({ shops: ShopsQ, deliveries: DeliveriesQ, credentials: CredentialsQ }, shopId, Date.now());
 	}
 }
 
@@ -162,6 +185,7 @@ export class EventsResource extends Resource {
 			topic: p.get('topic') ?? undefined,
 			resourceId: p.get('resourceId') ?? undefined,
 			sku: p.get('sku') ?? undefined,
+			source: p.get('source') ?? undefined,
 			since: numParam(p, 'since'),
 			until: numParam(p, 'until'),
 			cursor: p.get('cursor') ?? undefined,
@@ -197,7 +221,7 @@ export class FindingsResource extends Resource {
 			return detail;
 		}
 		const p = url.searchParams;
-		return listFindings(FindingsQ, shopId, {
+		return listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
 			status: p.get('status') ?? undefined,
 			cursor: p.get('cursor') ?? undefined,
 			limit: p.get('limit') ?? undefined,
@@ -212,7 +236,11 @@ export class PrivacyResource extends Resource {
 	}
 	async get() {
 		const shopId = (await identity.authenticate(this.getContext())).shopId;
-		return getPrivacy({ events: EventsQ, findings: FindingsQ, projections: ProjectionsQ }, shopId);
+		return getPrivacy(
+			{ events: EventsQ, findings: FindingsQ, projections: ProjectionsQ, deliveries: DeliveriesQ, shops: ShopsQ },
+			shopId,
+			Date.now(),
+		);
 	}
 }
 

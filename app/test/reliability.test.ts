@@ -123,8 +123,9 @@ test('high-volume summary counts correctly over a large ledger', async () => {
 	const projections = new FakeTable('id', []);
 	const findings = new FakeTable('id', []);
 	const deliveries = new FakeTable('id', []);
+	const shops = new FakeTable('shopId', [{ shopId: 's', status: 'active', lastReconciledAt: NOW, reconciliationState: 'ready' }]);
 	const started = Date.now();
-	const summary = await getSummary({ events, projections, findings, deliveries }, 's', NOW);
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's', NOW);
 	assert.equal((summary.events as Record<string, number>).total, 10_000);
 	assert.ok(Date.now() - started < 3000);
 });
