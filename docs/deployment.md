@@ -55,6 +55,35 @@ workflow secrets above are for the deploy + smoke steps.
 - **Manual:** Actions → Deploy → Run workflow → pick `environment` and optionally a
   `ref` (tag/sha/branch).
 
+## Multi-node clusters: component code does NOT replicate
+
+A Fabric instance can be a **multi-node cluster behind one hostname** — `ayoo.josh-test` is two
+nodes (`4yq-us-west4-a-1`, `ls3-us-east5-a-1`). Databases replicate between them. **Component code
+does not.** Both consequences bit us on 2026-08-06:
+
+1. `restart` sent to the load-balanced ops endpoint (`https://<cluster>:9925/`) reaches **exactly one
+   node**. The others keep the previously-loaded component in memory, so the app **flip-flops between
+   versions** depending on which node serves the request — `/api/v1/setup` alternated 401 (new) and
+   200-HTML (old, falling through to the SPA catch-all), and the SPA alternated bundle hashes.
+2. Polling `/api/v1/health` proves nothing: the **old** component answers it 200 just as happily, so a
+   deploy that shipped nothing reported success.
+
+`deploy.mjs` now handles both:
+
+- **Discovers every node** — starting from whichever node the LB hands it, reading that node's own
+  identity from `get_configuration.replication.hostname` and its peers from
+  `cluster_status.connections[].name`, then walking each peer the same way. Do **not** identify the
+  local node from the CA subject: the CA is cluster-wide and always names the issuing node, so on any
+  other node it reports the wrong name and that node is silently skipped.
+- **Restarts each node by its own hostname** (`https://<node>:9925/`) and waits for it individually.
+- **Verifies the hashed SPA bundle** the build just produced is what each node actually serves, then
+  probes the load-balanced hostname 8× to catch a mixed cluster.
+- **Exits non-zero** and names the offending nodes if any of that fails. A half-deployed cluster is
+  worse than a failed deploy, so this fails loudly rather than reporting success.
+
+If a deploy ever does report `DEPLOY NOT VERIFIED`, re-run it, or restart the named node(s) directly
+at `https://<node>:9925/` with `{"operation":"restart"}`.
+
 ## Rollback (tested path)
 
 `deploy.mjs` ships whatever tree is checked out, so **rollback = deploy an earlier
