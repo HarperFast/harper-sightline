@@ -50,7 +50,7 @@ A production install on dev-fallback secrets is not a launch candidate, so (2) g
 | Item | Status | Action |
 |---|---|---|
 | **Privacy policy, publicly reachable** | 🟡 | **Built:** served unauthenticated at `/privacy-policy` (`src/privacyPolicy.ts`), versioned with the app, claims pinned by tests against the code's own constants. **Needs:** legal review, an effective date via `SIGHTLINE_POLICY_UPDATED`, and the production URL in the Partner Dashboard |
-| **Support contact, reachable** | 🟡 | **Built:** `SIGHTLINE_SUPPORT_EMAIL` / `SIGHTLINE_SUPPORT_URL`, surfaced on the Privacy screen and on the expired-session and load-failure states — the two places a merchant is actually stuck. **Needs: the real address.** Deliberately has no default, so an unconfigured deployment says "not configured" rather than shipping a plausible-but-wrong contact |
+| **Support contact, reachable** | ✅ | `support@harperdb.io`, committed as the default in `src/support.ts` (product metadata, identical in every environment — so a deploy cannot forget it), overridable via `SIGHTLINE_SUPPORT_EMAIL` / `SIGHTLINE_SUPPORT_URL`. Surfaced on the Privacy screen and on the expired-session and load-failure states — the two places a merchant is actually stuck. **Owner still enters it in the Partner Dashboard listing**, which is a separate field the app cannot populate |
 | App name, tagline, description | ☐ | Must describe **Record** only: parallel read-only capture, 7-day searchable ledger, absence-based findings. Draft not written |
 | Screenshots | ☐ | Must come from the real UI with representative, non-fictional data. **Blocked on the live-embed check** (§5) |
 | Pricing | ☐ | Free. No paid plan may be listed while the capabilities are `false` |

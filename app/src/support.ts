@@ -1,15 +1,21 @@
 // Merchant-facing support contact (#26 App Store readiness).
 //
-// Deliberately has NO DEFAULT. Shopify requires a reachable support contact, and
-// a plausible-but-wrong address is worse than a visibly absent one: the merchant
-// gets silence instead of help and nobody notices. So an unconfigured contact
-// renders as "not configured" — obvious in dev, caught by the review checklist
-// before submission — rather than as a broken mailto that looks fine.
+// This is product metadata, not a secret and not environment-specific — the same
+// address in dev, staging, and production — so it lives in code with an env
+// override, rather than as env-only config. Env-only would mean a production
+// deploy that forgets the variable ships an app telling merchants support is not
+// configured, and Shopify requires a reachable contact. A committed correct value
+// cannot be forgotten; the override still allows a staging or white-label
+// deployment to point somewhere else:
 //
-// Set at deploy time, not in code, so it is environment-specific and rotating it
-// is a config change:
-//   SIGHTLINE_SUPPORT_EMAIL=support@example.com
+//   SIGHTLINE_SUPPORT_EMAIL=other@example.com
 //   SIGHTLINE_SUPPORT_URL=https://example.com/sightline/help   (optional)
+//
+// What is still refused is *fabrication*: an explicitly blank override does not
+// silently invent an address, and the UI/policy render "not configured" rather
+// than a broken mailto if a contact genuinely cannot be resolved.
+
+export const DEFAULT_SUPPORT_EMAIL = 'support@harperdb.io';
 
 export interface SupportContact {
 	email?: string;
@@ -24,9 +30,13 @@ function clean(value: string | undefined): string | undefined {
 }
 
 export function supportContact(env: Record<string, string | undefined> = process.env): SupportContact {
-	const email = clean(env.SIGHTLINE_SUPPORT_EMAIL);
+	// A blank/whitespace override falls back to the default rather than counting as
+	// "deliberately unset" — an empty env var is nearly always an accident, and the
+	// failure it would cause (no support contact in production) is worse than the
+	// inflexibility of not honouring it.
+	const email = clean(env.SIGHTLINE_SUPPORT_EMAIL) ?? DEFAULT_SUPPORT_EMAIL;
 	const url = clean(env.SIGHTLINE_SUPPORT_URL);
-	return { ...(email ? { email } : {}), ...(url ? { url } : {}) };
+	return { email, ...(url ? { url } : {}) };
 }
 
 // At least one reachable channel. The App Store submission cannot be made
