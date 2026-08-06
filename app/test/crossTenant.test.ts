@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { listEvents, getEventDetail, listFindings, getFindingDetail, getSummary, computeFlows, getPrivacy } from '../src/queries.ts';
+import {
+	listEvents,
+	getEventDetail,
+	listFindings,
+	getFindingDetail,
+	getSummary,
+	computeFlows,
+	getPrivacy,
+	getSetup,
+} from '../src/queries.ts';
 import { detectorKey } from '../src/detector.ts';
 import { encodeCursor } from '../src/apiContract.ts';
 
@@ -125,7 +134,29 @@ function world() {
 		{ id: `${A}:d2`, shopId: A, status: 'dead_letter', receivedAt: NOW - 100 },
 		{ id: `${A}:d3`, shopId: A, status: 'dead_letter', receivedAt: NOW - 100 },
 	]);
-	return { events, projections, findings, expectations, deliveries };
+	const shops = new FakeTable('shopId', [
+		{
+			shopId: V,
+			status: 'active',
+			scopes: 'read_orders',
+			installedAt: NOW - 1000,
+			lastReconciledAt: NOW - 60_000,
+			reconciliationState: 'ready',
+		},
+		{
+			shopId: A,
+			status: 'active',
+			scopes: 'read_orders,read_all_the_things',
+			installedAt: NOW - 1000,
+			lastReconciledAt: NOW - 60_000,
+			reconciliationState: 'ready',
+		},
+	]);
+	const credentials = new FakeTable('shopId', [
+		{ shopId: V, status: 'active' },
+		{ shopId: A, status: 'reauthorization_required' },
+	]);
+	return { events, projections, findings, expectations, deliveries, shops, credentials };
 }
 
 const idsOf = (page: { items: Array<Record<string, unknown>> }) => page.items.map((i) => i.eventId);
@@ -173,8 +204,8 @@ test('getEventDetail: victim cannot read an attacker event by its real id', asyn
 });
 
 test('listFindings: only the victim findings, never attacker findings on shared order ids', async () => {
-	const { findings } = world();
-	const page = await listFindings(findings, V, {});
+	const { findings, expectations, projections } = world();
+	const page = await listFindings(findings, expectations, projections, V, {});
 	assert.deepEqual(
 		page.items.map((i) => i.id),
 		[detectorKey(V, 'o2')],
@@ -210,6 +241,18 @@ test('computeFlows: lane counts are victim-only', async () => {
 
 test('getPrivacy: footprint counts are victim-only', async () => {
 	const w = world();
-	const p = await getPrivacy(w, V);
+	const p = await getPrivacy(w, V, NOW);
 	assert.deepEqual(p.footprint, { events: 2, orders: 2, findings: 1 });
+	// Disclosure fields are the victim's own: the attacker holds 3 dead letters and
+	// a wider scope string; neither may appear on the victim's privacy screen.
+	assert.deepEqual(p.scopes, ['read_orders']);
+	assert.deepEqual(p.webhooks, { received: 1, processed: 0, deadLettered: 1, healthy: false, lastReceivedAt: NOW - 100 });
+});
+
+test('getSetup: the attacker’s reauthorization state never blocks the victim', async () => {
+	const w = world();
+	const victim = await getSetup(w, V, NOW);
+	assert.equal(victim.action, 'none', "the attacker's reauthorization_required credential is not the victim's");
+	const attacker = await getSetup(w, A, NOW);
+	assert.equal(attacker.action, 'reauthorize');
 });

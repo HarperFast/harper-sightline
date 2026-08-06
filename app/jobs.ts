@@ -288,6 +288,11 @@ export async function reconcileShop(shopId: string, now = Date.now()): Promise<{
 		cursor = page.nextCursor;
 	} while (cursor);
 	await Checkpoints.put({ id: checkpointId, cursor: String(latest), updatedAt: now });
+	// Durable per-shop completion marker. This is what the merchant-facing setup
+	// stepper and the Overview's "reconciled N ago" / stale banner read (#16
+	// follow-ups) — the checkpoint alone is an internal cursor, and a shop is only
+	// 'ready' once a full sweep has finished for it.
+	await Shops.patch(shopId, { lastReconciledAt: now, reconciliationState: 'ready' });
 	return { orders };
 }
 

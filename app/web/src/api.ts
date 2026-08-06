@@ -35,6 +35,17 @@ export interface Session {
 	user: string;
 	capabilities: Record<string, boolean>;
 }
+export interface Reconciliation {
+	lastReconciledAt?: number;
+	ageMs: number | null;
+	stale: boolean;
+	state: string;
+}
+export interface ActivityBucket {
+	startAt: number;
+	total: number;
+	[domain: string]: number;
+}
 export interface Summary {
 	shop: string;
 	windowDays: number;
@@ -42,6 +53,22 @@ export interface Summary {
 	orders: { tracked: number; paid: number; fulfilled: number; awaitingConfirmation: number };
 	findings: { unconfirmed: number; resolved: number; suppressed: number };
 	recorder: { healthy: boolean; deadLetteredDeliveries: number };
+	reconciliation: Reconciliation;
+	activity: { days: number; domains: string[]; buckets: ActivityBucket[] };
+}
+export interface SetupStep {
+	key: string;
+	label: string;
+	state: 'done' | 'pending' | 'waiting' | 'running' | 'blocked';
+}
+export interface Setup {
+	shop: string;
+	complete: boolean;
+	steps: SetupStep[];
+	// Whether any delivery has actually been observed. Distinct from the capture
+	// step's "connected": a quiet store is connected with nothing observed yet.
+	eventsObserved: boolean;
+	action: 'reauthorize' | 'none';
 }
 export interface Flows {
 	lanes: { paid: number; fulfilled: number; awaitingConfirmation: number; cancelled: number; refunded: number };
@@ -72,6 +99,8 @@ export interface FindingItem {
 	detectedAt?: number;
 	resolvedAt?: number;
 	evidenceEventIds?: string[];
+	paidAt?: number;
+	deadline?: number;
 }
 export interface FindingDetail extends FindingItem {
 	description: string;
@@ -86,11 +115,16 @@ export interface FindingDetail extends FindingItem {
 	} | null;
 }
 export interface Privacy {
+	shop: string;
 	retentionDays: number;
 	storesCustomerPii: boolean;
+	scopes: string[];
 	dataCategories: string[];
+	excludedFields: string[];
 	deletion: Record<string, string>;
 	footprint: { events: number; orders: number; findings: number };
+	webhooks: { received: number; processed: number; deadLettered: number; healthy: boolean; lastReceivedAt?: number };
+	reconciliation: Reconciliation;
 }
 export interface Page<T> {
 	items: T[];
@@ -105,6 +139,7 @@ const qs = (params: Record<string, string | undefined>): string => {
 };
 
 export const apiSession = () => get<Session>('/api/v1/session');
+export const apiSetup = () => get<Setup>('/api/v1/setup');
 export const apiSummary = () => get<Summary>('/api/v1/summary');
 export const apiFlows = () => get<Flows>('/api/v1/flows');
 export const apiEvents = (params: Record<string, string | undefined>) => get<Page<EventItem>>(`/api/v1/events${qs(params)}`);

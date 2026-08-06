@@ -84,6 +84,9 @@ if (secret) {
 	const session = await req('/api/v1/session', { headers: auth });
 	check('GET /api/v1/session authenticated = 200', session.status === 200, `${session.status} ${session.body}`);
 
+	const setup = await req('/api/v1/setup', { headers: auth });
+	check('GET /api/v1/setup authenticated = 200', setup.status === 200, `${setup.status} ${setup.body}`);
+
 	const summary = await req('/api/v1/summary', { headers: auth });
 	check('GET /api/v1/summary authenticated = 200', summary.status === 200, String(summary.status));
 

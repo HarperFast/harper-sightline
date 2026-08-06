@@ -1,8 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { listEvents, getEventDetail, listFindings, getFindingDetail, getSummary, computeFlows, getPrivacy } from '../src/queries.ts';
-import { EVENT_FIELDS, FINDING_FIELDS, MAX_LIMIT } from '../src/apiContract.ts';
+import {
+	listEvents,
+	getEventDetail,
+	listFindings,
+	getFindingDetail,
+	getSummary,
+	computeFlows,
+	getPrivacy,
+	getSetup,
+} from '../src/queries.ts';
+import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/apiContract.ts';
 import { detectorKey } from '../src/detector.ts';
 
 const NOW = 1_000_000_000_000;
@@ -90,8 +99,24 @@ function fixtures() {
 			createdAt: NOW - 5000,
 		},
 	]);
-	const deliveries = new FakeTable('id', [{ id: 's1:d1', shopId: 's1', status: 'dead_letter' }]);
-	return { events, projections, findings, expectations, deliveries };
+	const deliveries = new FakeTable('id', [
+		{ id: 's1:d1', shopId: 's1', status: 'dead_letter', receivedAt: NOW - 3000 },
+		{ id: 's1:d2', shopId: 's1', status: 'processed', receivedAt: NOW - 900 },
+		{ id: 's2:d1', shopId: 's2', status: 'processed', receivedAt: NOW - 10 },
+	]);
+	const shops = new FakeTable('shopId', [
+		{
+			shopId: 's1',
+			status: 'active',
+			scopes: 'read_orders,read_fulfillments',
+			installedAt: NOW - 10 * DAY,
+			lastReconciledAt: NOW - 4 * 60_000,
+			reconciliationState: 'ready',
+		},
+		{ shopId: 's2', status: 'active', scopes: 'read_orders', installedAt: NOW - DAY, lastReconciledAt: NOW, reconciliationState: 'ready' },
+	]);
+	const credentials = new FakeTable('shopId', [{ shopId: 's1', status: 'active' }]);
+	return { events, projections, findings, expectations, deliveries, shops, credentials };
 }
 
 test('listEvents is tenant-scoped, windowed, and field-allowlisted', async () => {
@@ -115,6 +140,21 @@ test('listEvents filters by domain and resourceId', async () => {
 	);
 	const byResource = await listEvents(events, 's1', NOW, { resourceId: 'o1' });
 	assert.deepEqual(byResource.items.map((i) => i.eventId).sort(), ['s1:e1', 's1:e2']);
+});
+
+test('listEvents filters by evidence source', async () => {
+	const events = new FakeTable('eventId', [
+		{ eventId: 's1:w', shopId: 's1', domain: 'order', source: 'webhook', occurredAt: NOW - 100, receivedAt: NOW - 100 },
+		{ eventId: 's1:r', shopId: 's1', domain: 'order', source: 'reconciliation', occurredAt: NOW - 200, receivedAt: NOW - 200 },
+	]);
+	assert.deepEqual(
+		(await listEvents(events, 's1', NOW, { source: 'reconciliation' })).items.map((i) => i.eventId),
+		['s1:r'],
+	);
+	assert.deepEqual(
+		(await listEvents(events, 's1', NOW, { source: 'webhook' })).items.map((i) => i.eventId),
+		['s1:w'],
+	);
 });
 
 test('listEvents paginates by cursor without dupes or gaps', async () => {
@@ -161,14 +201,32 @@ test('getEventDetail refuses cross-tenant access even with the correct id', asyn
 });
 
 test('listFindings is tenant-scoped and filterable by status', async () => {
-	const { findings } = fixtures();
-	const page = await listFindings(findings, 's1', {});
+	const { findings, expectations, projections } = fixtures();
+	const page = await listFindings(findings, expectations, projections, 's1', {});
 	assert.deepEqual(
 		page.items.map((i) => i.orderId),
 		['o2'],
 	);
-	for (const key of Object.keys(page.items[0])) assert.ok((FINDING_FIELDS as readonly string[]).includes(key), `leaked ${key}`);
-	assert.equal((await listFindings(findings, 's1', { status: 'resolved' })).items.length, 0);
+	for (const key of Object.keys(page.items[0])) assert.ok((FINDING_LIST_FIELDS as readonly string[]).includes(key), `leaked ${key}`);
+	assert.equal((await listFindings(findings, expectations, projections, 's1', { status: 'resolved' })).items.length, 0);
+});
+
+test('listFindings carries the list columns (paid time, expected confirmation)', async () => {
+	const { findings, expectations, projections } = fixtures();
+	const [item] = (await listFindings(findings, expectations, projections, 's1', {})).items;
+	assert.equal(item.paidAt, NOW - 2000, 'paid time joined from the projection');
+	assert.equal(item.deadline, NOW - 200, 'expected-confirmation deadline joined from the expectation');
+});
+
+test('listFindings join never crosses tenants', async () => {
+	// s2's own finding must not pick up s1's identically-keyed order facts.
+	const { expectations, projections } = fixtures();
+	const findings = new FakeTable('id', [
+		{ id: detectorKey('s2', 'o2'), shopId: 's2', orderId: 'o2', ruleVersion: 1, status: 'unconfirmed', detectedAt: NOW - 10 },
+	]);
+	const [item] = (await listFindings(findings, expectations, projections, 's2', {})).items;
+	assert.equal(item.paidAt, undefined, 'no s1 projection leaked into an s2 row');
+	assert.equal(item.deadline, undefined, 'no s1 expectation leaked into an s2 row');
 });
 
 test('getFindingDetail joins expectation + projection, cross-tenant safe', async () => {
@@ -194,6 +252,44 @@ test('getSummary counts reconcile to the fixtures, scoped to the tenant', async 
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 });
 });
 
+test('getSummary reports reconciliation freshness, and staleness when it lags', async () => {
+	const f = fixtures();
+	const fresh = (await getSummary(f, 's1', NOW)).reconciliation as Record<string, unknown>;
+	assert.deepEqual(fresh, { lastReconciledAt: NOW - 4 * 60_000, ageMs: 4 * 60_000, stale: false, state: 'ready' });
+
+	// Past the operator-side staleness threshold → the merchant sees it too.
+	const stale = (
+		await getSummary(
+			{ ...f, shops: new FakeTable('shopId', [{ shopId: 's1', lastReconciledAt: NOW - 90 * 60_000, reconciliationState: 'ready' }]) },
+			's1',
+			NOW,
+		)
+	).reconciliation as Record<string, unknown>;
+	assert.equal(stale.stale, true);
+
+	// Never reconciled must NOT read as "reconciled just now".
+	const never = (await getSummary({ ...f, shops: new FakeTable('shopId', [{ shopId: 's1', reconciliationState: 'pending' }]) }, 's1', NOW))
+		.reconciliation as Record<string, unknown>;
+	assert.deepEqual(never, { ageMs: null, stale: true, state: 'pending' });
+});
+
+test('getSummary activity buckets the window by day and reconciles to the total', async () => {
+	const f = fixtures();
+	const s = await getSummary(f, 's1', NOW);
+	const activity = s.activity as { days: number; buckets: Array<Record<string, number>> };
+	assert.equal(activity.buckets.length, 7, 'one bucket per retention day');
+	assert.equal(
+		activity.buckets.reduce((n, b) => n + b.total, 0),
+		(s.events as Record<string, number>).total,
+		'buckets sum to the window total',
+	);
+	// Both s1 in-window events are seconds old → the newest bucket.
+	const newest = activity.buckets[6];
+	assert.equal(newest.order, 1);
+	assert.equal(newest.fulfillment, 1);
+	assert.equal(newest.inventory, 0, 'the out-of-window inventory event is excluded');
+});
+
 test('computeFlows lane counts reconcile and are rebuildable from projections', async () => {
 	const { projections } = fixtures();
 	const flows = await computeFlows(projections, 's1', NOW);
@@ -204,8 +300,109 @@ test('computeFlows lane counts reconcile and are rebuildable from projections', 
 
 test('getPrivacy reports no PII and the tenant footprint', async () => {
 	const f = fixtures();
-	const p = await getPrivacy(f, 's1');
+	const p = await getPrivacy(f, 's1', NOW);
 	assert.equal(p.storesCustomerPii, false);
 	assert.equal(p.retentionDays, 7);
 	assert.deepEqual(p.footprint, { events: 3, orders: 2, findings: 1 });
+});
+
+test('getPrivacy discloses scopes, exclusions, and capture/reconciliation health', async () => {
+	const f = fixtures();
+	const p = await getPrivacy(f, 's1', NOW);
+	assert.deepEqual(p.scopes, ['read_orders', 'read_fulfillments']);
+	assert.ok(
+		(p.excludedFields as string[]).some((x) => /email/i.test(x)),
+		'the exclusion list is stated, not just the inclusion list',
+	);
+	// Delivery health is this shop's only — s2's delivery must not be counted.
+	assert.deepEqual(p.webhooks, { received: 2, processed: 1, deadLettered: 1, healthy: false, lastReceivedAt: NOW - 900 });
+	assert.equal((p.reconciliation as Record<string, unknown>).stale, false);
+});
+
+test('getPrivacy never returns token material or cross-tenant metrics', async () => {
+	const f = fixtures();
+	// A credential-shaped secret on the shop row must not reach the response.
+	f.shops.rows.set('s1', { ...(f.shops.rows.get('s1') as Record<string, unknown>), accessTokenEnc: 'SECRET' });
+	const serialized = JSON.stringify(await getPrivacy(f, 's1', NOW));
+	assert.ok(!serialized.includes('SECRET'), 'no token material in the privacy payload');
+	assert.ok(!serialized.includes('s2'), 'no other tenant referenced');
+});
+
+test('getSetup derives each step from durable state, never a timer', async () => {
+	const f = fixtures();
+	// s1: installed, deliveries observed, reconciliation ready → complete.
+	const done = await getSetup(f, 's1', NOW);
+	assert.equal(done.complete, true);
+	assert.deepEqual(
+		(done.steps as Array<Record<string, unknown>>).map((s) => s.state),
+		['done', 'done', 'done'],
+	);
+	assert.equal(done.action, 'none');
+
+	assert.equal(done.eventsObserved, true);
+
+	// A fresh install: installed, but no credential yet and no sweep finished.
+	const fresh = await getSetup(
+		{
+			shops: new FakeTable('shopId', [{ shopId: 's3', status: 'active', installedAt: NOW, reconciliationState: 'pending' }]),
+			deliveries: new FakeTable('id', []),
+			credentials: new FakeTable('shopId', []),
+		},
+		's3',
+		NOW,
+	);
+	assert.equal(fresh.complete, false);
+	assert.deepEqual(
+		(fresh.steps as Array<Record<string, unknown>>).map((s) => s.state),
+		['done', 'waiting', 'running'],
+		'no credential yet → the connection step is still in progress',
+	);
+	assert.equal(fresh.eventsObserved, false);
+});
+
+test('getSetup stays complete for a connected shop that has simply been quiet', async () => {
+	// Deliveries live on the 7-day ledger and get purged. A healthy low-volume shop
+	// with nothing in the window must NOT regress to "not set up" — otherwise a
+	// returning merchant gets bounced back to the first-open screen.
+	const setup = await getSetup(
+		{
+			shops: new FakeTable('shopId', [
+				{ shopId: 's4', status: 'active', installedAt: NOW - 30 * DAY, lastReconciledAt: NOW - 60_000, reconciliationState: 'ready' },
+			]),
+			deliveries: new FakeTable('id', []),
+			credentials: new FakeTable('shopId', [{ shopId: 's4', status: 'active' }]),
+		},
+		's4',
+		NOW,
+	);
+	assert.equal(setup.complete, true, 'a purged-but-healthy ledger does not un-complete setup');
+	assert.equal(setup.eventsObserved, false, 'but the UI can still say "connected — no events yet"');
+});
+
+test('getSetup surfaces reauthorization as the one safe action', async () => {
+	const f = fixtures();
+	const blocked = await getSetup(
+		{ ...f, credentials: new FakeTable('shopId', [{ shopId: 's1', status: 'reauthorization_required' }]) },
+		's1',
+		NOW,
+	);
+	assert.equal(blocked.action, 'reauthorize');
+	assert.equal(blocked.complete, false);
+	assert.deepEqual(
+		(blocked.steps as Array<Record<string, unknown>>).map((s) => s.state),
+		['done', 'blocked', 'blocked'],
+	);
+});
+
+test('getSetup is tenant-scoped: another shop’s deliveries are not this shop’s activity', async () => {
+	const setup = await getSetup(
+		{
+			shops: new FakeTable('shopId', [{ shopId: 's3', status: 'active', installedAt: NOW, reconciliationState: 'pending' }]),
+			deliveries: new FakeTable('id', [{ id: 's9:d1', shopId: 's9', status: 'processed', receivedAt: NOW }]),
+			credentials: new FakeTable('shopId', [{ shopId: 's3', status: 'active' }]),
+		},
+		's3',
+		NOW,
+	);
+	assert.equal(setup.eventsObserved, false, "another tenant's delivery is not evidence this shop has seen activity");
 });
