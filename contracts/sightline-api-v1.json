@@ -13,7 +13,8 @@
 				"shop",
 				"user",
 				"capabilities",
-				"timezone"
+				"timezone",
+				"support"
 			]
 		},
 		"setup": {

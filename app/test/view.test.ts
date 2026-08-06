@@ -18,6 +18,7 @@ import {
 	overviewView,
 	parseHash,
 	privacyView,
+	setSupport,
 	setupView,
 	useShopTimeZone,
 	zoneText,
@@ -510,6 +511,42 @@ test('an expired session is distinguished from a recoverable error', () => {
 	const failed = errorViewMarkup('503 upstream');
 	assert.ok(failed.includes('data-retry'), 'a recoverable error offers a retry');
 	assert.ok(failed.includes('503 upstream'));
+});
+
+// ── support surface ──────────────────────────────────────────────────────────
+
+test('support is offered on the two screens where a merchant is stuck', () => {
+	setSupport({ email: 'help@example.com' });
+	try {
+		assert.ok(authExpiredView().includes('mailto:help@example.com'), 'an expired session offers help');
+		assert.ok(errorViewMarkup('503 upstream').includes('mailto:help@example.com'), 'so does a load failure');
+		assert.ok(privacyView(privacy(), NOW, '').includes('mailto:help@example.com'), 'and the Privacy screen');
+	} finally {
+		setSupport(undefined);
+	}
+});
+
+test('an unconfigured deployment promises no support it cannot deliver', () => {
+	setSupport(undefined);
+	assert.ok(!authExpiredView().includes('Need help?'), 'no empty offer of help');
+	assert.ok(!errorViewMarkup('503').includes('Need help?'));
+	// The Privacy screen is where an operator would notice, so it says so there.
+	assert.ok(privacyView(privacy(), NOW, '').includes('Support contact is not configured'));
+});
+
+test('the Privacy screen links the public policy', () => {
+	assert.ok(privacyView(privacy(), NOW, '').includes('href="/privacy-policy"'));
+});
+
+test('a hostile support value cannot inject markup into the app', () => {
+	setSupport({ email: '"><img src=x onerror=alert(1)>', url: '"><script>alert(1)</script>' });
+	try {
+		const html = privacyView(privacy(), NOW, '');
+		assert.ok(!html.includes('<img src=x'));
+		assert.ok(!html.includes('<script>alert(1)</script>'));
+	} finally {
+		setSupport(undefined);
+	}
 });
 
 // ── Polaris markup ───────────────────────────────────────────────────────────

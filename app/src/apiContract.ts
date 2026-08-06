@@ -47,7 +47,7 @@ export const API_CONTRACT = {
 	windowDays: WINDOW_DAYS,
 	pagination: { style: 'cursor', defaultLimit: DEFAULT_LIMIT, maxLimit: MAX_LIMIT },
 	resources: {
-		session: { path: '/api/v1/session', fields: ['shop', 'user', 'capabilities', 'timezone'] },
+		session: { path: '/api/v1/session', fields: ['shop', 'user', 'capabilities', 'timezone', 'support'] },
 		setup: { path: '/api/v1/setup', fields: ['shop', 'complete', 'steps', 'eventsObserved', 'action'] },
 		summary: {
 			path: '/api/v1/summary',

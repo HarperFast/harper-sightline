@@ -28,6 +28,8 @@ import {
 	getSetup,
 	type QueryTable,
 } from './src/queries.ts';
+import { supportContact } from './src/support.ts';
+import { privacyPolicyHtml } from './src/privacyPolicy.ts';
 import { redactShop, redactOrders } from './src/redaction.ts';
 import { REDACT_TARGETS } from './src/ledgerTargets.ts';
 import { writeAudit } from './src/audit.ts';
@@ -63,6 +65,24 @@ const VERSION = '0.1.0';
 
 const identity = createShopifyIdentityAdapter({ apiKey: API_KEY });
 
+// The public privacy policy (#26). Deliberately UNAUTHENTICATED: the App Store
+// listing links to it and a reviewer must be able to read it without installing
+// the app. Contains no shop data — it is the same static document for everyone —
+// so there is nothing here to scope to a tenant. No frame-ancestors CSP: unlike
+// the app itself this is meant to open in a normal browser tab, not an iframe.
+export class PrivacyPolicy extends Resource {
+	static path = '/privacy-policy';
+	allowRead() {
+		return true;
+	}
+	get() {
+		return new Response(privacyPolicyHtml(supportContact(), process.env.SIGHTLINE_POLICY_UPDATED ?? 'Not yet published'), {
+			status: 200,
+			headers: { 'content-type': 'text/html; charset=utf-8' },
+		});
+	}
+}
+
 // Public health probe. Also the standing guard used by scripts/smoke.mjs — a
 // bad import silently 404s all routes while the component reports healthy
 // (ADR-001), so a live route check runs after every deploy.
@@ -90,6 +110,10 @@ async function sessionPayload(shopId: string, userId: string): Promise<Record<st
 		user: userId,
 		capabilities: capabilitiesFor(shopId),
 		...(shop?.ianaTimezone ? { timezone: shop.ianaTimezone } : {}),
+		// Merchant-facing support contact, so the UI can offer help on the screens
+		// where a merchant is actually stuck. Absent when unconfigured — never a
+		// fabricated address (src/support.ts).
+		support: supportContact(),
 	};
 }
 
