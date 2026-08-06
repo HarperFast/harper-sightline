@@ -42,6 +42,9 @@ Three logical environments; each is a GitHub **Environment** with its own secret
 | `SHOPIFY_API_SECRET` | app runtime + `smoke.mjs` | **rotated** app secret (see below); enables authenticated smoke |
 | `SHOPIFY_API_KEY` | `smoke.mjs` | public client id (not secret) |
 | `SIGHTLINE_TOKEN_KEY` | app runtime | 32-byte hex token-encryption key (set on the Fabric instance) |
+| `SIGHTLINE_SUPPORT_EMAIL` | app runtime | **Optional override.** Defaults in code to `support@harperdb.io` — the contact is product metadata, identical in every environment, so it ships committed and a deploy cannot forget it and leave merchants with no recourse. Override only for a staging or white-label deployment. |
+| `SIGHTLINE_SUPPORT_URL` | app runtime | Optional help-centre URL, shown alongside the email |
+| `SIGHTLINE_POLICY_UPDATED` | app runtime | Effective date shown on `/privacy-policy`. Set once the policy passes legal review; until then the page reads "Not yet published" |
 
 Runtime secrets the *component* reads (`SHOPIFY_API_SECRET`, `SIGHTLINE_TOKEN_KEY`,
 `SIGHTLINE_REQUIRE_SECRETS`) live on the **Fabric instance** (Harper native secrets /

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { privacyPolicyHtml, POLICY_ENTITY } from '../src/privacyPolicy.ts';
-import { supportContact, supportConfigured } from '../src/support.ts';
+import { supportContact, supportConfigured, DEFAULT_SUPPORT_EMAIL } from '../src/support.ts';
 import { WINDOW_DAYS } from '../src/apiContract.ts';
 import { EXCLUDED_CUSTOMER_FIELDS } from '../src/queries.ts';
 
@@ -10,25 +10,37 @@ import { EXCLUDED_CUSTOMER_FIELDS } from '../src/queries.ts';
 // become false if behavior changed, and the two failure modes that matter most:
 // fabricating a support contact, and claiming to store less than we do.
 
-test('support contact has no default — an unset deployment is unconfigured, not fake', () => {
-	assert.deepEqual(supportContact({}), {});
-	assert.equal(supportConfigured(supportContact({})), false);
-	// Blank/whitespace env vars must not count as configured.
-	assert.deepEqual(supportContact({ SIGHTLINE_SUPPORT_EMAIL: '', SIGHTLINE_SUPPORT_URL: '   ' }), {});
-	assert.equal(supportConfigured(supportContact({ SIGHTLINE_SUPPORT_EMAIL: '  ' })), false);
+test('a deployment that configures nothing still has a reachable support contact', () => {
+	// The contact is product metadata, identical everywhere, so it ships in code —
+	// a production deploy cannot forget it and leave merchants with no recourse.
+	assert.deepEqual(supportContact({}), { email: DEFAULT_SUPPORT_EMAIL });
+	assert.equal(supportConfigured(supportContact({})), true);
+	// A blank override is an accident, not an instruction to unset.
+	assert.deepEqual(supportContact({ SIGHTLINE_SUPPORT_EMAIL: '   ' }), { email: DEFAULT_SUPPORT_EMAIL });
 });
 
-test('support contact reads either channel and trims', () => {
+test('support contact honours an override and trims', () => {
 	assert.deepEqual(supportContact({ SIGHTLINE_SUPPORT_EMAIL: ' help@example.com ' }), { email: 'help@example.com' });
-	assert.deepEqual(supportContact({ SIGHTLINE_SUPPORT_URL: 'https://example.com/help' }), { url: 'https://example.com/help' });
+	assert.deepEqual(supportContact({ SIGHTLINE_SUPPORT_URL: 'https://example.com/help' }), {
+		email: DEFAULT_SUPPORT_EMAIL,
+		url: 'https://example.com/help',
+	});
 	assert.equal(supportConfigured({ url: 'https://example.com/help' }), true);
-	assert.equal(supportConfigured({ email: 'help@example.com' }), true);
+	assert.equal(supportConfigured({}), false, 'an empty contact is still recognised as unconfigured');
 });
 
-test('the policy never fabricates a support contact', () => {
+test('the policy never fabricates a support contact when none can be resolved', () => {
+	// Reachable only by passing an empty contact explicitly — the defensive path
+	// for a caller that could not resolve one. It must not invent an address.
 	const html = privacyPolicyHtml({});
 	assert.ok(html.includes('Support contact is not configured'), 'says so plainly instead of inventing an address');
 	assert.ok(!html.includes('mailto:'), 'and offers no broken mailto');
+});
+
+test('the policy publishes the default contact end to end', () => {
+	const html = privacyPolicyHtml(supportContact({}));
+	assert.ok(html.includes(`mailto:${DEFAULT_SUPPORT_EMAIL}`));
+	assert.ok(!html.includes('not configured'));
 });
 
 test('the policy publishes the configured contact', () => {
