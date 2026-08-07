@@ -41,6 +41,11 @@ declare module 'harper' {
 	export function getContext(): RequestContext;
 }
 
+// Harper injects `logger` as a global into component modules (not a `harper`
+// export), alongside `server`. Method names are probed at runtime in
+// src/harperLogSink.ts rather than relied on, so this type is intentionally loose.
+declare const logger: Record<string, ((message: string) => void) | undefined> | undefined;
+
 // Harper injects `server` as a global into component modules (not a `harper`
 // export). Used to register HTTP middleware.
 declare const server:

@@ -7,7 +7,8 @@ import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
-import { loadAccessToken } from './src/credentialStore.ts';
+import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
+import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
 import { fetchOrdersUpdatedSince, fetchShopTimezone } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
 import { log, metrics, M } from './src/observe.ts';
@@ -267,9 +268,30 @@ const RECONCILE_INITIAL_DELAY_MS = 40_000;
 const RECONCILE_BACKFILL_MS = 7 * 24 * 60 * 60 * 1000; // first run: last 7 days
 let reconciling = false;
 
+// Reconcile one shop, resolving (and if necessary rotating) its access token
+// first. Two attempts: a 401 mid-sweep means the token stopped being accepted
+// between the pre-flight expiry check and the call, so rotate once and retry.
+// Restarting the shop is safe — synthesized event ids are deterministic and the
+// checkpoint only advances after a full pass, so a partial pass replays cleanly.
 export async function reconcileShop(shopId: string, now = Date.now()): Promise<{ orders: number } | null> {
-	const token = await loadAccessToken(shopId);
-	if (!token) return null; // no Admin credential yet — capture-only
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const token = await getUsableAccessToken(tokenDeps, shopId, now);
+		if (!token) return null; // no credential, or parked in reauthorization_required
+		try {
+			return await reconcileShopWithToken(shopId, token, now);
+		} catch (err) {
+			if (attempt === 0 && isAuthError(err)) {
+				metrics.inc(M.reconcileError);
+				log('warn', 'reconcile.token.rejected', { shop: shopId });
+				if (await rotateShopCredential(shopId)) continue;
+			}
+			throw err;
+		}
+	}
+	return null;
+}
+
+async function reconcileShopWithToken(shopId: string, token: string, now: number): Promise<{ orders: number } | null> {
 	// Cache the store's configured timezone once, so merchant-facing timestamps
 	// render in the shop's zone rather than the viewer's. Display-only: a failure
 	// is swallowed and simply retried on the next sweep — it must never be able to

@@ -9,6 +9,12 @@ import { requireRealSecrets, InsecureSecretError } from './secretsPolicy.ts';
 // in Shopify before any non-dev use.
 const DEV_FALLBACK_SECRET = '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';
 
+// The app's client_id. PUBLIC, not a secret — but it lives here beside the secret
+// reader so the two Shopify app credentials are configured in one place and the
+// literal cannot drift between the request path (resources.ts) and background
+// token rotation (tokenDeps.ts).
+export const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY ?? 'e446bda5edb3ee3bae6e0ba280ef8b12';
+
 // Read the Shopify app secret from Harper native secrets (encrypted, never
 // logged/replicated as plaintext — ADR-001). Dynamic import + optional access
 // so a differing secrets API can never break module load / route registration.
