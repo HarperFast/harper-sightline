@@ -43,6 +43,14 @@ export async function ensureCredential(args: {
 	try {
 		const tok = await exchangeOfflineToken({ shop: args.shop, sessionToken: args.sessionToken, apiKey: args.apiKey, secret: args.secret });
 		await saveCredential(args.shop, tok);
+		// saveCredential resets the CREDENTIAL to active, but nothing resets the
+		// SHOP — and runReconcileSweep only iterates status:'active'. Without this a
+		// single refresh failure would park the shop in reauthorization_required
+		// permanently: the merchant re-opens the app, the credential recovers, and
+		// background reconciliation still never resumes. Only lift the reauth state
+		// — an uninstalled shop must NOT be resurrected by an app load.
+		const shop = await Shops.get(args.shop);
+		if (shop?.status === 'reauthorization_required') await Shops.patch(args.shop, { status: 'active' });
 		return 'created';
 	} catch {
 		return 'failed';

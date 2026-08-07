@@ -45,9 +45,16 @@ const ShopsQ = ShopsTable as unknown as QueryTable;
 // Read ONLY for the credential's `status` (reauthorization state) in /setup —
 // never for token material, which stays inside credentialStore.ts.
 const CredentialsQ = CredentialsTable as unknown as QueryTable;
-import { readShopifySecret } from './src/readSecret.ts';
+import { readShopifySecret, SHOPIFY_API_KEY } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 import { log, metrics, M } from './src/observe.ts';
+import { installHarperLogSink } from './src/harperLogSink.ts';
+
+// Route logs into Harper's logger before anything else logs, so the ops.snapshot
+// heartbeat and every error line are reachable via the operations API's read_log
+// rather than going to stdout where nothing can query them.
+const logSinkInstalled = installHarperLogSink();
+log('info', 'boot.logsink', { sink: logSinkInstalled ? 'harper' : 'console' });
 
 // Preserve the RAW request body so webhook HMAC can be verified before parsing
 // (Harper otherwise parses application/json and consumes the bytes). We keep the
@@ -59,8 +66,9 @@ contentTypes.set('application/json', {
 	q: 1,
 });
 
-// Public app API key (client_id) — not a secret.
-const API_KEY = process.env.SHOPIFY_API_KEY ?? 'e446bda5edb3ee3bae6e0ba280ef8b12';
+// Public app API key (client_id) — not a secret. Sourced from readSecret.ts so the
+// literal cannot drift between here and background token rotation.
+const API_KEY = SHOPIFY_API_KEY;
 const VERSION = '0.1.0';
 
 const identity = createShopifyIdentityAdapter({ apiKey: API_KEY });
