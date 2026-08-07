@@ -33,8 +33,15 @@ export interface TokenDeps {
 }
 
 // Refresh this far ahead of expiry so a token cannot die part-way through a
-// sweep. Comfortably larger than the 10-minute reconcile interval, so a token is
-// renewed a whole cycle before it could fail.
+// sweep. It MUST exceed the 10-minute reconcile interval, or a token could lapse
+// between two ticks and only be caught by the 401 retry.
+//
+// Measured token lifetime on 2026-08-07: **60 minutes** (rotation at 20:07:32 →
+// expiry 21:07:32). Not the 24h one might assume — which is why the pre-fix
+// behaviour was so much worse than it looked: reconciliation broke within an hour
+// of the merchant last opening the app, not once a day. With a 60-minute token
+// and a 10-minute loop, 15 minutes of margin means rotation happens at ~45
+// minutes elapsed (~75% of life) with 1.5 cycles of headroom.
 export const REFRESH_MARGIN_MS = 15 * 60 * 1000;
 
 // Resolve a token that is actually usable, rotating first when it is at or near
