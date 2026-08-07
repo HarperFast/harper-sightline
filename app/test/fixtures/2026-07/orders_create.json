@@ -9,6 +9,8 @@
 	"financial_status": "pending",
 	"fulfillment_status": null,
 	"currency": "USD",
+	"total_price": "14.99",
+	"current_total_price": "14.99",
 	"line_items": [{ "id": 222, "sku": "MUG-01", "title": "Mug", "quantity": 1, "fulfillable_quantity": 1, "requires_shipping": true }],
 	"email": "buyer2@example.com",
 	"customer": { "id": 1000, "first_name": "John", "last_name": "Roe" },

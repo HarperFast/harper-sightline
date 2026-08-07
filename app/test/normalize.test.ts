@@ -137,9 +137,9 @@ for (const c of CASES) {
 }
 
 test('order events carry fulfillment eligibility from line_items (#12)', () => {
-	// orders_paid: one shippable line, fulfillable_quantity 2.
+	// orders_paid: two shippable lines, fulfillable_quantity 2 + 1.
 	const paid = normalizeDelivery(meta('orders/paid'), stripPii(fixture('orders_paid')))[0];
-	assert.equal(paid.fulfillableItemCount, 2);
+	assert.equal(paid.fulfillableItemCount, 3);
 	// A digital order (no line requires shipping) yields 0, not undefined.
 	const digital = normalizeDelivery(meta('orders/paid'), {
 		id: 42,

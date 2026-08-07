@@ -31,10 +31,15 @@ App-specific subscriptions (declared in `shopify.app.toml`). `include_fields` is
 
 | Domain | Topic(s) | Scope | `include_fields` (non-PII whitelist — re-verify names against 2026-07 payloads) |
 |---|---|---|---|
-| Orders | `orders/create`, `orders/paid`, `orders/updated`, `orders/cancelled` | `read_orders` | `id`, `admin_graphql_api_id`, `name`, `order_number`, `created_at`, `updated_at`, `processed_at`, `cancelled_at`, `closed_at`, `confirmed`, `financial_status`, `fulfillment_status`, `currency`, `line_items` |
-| Fulfillment | `fulfillments/create`, `fulfillments/update` | `read_fulfillments` | `id`, `admin_graphql_api_id`, `order_id`, `status`, `shipment_status`, `created_at`, `updated_at`, `tracking_company`, `tracking_numbers`, `line_items` — **exclude `destination`** (address) |
+| Orders | `orders/create`, `orders/paid`, `orders/updated`, `orders/cancelled` | `read_orders` | `id`, `admin_graphql_api_id`, `name`, `order_number`, `created_at`, `updated_at`, `processed_at`, `cancelled_at`, `closed_at`, `confirmed`, `financial_status`, `fulfillment_status`, `currency`, `total_price`, `current_total_price`, `line_items` |
+| Fulfillment | `fulfillments/create`, `fulfillments/update` | `read_fulfillments` | `id`, `admin_graphql_api_id`, `order_id`, `status`, `shipment_status`, `location_id`, `created_at`, `updated_at`, `tracking_company`, `tracking_numbers`, `line_items` — **exclude `destination`** (address) |
 | Inventory | `inventory_levels/update` | `read_inventory` | `inventory_item_id`, `location_id`, `available`, `updated_at` |
 | Refunds | `refunds/create` | `read_orders` | `id`, `admin_graphql_api_id`, `order_id`, `created_at`, `processed_at`, `refund_line_items`, `transactions` — **exclude `note`** (free text) |
+
+| Topic | Added fields | Why | PCD level |
+|---|---|---|---|
+| `orders/*` | `total_price`, `current_total_price` | Order value, so a merchant can triage unconfirmed orders by exposure rather than by row order. Money amounts carry no customer identifier. | Level 1 |
+| `fulfillments/*` | `location_id` | Which location shipped, so a multi-location merchant can see whether one location is the source of missing confirmations. | Level 1 |
 
 Notes:
 - `line_items` carries `sku`, `quantity`, `fulfillable_quantity`, `requires_shipping`, `fulfillment_status`, and product `title` — all Level 1 (not customer PII), and exactly the detector/evidence facts we store.
@@ -68,6 +73,8 @@ These pair with the ADR-003 purge/redaction mechanism (targeted `DELETE` by shop
 **Everything Sightline stores is Level 1:** ids, statuses (`financial_status`, `fulfillment_status`), timestamps, SKU/quantity, and fulfillment tracking evidence. We explicitly do **not** store customer name, email, phone, or address.
 
 **Double protection against PII:** (a) without Level 2 approval, Shopify redacts PII from webhook payloads anyway; (b) our `include_fields` whitelists exclude PII fields so they are never sent. Webhooks are treated as signals only — we never call the Admin API for sensitive fields.
+
+Money amounts (`total_price`, `current_total_price`, `currency`) and operational identifiers (`location_id`, `tracking_company`, `tracking_numbers`) are order facts, not customer identifiers, and remain inside Level 1. No Level 2 identifier is requested.
 
 ### Level 1 approval checklist (Partner Dashboard → API Access → Protected Customer Data Access)
 

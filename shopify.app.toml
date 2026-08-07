@@ -26,12 +26,12 @@ api_version = "2026-07"
   [[webhooks.subscriptions]]
   topics = [ "orders/create", "orders/paid", "orders/updated", "orders/cancelled" ]
   uri = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/events"
-  include_fields = [ "id", "admin_graphql_api_id", "name", "order_number", "created_at", "updated_at", "processed_at", "cancelled_at", "closed_at", "confirmed", "financial_status", "fulfillment_status", "currency", "line_items" ]
+  include_fields = [ "id", "admin_graphql_api_id", "name", "order_number", "created_at", "updated_at", "processed_at", "cancelled_at", "closed_at", "confirmed", "financial_status", "fulfillment_status", "currency", "total_price", "current_total_price", "line_items" ]
 
   [[webhooks.subscriptions]]
   topics = [ "fulfillments/create", "fulfillments/update" ]
   uri = "https://ayoo.josh-test.harperfabric.com/webhooks/shopify/events"
-  include_fields = [ "id", "admin_graphql_api_id", "order_id", "status", "shipment_status", "created_at", "updated_at", "tracking_company", "tracking_numbers", "line_items" ]
+  include_fields = [ "id", "admin_graphql_api_id", "order_id", "status", "shipment_status", "location_id", "created_at", "updated_at", "tracking_company", "tracking_numbers", "line_items" ]
 
   [[webhooks.subscriptions]]
   topics = [ "refunds/create" ]
