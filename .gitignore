@@ -12,3 +12,7 @@ coverage/
 spikes/**/.harper-local/
 spikes/**/hdb/
 spikes/**/*.local.env
+
+# Isolated worktrees and subagent-driven-development scratch (never committed)
+.claude/worktrees/
+.superpowers/
