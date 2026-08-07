@@ -195,4 +195,7 @@ export const M = {
 	purgeDeleted: 'purge.deleted',
 	purgeFailure: 'purge.failure',
 	purgeError: 'purge.error',
+	// A background loop's previous pass failed to settle within its stall budget
+	// and a new pass was started anyway (src/tick.ts). Non-zero means a loop hung.
+	tickStalled: 'tick.stalled',
 } as const;

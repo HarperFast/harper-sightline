@@ -13,7 +13,23 @@ import { fetchOrdersUpdatedSince, fetchShopTimezone } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
+import { createTicker } from './src/tick.ts';
 import type { QueryTable } from './src/queries.ts';
+
+// Every background loop runs at most one pass at a time, but must never be able
+// to wedge permanently if a pass fails to settle (src/tick.ts). A detected stall
+// is logged at error level — now genuinely visible via read_log — so a stuck loop
+// alerts instead of going quiet.
+function ticker(name: string, stallMs: number) {
+	return createTicker({
+		name,
+		stallMs,
+		onStall: (loop, ageMs) => {
+			metrics.inc(M.tickStalled);
+			log('error', 'tick.stalled', { loop, ageMs, action: 'starting a new pass anyway' });
+		},
+	});
+}
 
 // Rebuild an order's projection from ALL its normalized events (#12). Rebuilding
 // from the ledger (rather than an incremental read-modify-write) is order-safe
@@ -143,27 +159,23 @@ export function processDeliveries(): Promise<{ processed: number; failed: number
 // correctness guarantee (ADR-002). A single-active lease is a future efficiency
 // optimization. The `running` guard prevents overlapping ticks on one thread.
 const INTERVAL_MS = 10_000;
-let running = false;
+const processTicker = ticker('process', 5 * 60_000);
 
 export function startProcessingLoop(): void {
 	setInterval(() => {
-		if (running) return;
-		running = true;
-		void processDeliveries()
-			.then((r) => {
+		void processTicker.run(async () => {
+			try {
+				const r = await processDeliveries();
 				metrics.inc(M.processProcessed, r.processed);
 				metrics.inc(M.processFailed, r.failed);
 				metrics.inc(M.processDeadLettered, r.deadLettered);
 				if (r.processed || r.failed)
 					log('trace', 'process.tick', { processed: r.processed, failed: r.failed, deadLettered: r.deadLettered });
-			})
-			.catch((e: unknown) => {
+			} catch (e: unknown) {
 				metrics.inc(M.processError);
 				log('error', 'process.error', { message: (e as Error).message });
-			})
-			.finally(() => {
-				running = false;
-			});
+			}
+		});
 	}, INTERVAL_MS);
 }
 
@@ -173,17 +185,16 @@ export function startProcessingLoop(): void {
 // lease needed; the `purging` guard just avoids overlap on one thread.
 const PURGE_INTERVAL_MS = 3_600_000; // hourly
 const PURGE_INITIAL_DELAY_MS = 30_000;
-let purging = false;
+const purgeTicker = ticker('purge', 30 * 60_000);
 
 export function runPurge(now = Date.now()): Promise<PurgeResult> {
 	return purgeExpired(RETENTION_TARGETS, now);
 }
 
 function purgeTick(): void {
-	if (purging) return;
-	purging = true;
-	void runPurge()
-		.then((r) => {
+	void purgeTicker.run(async () => {
+		try {
+			const r = await runPurge();
 			metrics.inc(M.purgeDeleted, r.deleted);
 			if (r.failures.length) metrics.inc(M.purgeFailure, r.failures.length);
 			if (r.deleted) {
@@ -198,14 +209,11 @@ function purgeTick(): void {
 			// via this warn line; the ops.snapshot also reflects it via backlog/age.
 			if (r.residue) log('warn', 'purge.residue', { residue: r.residue });
 			if (r.failures.length) log('warn', 'purge.failures', { count: r.failures.length, failures: r.failures });
-		})
-		.catch((e: unknown) => {
+		} catch (e: unknown) {
 			metrics.inc(M.purgeError);
 			log('error', 'purge.error', { message: (e as Error).message });
-		})
-		.finally(() => {
-			purging = false;
-		});
+		}
+	});
 }
 
 export function startPurgeLoop(): void {
@@ -218,7 +226,7 @@ export function startPurgeLoop(): void {
 // pending expectations whose deadline passes with NO new event, flipping them to
 // expired and creating the unconfirmed finding. Idempotent (deterministic keys).
 const DETECTOR_INTERVAL_MS = 300_000; // every 5 minutes
-let detecting = false;
+const detectorTicker = ticker('detect', 15 * 60_000);
 
 export async function runDetectorSweep(now = Date.now()): Promise<number> {
 	const pending: Expectation[] = [];
@@ -236,20 +244,16 @@ export async function runDetectorSweep(now = Date.now()): Promise<number> {
 }
 
 function detectorTick(): void {
-	if (detecting) return;
-	detecting = true;
-	void runDetectorSweep()
-		.then((due) => {
+	void detectorTicker.run(async () => {
+		try {
+			const due = await runDetectorSweep();
 			metrics.inc(M.detectEvaluated, due);
 			if (due) log('trace', 'detect.tick', { evaluated: due });
-		})
-		.catch((e: unknown) => {
+		} catch (e: unknown) {
 			metrics.inc(M.detectError);
 			log('error', 'detect.error', { message: (e as Error).message });
-		})
-		.finally(() => {
-			detecting = false;
-		});
+		}
+	});
 }
 
 export function startDetectorLoop(): void {
@@ -266,7 +270,11 @@ export function startDetectorLoop(): void {
 const RECONCILE_INTERVAL_MS = 600_000; // 10 minutes
 const RECONCILE_INITIAL_DELAY_MS = 40_000;
 const RECONCILE_BACKFILL_MS = 7 * 24 * 60 * 60 * 1000; // first run: last 7 days
-let reconciling = false;
+// Stall budget deliberately larger than the 10-minute interval: a legitimate
+// sweep over many shops can outlast one tick, and with ADMIN_TIMEOUT_MS bounding
+// every Admin API call a genuine hang is already impossible. This is the backstop
+// for a non-fetch hang.
+const reconcileTicker = ticker('reconcile', 30 * 60_000);
 
 // Reconcile one shop, resolving (and if necessary rotating) its access token
 // first. Two attempts: a 401 mid-sweep means the token stopped being accepted
@@ -349,23 +357,19 @@ export async function runReconcileSweep(now = Date.now()): Promise<{ shops: numb
 }
 
 function reconcileTick(): void {
-	if (reconciling) return;
-	reconciling = true;
-	const startedAt = Date.now();
-	void runReconcileSweep()
-		.then((r) => {
+	void reconcileTicker.run(async () => {
+		const startedAt = Date.now();
+		try {
+			const r = await runReconcileSweep();
 			metrics.observeMs(M.reconcileMs, Date.now() - startedAt);
 			metrics.inc(M.reconcileShops, r.shops);
 			metrics.inc(M.reconcileOrders, r.orders);
 			if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
-		})
-		.catch((e: unknown) => {
+		} catch (e: unknown) {
 			metrics.inc(M.reconcileError);
 			log('error', 'reconcile.error', { message: (e as Error).message });
-		})
-		.finally(() => {
-			reconciling = false;
-		});
+		}
+	});
 }
 
 export function startReconcileLoop(): void {
@@ -380,7 +384,7 @@ export function startReconcileLoop(): void {
 // A warn line when unhealthy so an operator alert can key off it directly.
 const OPS_SNAPSHOT_INTERVAL_MS = 60_000; // once a minute
 const OPS_SNAPSHOT_INITIAL_DELAY_MS = 20_000;
-let snapshotting = false;
+const snapshotTicker = ticker('ops.snapshot', 5 * 60_000);
 
 export async function runOpsSnapshot(now = Date.now()): Promise<void> {
 	const health = await computeOpsHealth(
@@ -395,15 +399,13 @@ export async function runOpsSnapshot(now = Date.now()): Promise<void> {
 }
 
 function opsSnapshotTick(): void {
-	if (snapshotting) return;
-	snapshotting = true;
-	void runOpsSnapshot()
-		.catch((e: unknown) => {
+	void snapshotTicker.run(async () => {
+		try {
+			await runOpsSnapshot();
+		} catch (e: unknown) {
 			log('error', 'ops.snapshot.error', { message: (e as Error).message });
-		})
-		.finally(() => {
-			snapshotting = false;
-		});
+		}
+	});
 }
 
 export function startOpsSnapshotLoop(): void {
