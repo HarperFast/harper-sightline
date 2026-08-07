@@ -4,6 +4,12 @@
 
 const API_VERSION = '2026-07';
 
+// Node's fetch has NO default timeout, so a hung connection leaves the promise
+// pending indefinitely. That is what allowed a stuck reconcile sweep to wedge its
+// loop permanently (see src/tick.ts). Bounding the call turns an unbounded hang
+// into an ordinary error that the next tick retries.
+export const ADMIN_TIMEOUT_MS = 30_000;
+
 interface GraphqlBody<T> {
 	data?: T;
 	errors?: Array<{ message: string }>;
@@ -21,6 +27,10 @@ export async function adminGraphql<T>(
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
 		body: JSON.stringify({ query, variables }),
+		// A timeout aborts the request and rejects, so the caller's catch handles it
+		// like any other transient failure. No statusCode, so isAuthError correctly
+		// declines to burn a token rotation on it.
+		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) {
 		const e = new Error(`admin graphql ${res.status}`) as Error & { statusCode: number };
