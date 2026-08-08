@@ -315,9 +315,24 @@ test('events carry their full SKU list, sorted, not just the scalar', async () =
 
 test('an event with no index rows simply has no skus key', async () => {
 	const { events } = fixtures();
+	// s1:e3 (the fixture with no index rows) is deliberately OUTSIDE the 7-day
+	// window, so it never reaches page.items and can't verify this at all — the
+	// find() below would return undefined against either a correct or a broken
+	// hydrateSkus. Add an IN-WINDOW event with no corresponding EventSku rows so
+	// the assertion actually exercises the no-index-rows path.
+	await events.put({
+		eventId: 's1:e4',
+		shopId: 's1',
+		domain: 'refund',
+		topic: 'refunds/create',
+		resourceId: 'o1',
+		occurredAt: NOW - 200,
+		receivedAt: NOW - 200,
+	});
 	const page = await listEvents(events, 's1', NOW, {}, skuFixtures());
-	const e3 = page.items.find((i) => i.eventId === 's1:e3');
-	assert.equal('skus' in (e3 ?? {}), false);
+	const e4 = page.items.find((i) => i.eventId === 's1:e4');
+	assert.ok(e4, 'the in-window event must actually appear in the page');
+	assert.equal('skus' in (e4 ?? {}), false);
 });
 
 test('the SKU list is hydrated in one query per page, not one per row', async () => {
@@ -338,8 +353,28 @@ test('the SKU list is hydrated in one query per page, not one per row', async ()
 test('SKU hydration never attaches another tenant SKUs', async () => {
 	const { events } = fixtures();
 	const index = skuFixtures();
-	// s2:e1 shares the SKU and an id shape; s1's rows must not inherit it.
+	// Production event ids are shop-prefixed (`${shopId}:${webhookId}`), so an OR
+	// query keyed on s1's own ids can never structurally match a genuine s2 row —
+	// skuFixtures()'s s2:e1 row is not even a candidate. To actually exercise the
+	// `row.shopId !== shopId` re-check (rather than pass vacuously because the
+	// hostile row was never in contention), plant a row that collides on eventId
+	// with an s1 event while carrying another shop's shopId — a corrupted/hostile
+	// index row is exactly the case that check defends against.
+	await index.put({
+		id: 's2:e1:HACKED',
+		shopId: 's2',
+		eventId: 's1:e1',
+		sku: 'HACKED-SKU',
+		domain: 'order',
+		topic: 'orders/paid',
+		source: 'webhook',
+		resourceId: 'o1',
+		occurredAt: NOW - 1000,
+		receivedAt: NOW - 1000,
+	});
 	const page = await listEvents(events, 's1', NOW, {}, index);
+	const e1 = page.items.find((i) => i.eventId === 's1:e1');
+	assert.ok(!(e1?.skus as string[] | undefined)?.includes('HACKED-SKU'), 'a cross-tenant index row must never attach its SKU');
 	for (const item of page.items) {
 		if (item.skus)
 			assert.equal(

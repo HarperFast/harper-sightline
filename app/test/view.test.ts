@@ -660,7 +660,7 @@ test('event detail names the product and location behind an inventory id', () =>
 
 test('event detail omits the enrichment rows when nothing is resolved', () => {
 	const html = eventDetailView({ ...eventDetail(), inventorySku: undefined, productTitle: undefined, locationName: undefined }, '');
-	assert.doesNotMatch(html, /Product|Location name/);
+	assert.doesNotMatch(html, /Inventory SKU|Product|Location name/);
 });
 
 // ── findings ─────────────────────────────────────────────────────────────────
