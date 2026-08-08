@@ -472,6 +472,25 @@ test('getPrivacy never returns token material or cross-tenant metrics', async ()
 	assert.ok(!serialized.includes('s2'), 'no other tenant referenced');
 });
 
+test('the privacy disclosure lists every category actually stored, and no more', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
+	const categories = privacy.dataCategories as string[];
+	for (const expected of [
+		'order status & timestamps',
+		'order value & currency',
+		'fulfillment status, location & tracking presence',
+		'inventory levels',
+		'refund status',
+		'SKUs, product & variant titles & quantities',
+	]) {
+		assert.ok(categories.includes(expected), `missing disclosure: ${expected}`);
+	}
+	// The exclusion list is the load-bearing promise and must not have widened.
+	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);
+	assert.equal(privacy.storesCustomerPii, false);
+});
+
 test('getSetup derives each step from durable state, never a timer', async () => {
 	const f = fixtures();
 	// s1: installed, deliveries observed, reconciliation ready → complete.

@@ -462,12 +462,17 @@ export async function getPrivacy(
 			.split(',')
 			.map((s) => s.trim())
 			.filter(Boolean),
+		// Exactly what the pipeline stores, in merchant language. Every entry here
+		// must be true of the current schema — this list is read by merchants and by
+		// App Store reviewers, so a stale entry is a compliance defect, not cosmetics.
 		dataCategories: [
 			'order status & timestamps',
-			'fulfillment status & tracking presence',
+			'order name (e.g. #1001)',
+			'order value & currency',
+			'fulfillment status, location & tracking presence',
 			'inventory levels',
 			'refund status',
-			'SKUs & quantities',
+			'SKUs, product & variant titles & quantities',
 		],
 		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
 		deletion: {

@@ -74,7 +74,9 @@ test('the policy discloses what IS stored, including the less obvious items', ()
 	const html = privacyPolicyHtml({});
 	// Under-disclosure is the dangerous direction: each of these is really stored.
 	for (const claim of [
-		/SKUs and quantities/i,
+		/order value and currency/i,
+		/the location it shipped from/i,
+		/SKUs, product and variant titles, and quantities/i,
 		/inventory levels/i,
 		/encrypted Shopify access token/i,
 		/shop domain/i,

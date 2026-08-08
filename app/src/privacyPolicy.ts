@@ -74,10 +74,11 @@ store's operation continues normally.</p>
 <h2>What we store</h2>
 <ul>
 	<li>Order status and timestamps (paid, cancelled, closed), and order identifiers</li>
-	<li>Fulfillment status, and whether tracking information is present</li>
+	<li>Order value and currency</li>
+	<li>Fulfillment status, the location it shipped from, and whether tracking information is present</li>
 	<li>Inventory levels by inventory item and location</li>
 	<li>Refund status</li>
-	<li>SKUs and quantities</li>
+	<li>SKUs, product and variant titles, and quantities</li>
 	<li>Your shop domain, the access scopes you granted, and install/uninstall timestamps</li>
 	<li>Your store's configured timezone, so timestamps display in your local time</li>
 	<li>An encrypted Shopify access token, used only to read the order data described above</li>
