@@ -46,6 +46,7 @@ export const EXPORT_COLUMNS: Record<'events' | 'findings' | 'orders', Array<{ he
 		{ header: 'Resource ID', field: 'resourceId' },
 		{ header: 'Order name', field: 'orderName' },
 		{ header: 'SKU', field: 'sku' },
+		{ header: 'SKUs', field: 'skus' },
 		{ header: 'Quantity', field: 'quantity' },
 		{ header: 'State', field: 'state' },
 		{ header: 'Location ID', field: 'locationId' },

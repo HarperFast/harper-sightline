@@ -645,6 +645,14 @@ export function eventQuery(params: Record<string, string>, now: number): Record<
 	return q;
 }
 
+// Prefer the full list; fall back to the scalar (single-SKU events); then an em
+// dash. Before this, a multi-SKU event rendered blank — so a SKU search returned
+// the right rows with nothing in the column the merchant searched on.
+export function skuCell(e: EventItem): string {
+	if (e.skus && e.skus.length > 0) return esc(e.skus.join(', '));
+	return e.sku ? esc(e.sku) : '—';
+}
+
 function selectOptions(values: readonly string[], selected: string, anyLabel: string): string {
 	return values.map((v) => `<option value="${esc(v)}"${v === selected ? ' selected' : ''}>${esc(v || anyLabel)}</option>`).join('');
 }
@@ -657,7 +665,7 @@ export function eventsView(params: Record<string, string>, items: EventItem[], h
 			<s-table-cell>${esc(e.domain)}</s-table-cell>
 			<s-table-cell>${esc(e.topic ?? '')}</s-table-cell>
 			<s-table-cell>${esc(e.resourceId ?? '')}</s-table-cell>
-			<s-table-cell>${esc(e.sku ?? '')}${e.quantity !== undefined ? ` ×${e.quantity}` : ''}</s-table-cell>
+			<s-table-cell>${skuCell(e)}${e.quantity !== undefined ? ` ×${e.quantity}` : ''}</s-table-cell>
 			<s-table-cell>${e.state ? badge(e.state) : ''}</s-table-cell>
 			<s-table-cell>${esc(e.source)}</s-table-cell>
 		</s-table-row>`,
@@ -718,7 +726,7 @@ export function eventDetailView(e: EventDetail, strip: string): string {
 			${fields([
 				['Resource', esc(e.resourceId ?? '—')],
 				['State', e.state ? badge(e.state) : '—'],
-				['SKU', esc(e.sku ?? '—')],
+				['SKU', skuCell(e)],
 				['Quantity', e.quantity !== undefined ? String(e.quantity) : '—'],
 				['Fulfillment-eligible units', e.fulfillableItemCount !== undefined ? String(e.fulfillableItemCount) : '—'],
 				['Occurred (source)', ts(e.occurredAt)],
@@ -727,6 +735,9 @@ export function eventDetailView(e: EventDetail, strip: string): string {
 				['Affected a projection', e.affectedProjection ? 'Yes' : 'No'],
 				['Affected a finding', e.affectedFinding ? 'Yes' : 'No'],
 				['Related events', related],
+				...(e.inventorySku ? ([['Inventory SKU', esc(e.inventorySku)]] as Array<[string, string]>) : []),
+				...(e.productTitle ? ([['Product', esc(e.productTitle)]] as Array<[string, string]>) : []),
+				...(e.locationName ? ([['Location name', esc(e.locationName)]] as Array<[string, string]>) : []),
 			])}
 			${delayed}
 		</s-section>`,

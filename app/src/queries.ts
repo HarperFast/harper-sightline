@@ -104,6 +104,41 @@ async function keysetPage(
 	return { items, nextCursor };
 }
 
+// Attach each event's full SKU list. `skus` is not a column on OperationalEvent —
+// an order has many and the row holds one scalar, deliberately set only when there
+// is exactly one — so the list is assembled from the EventSku index.
+//
+// One OR query per PAGE, not per row: a keyed query per event would be up to
+// MAX_LIMIT round trips to paint one screen. The tenant is re-checked on every
+// index row because this query is keyed by event id, not by shop.
+export async function hydrateSkus(
+	eventSkus: QueryTable,
+	shopId: string,
+	items: Array<Record<string, unknown>>,
+): Promise<Array<Record<string, unknown>>> {
+	const ids = items.map((item) => String(item.eventId)).filter((id) => id.length > 0);
+	if (ids.length === 0) return items;
+
+	const byEvent = new Map<string, string[]>();
+	for await (const row of eventSkus.search({
+		conditions: ids.map((id) => ({ attribute: 'eventId', value: id })),
+		operator: 'or',
+		select: ['eventId', 'sku', 'shopId'],
+	})) {
+		if (row.shopId !== shopId) continue;
+		const eventId = String(row.eventId);
+		const list = byEvent.get(eventId) ?? [];
+		list.push(String(row.sku));
+		byEvent.set(eventId, list);
+	}
+
+	return items.map((item) => {
+		const skus = byEvent.get(String(item.eventId));
+		// Sorted so a rebuild or a different index scan order cannot reorder a cell.
+		return skus && skus.length > 0 ? { ...item, skus: [...skus].sort() } : item;
+	});
+}
+
 export interface EventQueryParams {
 	domain?: string;
 	topic?: string;
@@ -170,7 +205,7 @@ export async function listEvents(
 			// event landed) is skipped rather than surfaced as a phantom result.
 			if (event && event.shopId === shopId) hydrated.push(pick(event, EVENT_FIELDS));
 		}
-		return { items: hydrated, nextCursor: indexPage.nextCursor };
+		return { items: await hydrateSkus(eventSkus, shopId, hydrated), nextCursor: indexPage.nextCursor };
 	}
 
 	// No EventSku table wired (or no sku filter requested): fall back to the
@@ -179,7 +214,8 @@ export async function listEvents(
 	// when a caller hasn't (or can't) supply the index table.
 	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
 
-	return keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	const page = await keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	return { items: eventSkus ? await hydrateSkus(eventSkus, shopId, page.items) : page.items, nextCursor: page.nextCursor };
 }
 
 // GET /events/:id — one event plus lightweight relations. Cross-tenant safe: an
@@ -193,6 +229,7 @@ export async function getEventDetail(
 	eventId: string,
 	inventoryItems?: QueryTable,
 	locations?: QueryTable,
+	eventSkus?: QueryTable,
 ): Promise<Record<string, unknown> | null> {
 	const row = (await events.get(eventId)) as OperationalEvent | undefined;
 	if (!row || row.shopId !== shopId) return null;
@@ -236,7 +273,7 @@ export async function getEventDetail(
 		}
 	}
 
-	return {
+	const base = {
 		...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS),
 		relatedEventIds,
 		affectedProjection,
@@ -245,6 +282,11 @@ export async function getEventDetail(
 		...(productTitle ? { productTitle } : {}),
 		...(locationName ? { locationName } : {}),
 	};
+	// Hydrated the same way as the list, so detail and list agree on a multi-SKU
+	// event's SKUs rather than the list showing them and the detail not.
+	if (!eventSkus) return base;
+	const [hydrated] = await hydrateSkus(eventSkus, shopId, [base]);
+	return hydrated;
 }
 
 export interface FindingQueryParams {

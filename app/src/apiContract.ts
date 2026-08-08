@@ -32,6 +32,11 @@ export const EVENT_FIELDS = [
 	'occurredAt',
 	'receivedAt',
 ] as const;
+// The events LIST additionally carries each event's full SKU list. `sku` above
+// stays a scalar (populated only for a single-SKU event); `skus` is hydrated
+// from the EventSku index and allowlisted separately so the join can never
+// widen the base fields.
+export const EVENT_LIST_FIELDS = [...EVENT_FIELDS, 'skus'] as const;
 export const FINDING_FIELDS = [
 	'id',
 	'orderId',
@@ -96,13 +101,22 @@ export const API_CONTRACT = {
 		},
 		events: {
 			path: '/api/v1/events',
-			item: EVENT_FIELDS,
+			item: EVENT_LIST_FIELDS,
 			paginated: true,
 			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'state', 'since', 'until', 'cursor', 'limit'],
 		},
 		eventDetail: {
 			path: '/api/v1/events/:id',
-			fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding', 'inventorySku', 'productTitle', 'locationName'],
+			fields: [
+				...EVENT_FIELDS,
+				'skus',
+				'relatedEventIds',
+				'affectedProjection',
+				'affectedFinding',
+				'inventorySku',
+				'productTitle',
+				'locationName',
+			],
 		},
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
 		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'detector', 'cursor', 'limit'] },

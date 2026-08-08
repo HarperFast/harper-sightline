@@ -14,7 +14,7 @@ import {
 	getOrderDetail,
 } from '../src/queries.ts';
 import { detectorKey } from '../src/detector.ts';
-import { encodeCursor, EVENT_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/apiContract.ts';
+import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/apiContract.ts';
 import { EXPORT_COLUMNS } from '../src/csv.ts';
 
 // Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
@@ -345,7 +345,7 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 
 test('export columns never reference a field outside the API allowlist', () => {
 	const allowed: Record<string, readonly string[]> = {
-		events: EVENT_FIELDS,
+		events: EVENT_LIST_FIELDS,
 		findings: FINDING_LIST_FIELDS,
 		orders: ORDER_LIST_FIELDS,
 	};

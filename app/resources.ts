@@ -227,7 +227,7 @@ export class EventsResource extends Resource {
 		const url = parseUrl(ctx.url);
 		const id = trailingId(url.pathname, '/api/v1/events');
 		if (id) {
-			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id, InventoryItemsQ, ShopLocationsQ);
+			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id, InventoryItemsQ, ShopLocationsQ, EventSkusQ);
 			if (!detail) throw httpError('event not found', 404);
 			return detail;
 		}

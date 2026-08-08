@@ -62,7 +62,8 @@
 				"state",
 				"source",
 				"occurredAt",
-				"receivedAt"
+				"receivedAt",
+				"skus"
 			],
 			"paginated": true,
 			"filters": [
@@ -99,6 +100,7 @@
 				"source",
 				"occurredAt",
 				"receivedAt",
+				"skus",
 				"relatedEventIds",
 				"affectedProjection",
 				"affectedFinding",

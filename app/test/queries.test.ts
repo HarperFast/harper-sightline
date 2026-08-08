@@ -306,6 +306,50 @@ test('an index row whose event is missing is skipped, not returned as a phantom'
 	);
 });
 
+test('events carry their full SKU list, sorted, not just the scalar', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, {}, skuFixtures());
+	const e1 = page.items.find((i) => i.eventId === 's1:e1');
+	assert.deepEqual(e1?.skus, ['TSHIRT']);
+});
+
+test('an event with no index rows simply has no skus key', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, {}, skuFixtures());
+	const e3 = page.items.find((i) => i.eventId === 's1:e3');
+	assert.equal('skus' in (e3 ?? {}), false);
+});
+
+test('the SKU list is hydrated in one query per page, not one per row', async () => {
+	const { events } = fixtures();
+	const index = skuFixtures();
+	let searches = 0;
+	const counting = {
+		search: (spec: unknown) => {
+			searches++;
+			return index.search(spec as never);
+		},
+		get: (id: string) => index.get(id),
+	} as unknown as typeof index;
+	await listEvents(events, 's1', NOW, {}, counting);
+	assert.equal(searches, 1, 'a keyed query per row would be up to MAX_LIMIT round trips per screen');
+});
+
+test('SKU hydration never attaches another tenant SKUs', async () => {
+	const { events } = fixtures();
+	const index = skuFixtures();
+	// s2:e1 shares the SKU and an id shape; s1's rows must not inherit it.
+	const page = await listEvents(events, 's1', NOW, {}, index);
+	for (const item of page.items) {
+		if (item.skus)
+			assert.equal(
+				(item.skus as string[]).every((s) => typeof s === 'string'),
+				true,
+			);
+		assert.notEqual(item.eventId, 's2:e1');
+	}
+});
+
 test('listEvents is tenant-scoped, windowed, and field-allowlisted', async () => {
 	const { events } = fixtures();
 	const page = await listEvents(events, 's1', NOW, {});

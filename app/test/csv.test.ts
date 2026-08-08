@@ -29,6 +29,12 @@ test('formula-injection payloads are neutralized so a spreadsheet cannot execute
 	assert.equal(csvCell('=HYPERLINK("http://evil","x")'), '"\'=HYPERLINK(""http://evil"",""x"")"');
 });
 
+test('an array cell round-trips as a quoted, comma-joined field', () => {
+	// csvCell stringifies via String(...), which joins an array with commas —
+	// already quote-safe, since csvCell quotes anything containing a comma.
+	assert.equal(csvCell(['TSHIRT-BLK-M', 'STICKER-PK']), '"TSHIRT-BLK-M,STICKER-PK"');
+});
+
 test('rows join with commas and the document uses CRLF line endings', () => {
 	assert.equal(csvRow(['a', 'b']), 'a,b');
 	assert.equal(toCsv(['h1', 'h2'], [['a', 'b']]), 'h1,h2\r\na,b\r\n');

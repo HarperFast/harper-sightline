@@ -527,6 +527,27 @@ test('with no store zone the label does not claim store time', () => {
 	assert.ok(zoneText().includes('your device'));
 });
 
+function event(over: Partial<EventItem> = {}): EventItem {
+	return {
+		eventId: 'e1',
+		domain: 'order',
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+		...over,
+	};
+}
+
+function eventDetail(over: Partial<EventDetail> = {}): EventDetail {
+	return {
+		...event(),
+		relatedEventIds: [],
+		affectedProjection: false,
+		affectedFinding: false,
+		...over,
+	};
+}
+
 // ── events ───────────────────────────────────────────────────────────────────
 
 test('the events screen offers the full screen-spec filter set', () => {
@@ -597,6 +618,49 @@ test('a delayed receipt is disclosed without reordering the ledger', () => {
 	};
 	assert.ok(eventDetailView(base, '').includes('Received 2h after it occurred'));
 	assert.ok(!eventDetailView({ ...base, receivedAt: base.occurredAt }, '').includes('after it occurred'));
+});
+
+test('the SKU cell shows every SKU on a multi-SKU event', () => {
+	const html = eventsView({}, [event({ skus: ['STICKER-PK', 'TSHIRT-BLK-M'], sku: undefined })], false, '');
+	assert.match(html, /STICKER-PK/);
+	assert.match(html, /TSHIRT-BLK-M/);
+});
+
+test('the SKU cell falls back to the scalar, then to an em dash', () => {
+	assert.match(eventsView({}, [event({ skus: undefined, sku: 'ONLY-ONE' })], false, ''), /ONLY-ONE/);
+	assert.match(eventsView({}, [event({ skus: undefined, sku: undefined })], false, ''), /—/);
+});
+
+test('an inventory row shows its resolved SKU rather than only a numeric id', () => {
+	const html = eventsView(
+		{},
+		[event({ domain: 'inventory', resourceId: '8400000000001', skus: ['TSHIRT-BLK-M'], sku: undefined })],
+		false,
+		'',
+	);
+	assert.match(html, /TSHIRT-BLK-M/);
+});
+
+test('event detail names the product and location behind an inventory id', () => {
+	const html = eventDetailView(
+		{
+			...eventDetail(),
+			domain: 'inventory',
+			resourceId: '8400000000001',
+			inventorySku: 'TSHIRT-BLK-M',
+			productTitle: 'T-Shirt',
+			locationName: 'Brooklyn',
+		},
+		'',
+	);
+	assert.match(html, /TSHIRT-BLK-M/);
+	assert.match(html, /T-Shirt/);
+	assert.match(html, /Brooklyn/);
+});
+
+test('event detail omits the enrichment rows when nothing is resolved', () => {
+	const html = eventDetailView({ ...eventDetail(), inventorySku: undefined, productTitle: undefined, locationName: undefined }, '');
+	assert.doesNotMatch(html, /Product|Location name/);
 });
 
 // ── findings ─────────────────────────────────────────────────────────────────

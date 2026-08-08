@@ -87,6 +87,9 @@ export interface EventItem {
 	topic?: string;
 	resourceId?: string;
 	sku?: string;
+	// The full SKU list, hydrated from the EventSku index. Preferred over `sku`
+	// (a scalar populated only for a single-SKU event) whenever present.
+	skus?: string[];
 	quantity?: number;
 	fulfillableItemCount?: number;
 	state?: string;
@@ -98,6 +101,11 @@ export interface EventDetail extends EventItem {
 	relatedEventIds: string[];
 	affectedProjection: boolean;
 	affectedFinding: boolean;
+	// Present only for an inventory event whose item id / location id resolved
+	// against this shop's cache.
+	inventorySku?: string;
+	productTitle?: string;
+	locationName?: string;
 }
 export interface FindingItem {
 	id: string;
