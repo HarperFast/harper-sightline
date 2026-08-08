@@ -681,8 +681,10 @@ test('the aging breakdown never counts another tenant orders', async () => {
 	const { events, projections, findings, deliveries, shops } = fixtures();
 	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's2', NOW);
 	const aging = summary.aging as { buckets: Array<{ count: number }> };
-	// s2 has its own two awaiting orders (s2:o1, s2:oA) — if s1's four awaiting
-	// orders leaked in, this would be 6, not 2.
+	// s2 genuinely has two awaiting orders of its own (s2:o1, s2:oA — both paid,
+	// requiresFulfillment, never fulfilled/cancelled/refunded). Do not "correct"
+	// this to 1: if s1's four awaiting orders leaked into an s2 query, the total
+	// would be 6, not 2 — asserting 2 is what actually proves tenant isolation.
 	assert.equal(
 		aging.buckets.reduce((n, b) => n + b.count, 0),
 		2,
