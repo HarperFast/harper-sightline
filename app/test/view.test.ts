@@ -727,14 +727,30 @@ function orderDetail(over: Partial<OrderDetail> = {}): OrderDetail {
 }
 
 test('the order timeline is chronological and every entry is an observation', () => {
-	const entries = orderTimeline(orderDetail({ paidAt: 300, fulfillmentFailedAt: 500, fulfilledAt: 700 }));
+	// orderTimeline checks fields in a fixed order — paid, failed attempt, fulfilled,
+	// cancelled, refunded — so a fixture whose insertion order already matches time
+	// order would pass even with the trailing .sort() deleted. These timestamps are
+	// deliberately out of that check order: the cancellation is recorded before the
+	// failed-attempt entry, which Shopify reports later (an attempt already in flight
+	// can still fail after the order was cancelled), so an unsorted implementation
+	// would emit the failed-attempt entry before the cancellation entry.
+	const entries = orderTimeline(orderDetail({ paidAt: 100, fulfillmentFailedAt: 500, cancelledAt: 300 }));
 	assert.deepEqual(
 		entries.map((e) => e.at),
-		[300, 500, 700],
+		[100, 300, 500],
 	);
 	assert.match(entries[0].text, /paid/i);
-	assert.match(entries[1].text, /did not succeed/i);
-	assert.match(entries[2].text, /confirmation observed/i);
+	assert.match(entries[1].text, /cancelled/i);
+	assert.match(entries[2].text, /did not succeed/i);
+	for (let i = 1; i < entries.length; i++) assert.ok(entries[i].at >= entries[i - 1].at, 'sorted by time');
+});
+
+test('a later fulfillment confirmation appears after the payment in the timeline', () => {
+	const entries = orderTimeline(orderDetail({ paidAt: NOW - 40 * HOUR, fulfilledAt: NOW - 10 * HOUR }));
+	assert.deepEqual(
+		entries.map((e) => e.text),
+		['Order paid', 'Fulfillment confirmation observed in Shopify'],
+	);
 });
 
 test('order detail renders the timeline, the events, and any findings', () => {
@@ -780,4 +796,13 @@ test('an order with nothing but a payment still renders, with an empty-state not
 test('order detail never claims a downstream party failed', () => {
 	const html = orderDetailView(orderDetail({ fulfillmentFailedAt: NOW - 5 * HOUR }), '');
 	assert.doesNotMatch(html, /warehouse|carrier|vendor|3PL/i);
+});
+
+test('a hostile order name cannot inject markup on the order detail screen', () => {
+	// orderLabel() surfaces the name twice — the page heading (page()) and the
+	// fields table (fields()) — and both must escape it independently.
+	const html = orderDetailView(orderDetail({ orderName: '"><script>alert(1)</script>' }), '');
+	assert.doesNotMatch(html, /<script>alert/);
+	assert.match(html, /heading="Order &quot;&gt;&lt;script&gt;/, 'the page heading escapes the name');
+	assert.match(html, /<s-table-cell>&quot;&gt;&lt;script&gt;/, 'the fields table escapes the name');
 });

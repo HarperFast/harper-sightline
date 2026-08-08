@@ -688,14 +688,20 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 	);
 }
 
+// The one product-truth sentence for "Shopify recorded a failed attempt",
+// shared between this timeline and the finding timeline's observedTimeline
+// below, so there is a single hand-maintained copy instead of two near-
+// duplicates drifting apart. Matches describeFinding's DETECTOR_FAILED copy
+// verbatim (src/detector.ts).
+export const FULFILLMENT_ATTEMPT_FAILED_OBSERVATION = 'Shopify recorded a fulfillment attempt for this order that did not succeed';
+
 // One order's observed history. Same discipline as the finding timeline: every
 // entry is something Sightline OBSERVED in Shopify, with a source timestamp, and
 // nothing is inferred about a downstream system.
 export function orderTimeline(o: OrderDetail): Array<{ at: number; text: string }> {
 	const entries: Array<{ at: number; text: string }> = [];
 	if (o.paidAt !== undefined) entries.push({ at: o.paidAt, text: 'Order paid' });
-	if (o.fulfillmentFailedAt !== undefined)
-		entries.push({ at: o.fulfillmentFailedAt, text: 'Shopify recorded a fulfillment attempt that did not succeed' });
+	if (o.fulfillmentFailedAt !== undefined) entries.push({ at: o.fulfillmentFailedAt, text: FULFILLMENT_ATTEMPT_FAILED_OBSERVATION });
 	if (o.fulfilledAt !== undefined) entries.push({ at: o.fulfilledAt, text: 'Fulfillment confirmation observed in Shopify' });
 	if (o.cancelledAt !== undefined) entries.push({ at: o.cancelledAt, text: 'Order cancelled — confirmation no longer expected' });
 	if (o.fullyRefundedAt !== undefined)
@@ -839,7 +845,7 @@ export function observedTimeline(f: FindingDetail, lastReconciledAt: number | un
 		// The presence detector's own observation — Shopify recorded the attempt as
 		// failed, so the entry states that fact rather than an absence (matches
 		// describeFinding's DETECTOR_FAILED 'unconfirmed' copy, src/detector.ts).
-		entries.push({ at: f.detectedAt, text: 'Shopify recorded a fulfillment attempt for this order that did not succeed' });
+		entries.push({ at: f.detectedAt, text: FULFILLMENT_ATTEMPT_FAILED_OBSERVATION });
 	}
 	if (p?.fulfilledAt !== undefined) entries.push({ at: p.fulfilledAt, text: 'Fulfillment confirmation observed in Shopify' });
 	if (p?.cancelledAt !== undefined) entries.push({ at: p.cancelledAt, text: 'Order cancelled — confirmation no longer expected' });
