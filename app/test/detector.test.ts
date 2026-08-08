@@ -183,14 +183,20 @@ test('evaluating twice is idempotent', () => {
 	assert.deepEqual(second, first);
 });
 
-test('the failed-attempt description states the observation without blaming a party', () => {
-	const text = describeFinding({ id: 'x', shopId: 's1', orderId: 'o1', detector: DETECTOR_FAILED, status: 'unconfirmed' });
-	assert.match(text, /fulfillment attempt/i);
-	assert.match(text, /Shopify/);
-	// It is direct evidence, so it must NOT hedge as an absence finding does...
-	assert.doesNotMatch(text, /has not shown/i);
-	// ...and must still not accuse a specific downstream party.
-	assert.doesNotMatch(text, /warehouse|carrier|vendor|3PL/i);
+test('the failed-attempt description states the observation without blaming a party, for every status', () => {
+	// Widened beyond the original four terms, and checked across all three
+	// statuses (not just 'unconfirmed'), so a future copy edit to the resolved/
+	// suppressed strings cannot silently reintroduce a named downstream party.
+	const PARTY_RE = /warehouse|carrier|vendor|3PL|supplier|logistics|partner|3rd party/i;
+	for (const status of ['unconfirmed', 'resolved', 'suppressed'] as const) {
+		const text = describeFinding({ id: 'x', shopId: 's1', orderId: 'o1', detector: DETECTOR_FAILED, status });
+		assert.doesNotMatch(text, PARTY_RE, `copy for ${status} names a downstream party: "${text}"`);
+	}
+	const unconfirmed = describeFinding({ id: 'x', shopId: 's1', orderId: 'o1', detector: DETECTOR_FAILED, status: 'unconfirmed' });
+	assert.match(unconfirmed, /fulfillment attempt/i);
+	assert.match(unconfirmed, /Shopify/);
+	// It is direct evidence, so it must NOT hedge as an absence finding does.
+	assert.doesNotMatch(unconfirmed, /has not shown/i);
 });
 
 test('the absence detector description is unchanged', () => {
