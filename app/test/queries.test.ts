@@ -475,17 +475,18 @@ test('getPrivacy never returns token material or cross-tenant metrics', async ()
 test('the privacy disclosure lists every category actually stored, and no more', async () => {
 	const { events, findings, projections, deliveries, shops } = fixtures();
 	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
-	const categories = privacy.dataCategories as string[];
-	for (const expected of [
+	// Exact array, in order: this is what makes "and no more" real. A spot-check
+	// via .includes() would still pass if a category were added, duplicated, or
+	// silently dropped.
+	assert.deepEqual(privacy.dataCategories, [
 		'order status & timestamps',
+		'order name (e.g. #1001)',
 		'order value & currency',
-		'fulfillment status, location & tracking presence',
+		'fulfillment status, location, tracking presence & carrier',
 		'inventory levels',
 		'refund status',
 		'SKUs, product & variant titles & quantities',
-	]) {
-		assert.ok(categories.includes(expected), `missing disclosure: ${expected}`);
-	}
+	]);
 	// The exclusion list is the load-bearing promise and must not have widened.
 	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);
 	assert.equal(privacy.storesCustomerPii, false);

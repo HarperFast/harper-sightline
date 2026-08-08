@@ -75,7 +75,7 @@ store's operation continues normally.</p>
 <ul>
 	<li>Order status and timestamps (paid, cancelled, closed), and order identifiers</li>
 	<li>Order value and currency</li>
-	<li>Fulfillment status, the location it shipped from, and whether tracking information is present</li>
+	<li>Fulfillment status, the location it shipped from, whether tracking information is present, and which carrier</li>
 	<li>Inventory levels by inventory item and location</li>
 	<li>Refund status</li>
 	<li>SKUs, product and variant titles, and quantities</li>

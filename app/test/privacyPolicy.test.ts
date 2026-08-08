@@ -70,21 +70,27 @@ test('the policy lists exactly the customer fields the code excludes', () => {
 	}
 });
 
-test('the policy discloses what IS stored, including the less obvious items', () => {
+test('the policy discloses exactly what IS stored, and no more', () => {
 	const html = privacyPolicyHtml({});
-	// Under-disclosure is the dangerous direction: each of these is really stored.
-	for (const claim of [
-		/order value and currency/i,
-		/the location it shipped from/i,
-		/SKUs, product and variant titles, and quantities/i,
-		/inventory levels/i,
-		/encrypted Shopify access token/i,
-		/shop domain/i,
-		/access scopes/i,
-		/timezone/i,
-	]) {
-		assert.match(html, claim);
-	}
+	// A substring spot-check would still pass if an item were quietly dropped, or
+	// if a stored fact were never added at all — the exact failure mode that
+	// under-disclosed order value/currency and product/variant titles before this
+	// fix. Extracting and deep-equaling the actual "What we store" list closes
+	// that gap: it can only pass if the rendered list matches, item for item.
+	const section = html.match(/<h2>What we store<\/h2>\s*<ul>([\s\S]*?)<\/ul>/);
+	assert.ok(section, 'the "What we store" section must exist');
+	const items = [...section[1].matchAll(/<li>(.*?)<\/li>/g)].map((m) => m[1]);
+	assert.deepEqual(items, [
+		'Order status and timestamps (paid, cancelled, closed), and order identifiers',
+		'Order value and currency',
+		'Fulfillment status, the location it shipped from, whether tracking information is present, and which carrier',
+		'Inventory levels by inventory item and location',
+		'Refund status',
+		'SKUs, product and variant titles, and quantities',
+		'Your shop domain, the access scopes you granted, and install/uninstall timestamps',
+		"Your store's configured timezone, so timestamps display in your local time",
+		'An encrypted Shopify access token, used only to read the order data described above',
+	]);
 });
 
 test('the policy states the no-PII headline and the operating entity', () => {

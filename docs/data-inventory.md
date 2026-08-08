@@ -6,7 +6,7 @@ Maps every stored table/field to its **data-subject-request**, **export**, and *
 
 **Sightline stores no customer PII** — no customer name, email, phone, or address (PCD Level 1 only; `include_fields` + PII stripping enforce this). Therefore `customers/data_request` has **nothing to export**. Data is keyed by `shopId` (tenant) and, for order-linked rows, by `orderId` — the only customer-scoped key we hold.
 
-No field added in Plan A is a customer identifier. Money amounts, SKUs, product titles, locations, and tracking presence are Level 1 order facts; the customer-field exclusion list is unchanged.
+No field added in Plan A is a customer identifier. Money amounts, SKUs, product & variant titles, locations, and tracking presence & carrier are Level 1 order facts; the customer-field exclusion list is unchanged.
 
 ## Retention
 
@@ -41,7 +41,7 @@ Fields and tables added while extracting operational facts that were previously 
 | `OperationalEvent` | `orderName`, `totalPrice`, `currency` | Merchant-readable order identity and value for triage | 7-day purge |
 | `OperationalEvent` | `locationId`, `hasTracking`, `trackingCompany`, `shipmentStatus` | Fulfillment context: where it shipped from, whether tracking exists | 7-day purge |
 | `OrderProjection` | `orderName`, `orderTotal`, `currency`, `fulfillmentFailedAt`, `hasTracking`, `trackingCompany`, `trackingAt` | Latched order facts for detection and display | 7-day purge |
-| `GapFinding` | `detector` | Which detector produced the finding | 7-day purge |
+| `GapFinding` | `detector` | Distinguishes which detector produced a finding. The column existed alongside the single confirmation detector; this plan's `fulfillment_attempt_failed` detector (Task 7) is what makes a second value real | 7-day purge |
 | `EventSku` | all | SKU→event index enabling SKU search (fixes the defect where the SKU column and filter always returned nothing) | 7-day purge (shares `receivedAt` with its event) |
 | `InventoryItem` | all (`sku`, `productTitle`, `variantTitle`) | Admin API cache: inventory item id → SKU/product/variant title, so an inventory event is readable instead of an opaque number | Erased on uninstall/shop-redact; not aged out |
 | `ShopLocation` | all | Admin API cache: location id → location name | Erased on uninstall/shop-redact; not aged out |

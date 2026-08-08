@@ -469,7 +469,7 @@ export async function getPrivacy(
 			'order status & timestamps',
 			'order name (e.g. #1001)',
 			'order value & currency',
-			'fulfillment status, location & tracking presence',
+			'fulfillment status, location, tracking presence & carrier',
 			'inventory levels',
 			'refund status',
 			'SKUs, product & variant titles & quantities',
