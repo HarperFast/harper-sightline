@@ -112,3 +112,77 @@ test('isOrderLinked excludes inventory and missing resourceId', () => {
 	assert.equal(isOrderLinked(ev('inventory', 1, { resourceId: '5' })), false);
 	assert.equal(isOrderLinked(ev('order', 1, { resourceId: '' })), false);
 });
+
+test('a fulfillment with status error latches fulfillmentFailedAt at the earliest attempt', () => {
+	const p = rebuildProjection([
+		ev('order', 100, { eventId: 'e1', topic: 'orders/paid', state: 'paid', fulfillableItemCount: 2 }),
+		ev('fulfillment', 300, { eventId: 'e2', state: 'error' }),
+		ev('fulfillment', 200, { eventId: 'e3', state: 'failure' }),
+	]);
+	assert.equal(p?.fulfillmentFailedAt, 200);
+	assert.equal(p?.fulfilledAt, undefined);
+});
+
+test('a successful fulfillment does not clear an earlier failure — history is preserved', () => {
+	const p = rebuildProjection([
+		ev('order', 100, { eventId: 'e1', topic: 'orders/paid', state: 'paid', fulfillableItemCount: 2 }),
+		ev('fulfillment', 200, { eventId: 'e2', state: 'error' }),
+		ev('fulfillment', 400, { eventId: 'e3', state: 'success' }),
+	]);
+	assert.equal(p?.fulfillmentFailedAt, 200);
+	assert.equal(p?.fulfilledAt, 400);
+});
+
+test('pending and open fulfillments are not failures', () => {
+	const p = rebuildProjection([
+		ev('fulfillment', 100, { eventId: 'e1', state: 'pending' }),
+		ev('fulfillment', 200, { eventId: 'e2', state: 'open' }),
+	]);
+	assert.equal(p?.fulfillmentFailedAt, undefined);
+});
+
+test('tracking presence latches true and never back to false', () => {
+	const p = rebuildProjection([
+		ev('fulfillment', 100, { eventId: 'e1', state: 'success', hasTracking: true, trackingCompany: 'UPS' }),
+		ev('fulfillment', 200, { eventId: 'e2', state: 'success', hasTracking: false }),
+	]);
+	assert.equal(p?.hasTracking, true);
+	assert.equal(p?.trackingCompany, 'UPS');
+});
+
+test('order value is latched from the EARLIEST paid event, with its currency', () => {
+	const p = rebuildProjection([
+		ev('order', 200, { eventId: 'e1', topic: 'orders/paid', state: 'paid', totalPrice: 50, currency: 'USD' }),
+		ev('order', 100, { eventId: 'e2', topic: 'orders/paid', state: 'paid', totalPrice: 40, currency: 'USD' }),
+	]);
+	assert.equal(p?.paidAt, 100);
+	assert.equal(p?.orderTotal, 40);
+	assert.equal(p?.currency, 'USD');
+});
+
+test('order name is carried onto the projection', () => {
+	const p = rebuildProjection([ev('order', 100, { eventId: 'e1', topic: 'orders/paid', state: 'paid', orderName: '#1001' })]);
+	assert.equal(p?.orderName, '#1001');
+});
+
+test('rebuild equality holds for every new latch under shuffled event order', () => {
+	const events = [
+		ev('order', 100, {
+			eventId: 'e1',
+			topic: 'orders/paid',
+			state: 'paid',
+			fulfillableItemCount: 2,
+			orderName: '#1001',
+			totalPrice: 40,
+			currency: 'USD',
+		}),
+		ev('fulfillment', 200, { eventId: 'e2', state: 'error' }),
+		ev('fulfillment', 400, { eventId: 'e3', state: 'success', hasTracking: true, trackingCompany: 'UPS' }),
+		ev('order', 300, { eventId: 'e4', topic: 'orders/paid', state: 'paid', totalPrice: 55, currency: 'USD' }),
+	];
+	const forward = rebuildProjection(events);
+	const reverse = rebuildProjection([...events].reverse());
+	const shuffled = rebuildProjection([events[2], events[0], events[3], events[1]]);
+	assert.deepEqual(reverse, forward);
+	assert.deepEqual(shuffled, forward);
+});
