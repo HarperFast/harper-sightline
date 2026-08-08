@@ -275,7 +275,7 @@ export class OrdersResource extends Resource {
 		const url = parseUrl(ctx.url);
 		const orderId = trailingId(url.pathname, '/api/v1/orders');
 		if (orderId) {
-			const detail = await getOrderDetail(ProjectionsQ, EventsQ, FindingsQ, shopId, orderId);
+			const detail = await getOrderDetail(ProjectionsQ, EventsQ, FindingsQ, shopId, Date.now(), orderId);
 			if (!detail) throw httpError('order not found', 404);
 			return detail;
 		}

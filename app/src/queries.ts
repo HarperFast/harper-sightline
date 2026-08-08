@@ -359,17 +359,22 @@ export async function getOrderDetail(
 	events: QueryTable,
 	findings: QueryTable,
 	shopId: string,
+	now: number,
 	orderId: string,
 ): Promise<Record<string, unknown> | null> {
 	// Keyed by `${shopId}:${orderId}`, so a manipulated orderId can only ever miss.
 	const projection = await projections.get(`${shopId}:${orderId}`);
 	if (!projection || projection.shopId !== shopId) return null;
 
+	const windowStart = now - WINDOW_MS;
 	const eventRows: Array<Record<string, unknown>> = [];
 	for await (const row of events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
 			{ attribute: 'resourceId', value: orderId },
+			// Same window bound every other ledger view honors — retention purge lag
+			// can otherwise leave older rows queryable after the window they belong to.
+			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
 		sort: { attribute: 'occurredAt', descending: true },
@@ -389,8 +394,13 @@ export async function getOrderDetail(
 		findingRows.push({ ...pick(row, FINDING_FIELDS), description: describeFinding(row as unknown as GapFinding) });
 	}
 
+	// ageHours is computed per request, same as listOrders — it changes every
+	// hour and a stored copy would be stale the moment it was written. Omitted
+	// entirely (not zero) for an order that was never paid.
+	const hours = ageHours(projection.paidAt as number | undefined, now);
 	return {
 		...pick(projection, ORDER_FIELDS),
+		...(hours === undefined ? {} : { ageHours: hours }),
 		events: eventRows,
 		findings: findingRows,
 	};

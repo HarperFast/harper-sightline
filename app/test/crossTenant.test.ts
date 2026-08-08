@@ -314,10 +314,10 @@ test('getOrderDetail: a crafted key cannot reach the victim order, and the attac
 	const { projections, events, findings } = world();
 	// `${shopId}:${orderId}` keying means these compute to a key that was never
 	// written for the attacker's tenant, regardless of what looks like a victim key.
-	assert.equal(await getOrderDetail(projections, events, findings, A, `../${V}:o1`), null);
-	assert.equal(await getOrderDetail(projections, events, findings, A, `${V}:o1`), null);
+	assert.equal(await getOrderDetail(projections, events, findings, A, NOW, `../${V}:o1`), null);
+	assert.equal(await getOrderDetail(projections, events, findings, A, NOW, `${V}:o1`), null);
 	// The attacker's own o1 (same order id as the victim's) resolves to its own row.
-	const detail = await getOrderDetail(projections, events, findings, A, 'o1');
+	const detail = await getOrderDetail(projections, events, findings, A, NOW, 'o1');
 	assert.equal(detail?.paidAt, NOW - 100, "the attacker's own o1, not the victim's");
 });
 

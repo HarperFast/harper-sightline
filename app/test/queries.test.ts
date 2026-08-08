@@ -69,16 +69,23 @@ function fixtures() {
 	// - o1/o2 (and s2's o1) are the ORIGINAL pair, millisecond-fresh, used by the
 	//   event/finding tests above. Their paidAt/lastEventAt are seconds old, which
 	//   puts them ahead of every hour-scale row in any unfiltered/newest-first
-	//   order query, and — because getSummary/computeFlows/getPrivacy scan ALL of
-	//   a shop's projections with no window or state filter — they also count
-	//   toward those functions' totals. Do not retime them "to make the ordering
-	//   tidier": their paidAt is joined into the findings-list assertions and
-	//   their orderId is reused as an event resourceId elsewhere in this file, so
-	//   retiming would ripple into unrelated tests.
+	//   order query. Do not retime them "to make the ordering tidier": their
+	//   paidAt is joined into the findings-list assertions and their orderId is
+	//   reused as an event resourceId elsewhere in this file, so retiming would
+	//   ripple into unrelated tests.
 	// - oA-oD are the WORKLIST set, hour-scale ages, purpose-built for the order
-	//   list/aging tests. Any test written against "all of s1's orders" (getSummary,
-	//   computeFlows, getPrivacy footprint, and later the aging-bucket work) must
-	//   count o1/o2 too — there is one shared universe, not two.
+	//   list/aging tests.
+	//
+	// All of these functions read from this SAME table — one shared universe, not
+	// two — but not identically: getSummary (plain shopId scan) and getPrivacy's
+	// footprint (countWhere) have no window or state filter, so o1/o2 count toward
+	// their totals right alongside oA-oD. computeFlows DOES filter on
+	// `lastEventAt >= windowStart`; it only looks unfiltered here because every
+	// row above, even oC's 80-hour-old lastEventAt, sits inside the 7-day window.
+	// That getSummary/computeFlows asymmetry is a known inconsistency a later task
+	// in this plan resolves — don't "fix" it in passing, and don't assume a row
+	// with an out-of-window lastEventAt will count toward computeFlows.lanes the
+	// way it counts toward getSummary.orders.
 	const projections = new FakeTable('id', [
 		{
 			id: 's1:o1',
@@ -709,9 +716,38 @@ test('orders page with a stable cursor and no duplicates across pages', async ()
 	assert.equal(ids.length, 4);
 });
 
+test('the ascending (oldest-first) worklist pages correctly across a tied paidAt boundary', async () => {
+	// A separate, purpose-built fixture — not the shared fixtures() universe — so
+	// a tie can be placed exactly where a naive comparator or an off-by-one
+	// boundary actually breaks: split across two pages. This is the case the
+	// ascending path's id tiebreak exists for, and the only committed test that
+	// exercises more than one page of the ascending path.
+	const projections = new FakeTable('id', [
+		{ id: 's1:a', shopId: 's1', orderId: 'a', paidAt: NOW - 10 * HOUR, requiresFulfillment: true, lastEventAt: NOW - 10 * HOUR },
+		{ id: 's1:b', shopId: 's1', orderId: 'b', paidAt: NOW - 10 * HOUR, requiresFulfillment: true, lastEventAt: NOW - 10 * HOUR }, // tied with a
+		{ id: 's1:c', shopId: 's1', orderId: 'c', paidAt: NOW - 20 * HOUR, requiresFulfillment: true, lastEventAt: NOW - 20 * HOUR },
+		{ id: 's1:d', shopId: 's1', orderId: 'd', paidAt: NOW - 5 * HOUR, requiresFulfillment: true, lastEventAt: NOW - 5 * HOUR },
+		{ id: 's1:e', shopId: 's1', orderId: 'e', paidAt: NOW - 1 * HOUR, requiresFulfillment: true, lastEventAt: NOW - 1 * HOUR },
+	]);
+
+	// Walk the entire oldest-first list two rows at a time until nextCursor is absent.
+	let cursor: string | undefined;
+	const seen: string[] = [];
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listOrders(projections, 's1', NOW, { sort: 'oldest', limit: 2, cursor });
+		seen.push(...page.items.map((i) => String(i.orderId)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	// c is oldest, then the tied a/b pair (id tiebreak: 'a' < 'b' ascending), then
+	// d, then e. The tie falls exactly on the page-1/page-2 boundary at limit 2.
+	assert.deepEqual(seen, ['c', 'a', 'b', 'd', 'e'], 'every row exactly once, in order, across the tie boundary');
+	assert.equal(new Set(seen).size, seen.length, 'no duplicates across the page boundary');
+});
+
 test('order detail returns the projection, its events, and its findings', async () => {
 	const { projections, events, findings } = fixtures();
-	const detail = await getOrderDetail(projections, events, findings, 's1', 'o1');
+	const detail = await getOrderDetail(projections, events, findings, 's1', NOW, 'o1');
 	assert.equal(detail?.orderId, 'o1');
 	assert.ok(Array.isArray(detail?.events));
 	assert.ok(Array.isArray(detail?.findings));
@@ -719,8 +755,41 @@ test('order detail returns the projection, its events, and its findings', async 
 
 test('order detail for another tenant order returns null, whatever id is supplied', async () => {
 	const { projections, events, findings } = fixtures();
-	assert.equal(await getOrderDetail(projections, events, findings, 's1', '../s2:oA'), null);
+	assert.equal(await getOrderDetail(projections, events, findings, 's1', NOW, '../s2:oA'), null);
 	// s2 genuinely has order oA; s1 must not see it.
-	const detail = await getOrderDetail(projections, events, findings, 's1', 'oA');
+	const detail = await getOrderDetail(projections, events, findings, 's1', NOW, 'oA');
 	assert.notEqual(detail?.orderName, '#9999');
+});
+
+test('order detail reports ageHours for a paid order, and omits it entirely for an unpaid one', async () => {
+	const { events, findings } = fixtures();
+	const paidProjections = new FakeTable('id', [
+		{ id: 's1:aged', shopId: 's1', orderId: 'aged', paidAt: NOW - 2 * HOUR, requiresFulfillment: true, lastEventAt: NOW - 2 * HOUR },
+	]);
+	const paid = await getOrderDetail(paidProjections, events, findings, 's1', NOW, 'aged');
+	assert.equal(paid?.ageHours, 2, 'computed per request, same as listOrders');
+
+	// An order with no paidAt (not yet paid) has no age to report — omitted, not 0.
+	const unpaidProjections = new FakeTable('id', [
+		{ id: 's1:unpaid', shopId: 's1', orderId: 'unpaid', requiresFulfillment: true, lastEventAt: NOW },
+	]);
+	const unpaid = await getOrderDetail(unpaidProjections, events, findings, 's1', NOW, 'unpaid');
+	assert.equal(unpaid?.ageHours, undefined);
+	assert.ok(!Object.prototype.hasOwnProperty.call(unpaid, 'ageHours'), 'ageHours key is absent, not present as undefined');
+});
+
+test('order detail only surfaces events inside the retention window', async () => {
+	const events = new FakeTable('eventId', [
+		{ eventId: 's1:in', shopId: 's1', domain: 'order', resourceId: 'o1', occurredAt: NOW - DAY, receivedAt: NOW - DAY },
+		// Retention purge lag can leave a stale row queryable past its window —
+		// the detail view must still honor the same bound every other view does.
+		{ eventId: 's1:stale', shopId: 's1', domain: 'order', resourceId: 'o1', occurredAt: NOW - 8 * DAY, receivedAt: NOW - 8 * DAY },
+	]);
+	const { projections, findings } = fixtures();
+	const detail = await getOrderDetail(projections, events, findings, 's1', NOW, 'o1');
+	assert.ok(detail);
+	assert.deepEqual(
+		(detail.events as Array<Record<string, unknown>>).map((e) => e.eventId),
+		['s1:in'],
+	);
 });
