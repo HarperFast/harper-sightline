@@ -170,8 +170,24 @@ export interface EventQueryParams {
 // A `sku` filter takes a different path: SKUs live in the EventSku index (one row
 // per event/SKU) because an order has many and the event row holds one scalar.
 // The index carries the other filterable fields, so the SKU path is an ordinary
-// keyset page over EventSku followed by a keyed hydrate — no post-filtering, so
-// a page is never short and `nextCursor` never lies.
+// keyset page over EventSku followed by a keyed hydrate.
+//
+// ONE EXCEPTION: `state` is not an EventSku column, so on the SKU path it is
+// applied AFTER hydration, from the event row itself. Spreading the full
+// condition list into the index query (which is what happened when `state` was
+// added later) meant `sku` and `state` together matched nothing at all: each
+// filter worked alone, and the pair — two controls sitting side by side in the
+// same filter bar — silently returned an empty page.
+//
+// Denormalizing `state` into EventSku was the alternative and is worse: index
+// rows written before the column existed would not carry it, so the combination
+// would UNDER-return for every historical row while looking like it worked. That
+// is exactly the legacy-column failure C1 just demonstrated on the projection
+// table, and it fails silently in the merchant's disfavour.
+//
+// The cost is that this one path can return a SHORT page — fewer items than the
+// limit while `nextCursor` is still set. Not a new property: the hydration loop
+// already skips index rows whose event has been purged.
 export async function listEvents(
 	events: QueryTable,
 	shopId: string,
@@ -185,6 +201,8 @@ export async function listEvents(
 		{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 	];
 	if (params.until !== undefined) conditions.push({ attribute: 'occurredAt', value: params.until, comparator: 'less_than_equal' });
+	// Conditions every EventSku row also carries, so they are safe to push into
+	// either query. `state` is deliberately NOT here — see below.
 	for (const [attr, val] of [
 		['domain', params.domain],
 		['topic', params.topic],
@@ -192,7 +210,6 @@ export async function listEvents(
 		// `source` distinguishes webhook-observed from reconciliation-recovered
 		// evidence (screen spec §3 "evidence source" filter).
 		['source', params.source],
-		['state', params.state],
 	] as const) {
 		if (val) conditions.push({ attribute: attr, value: val });
 	}
@@ -207,15 +224,25 @@ export async function listEvents(
 			params.cursor,
 			params.limit,
 		);
+		// One get per index row, but ISSUED TOGETHER: awaiting inside the loop meant an
+		// export of a SKU-filtered list serialized up to MAX_EXPORT_ROWS round trips
+		// inside one request. The tenant re-check below stays per-row.
+		const fetched = await Promise.all(indexPage.items.map((row) => events.get(String(row.eventId))));
 		const hydrated: Array<Record<string, unknown>> = [];
-		for (const row of indexPage.items) {
-			const event = await events.get(String(row.eventId));
+		for (const event of fetched) {
 			// An index row whose event is gone (purged mid-page, or written before its
 			// event landed) is skipped rather than surfaced as a phantom result.
-			if (event && event.shopId === shopId) hydrated.push(pick(event, EVENT_FIELDS));
+			if (!event || event.shopId !== shopId) continue;
+			// `state` lives on the event, not on the index, so it is applied here.
+			if (params.state && event.state !== params.state) continue;
+			hydrated.push(pick(event, EVENT_FIELDS));
 		}
 		return { items: await hydrateSkus(eventSkus, shopId, hydrated), nextCursor: indexPage.nextCursor };
 	}
+
+	// Off the index path `state` IS a column on the event row, so it filters in the
+	// database like every other condition.
+	if (params.state) conditions.push({ attribute: 'state', value: params.state });
 
 	// No EventSku table wired (or no sku filter requested): fall back to the
 	// scalar `sku` column directly. That column is only ever populated for a

@@ -341,6 +341,60 @@ test('a SKU filter combines with a domain filter without post-filtering the page
 	);
 });
 
+test('a SKU filter combines with a state filter, which the index cannot answer alone', async () => {
+	// The two controls sit side by side in the events filter bar. `state` is not an
+	// EventSku column, so pushing it into the index query made the PAIR match nothing
+	// while each filter worked alone — a filter that looks like it works and silently
+	// returns an empty page. It is applied after hydration instead, from the event row.
+	const { events } = fixtures();
+	const both = await listEvents(events, 's1', NOW, { sku: 'TSHIRT', state: 'success' }, skuFixtures());
+	assert.deepEqual(
+		both.items.map((i) => i.eventId),
+		['s1:e2'],
+		'the fulfillment event carrying TSHIRT, in state success',
+	);
+	// And it still discriminates: the other TSHIRT event is in state 'paid'.
+	assert.deepEqual(
+		(await listEvents(events, 's1', NOW, { sku: 'TSHIRT', state: 'paid' }, skuFixtures())).items.map((i) => i.eventId),
+		['s1:e1'],
+	);
+	assert.deepEqual(
+		(await listEvents(events, 's1', NOW, { sku: 'TSHIRT', state: 'error' }, skuFixtures())).items,
+		[],
+		'and excludes non-matches',
+	);
+	// A state filter that excludes a row on the index path can only ever SHRINK the
+	// page, never reach another tenant's event.
+	for (const item of both.items) assert.equal(String(item.eventId).startsWith('s1:'), true);
+});
+
+test('the SKU path fetches its page of events in one batch, not one round trip at a time', async () => {
+	// At export scale this loop ran up to MAX_EXPORT_ROWS sequential gets inside a
+	// single request. The gets are issued together now; this pins that by observing
+	// that no get resolves before all of them have been issued.
+	const { events } = fixtures();
+	const trace: string[] = [];
+	const counting = {
+		search: (spec: unknown) => events.search(spec as never),
+		get: async (id: string) => {
+			trace.push(`issue ${id}`);
+			const row = await events.get(id);
+			trace.push(`settle ${id}`);
+			return row;
+		},
+	} as unknown as typeof events;
+	const page = await listEvents(counting, 's1', NOW, { sku: 'TSHIRT' }, skuFixtures());
+	assert.equal(page.items.length, 2);
+	// Every get is issued before any of them settles. Awaiting inside the loop would
+	// interleave them (issue, settle, issue, settle).
+	const issues = trace.filter((t) => t.startsWith('issue')).length;
+	assert.equal(issues, 2, 'one get per index row on the page');
+	assert.deepEqual(
+		trace.slice(0, issues).map((t) => t.split(' ')[0]),
+		['issue', 'issue'],
+	);
+});
+
 test('a SKU with no index rows returns an empty page, not every event', async () => {
 	const { events } = fixtures();
 	const page = await listEvents(events, 's1', NOW, { sku: 'NOPE' }, skuFixtures());
