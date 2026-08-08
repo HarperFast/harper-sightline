@@ -195,6 +195,13 @@ export const M = {
 	purgeDeleted: 'purge.deleted',
 	purgeFailure: 'purge.failure',
 	purgeError: 'purge.error',
+	// Inventory enrichment (#13 follow-up). Items/locations resolved (including
+	// tombstones) and EventSku rows backfilled per tick, plus a failure counter —
+	// without these, ops.snapshot was blind to this loop entirely.
+	enrichItems: 'enrich.items',
+	enrichLocations: 'enrich.locations',
+	enrichIndexed: 'enrich.indexed',
+	enrichError: 'enrich.error',
 	// A background loop's previous pass failed to settle within its stall budget
 	// and a new pass was started anyway (src/tick.ts). Non-zero means a loop hung.
 	tickStalled: 'tick.stalled',

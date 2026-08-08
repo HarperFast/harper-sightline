@@ -13,6 +13,7 @@ import {
 import type { OperationalEvent } from '../src/model.ts';
 import { FakeTable } from './fakeTable.ts';
 import { setLogSink } from '../src/observe.ts';
+import { PermanentAdminApiError } from '../src/adminApi.ts';
 
 const NOW = 1_775_000_000_000;
 
@@ -156,29 +157,94 @@ test('a new event after a converged checkpoint is still indexed', async () => {
 	assert.equal(second.indexed, 1, 'exactly the new event is indexed');
 });
 
-test('an item the Admin API cannot resolve is retried next tick, not skipped', async () => {
+test('a transient Admin API failure is retried next tick, not skipped', async () => {
+	// A THROW is the transient case (rate limit, upstream hiccup): the item's
+	// status is genuinely unknown, so it must stay retryable, never tombstoned.
 	const raw = harness();
 	await raw.events.put(inventoryEvent({ eventId: 's1:e1', resourceId: 'iX' }));
-	let resolveNow = false;
+	let shouldThrow = true;
 	const deps = buildDeps(raw, {
 		getToken: async () => 'tok',
-		fetchItems: (async () => (resolveNow ? [{ inventoryItemId: 'iX', sku: 'SKU-X' }] : [])) as EnrichDeps['fetchItems'],
+		fetchItems: (async () => {
+			if (shouldThrow) throw new Error('admin api throttled');
+			return [{ inventoryItemId: 'iX', sku: 'SKU-X' }];
+		}) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+
+	setLogSink(() => {}); // this test deliberately triggers the warn path
+	try {
+		const first = await runInventoryEnrichment(NOW, deps);
+		assert.equal(first.items, 0);
+		assert.equal(first.indexed, 0);
+		assert.equal(
+			raw.checkpoints.rows.get(checkpointId('s1'))?.cursor,
+			String(NOW),
+			'the checkpoint holds at the unresolved event rather than advancing past it',
+		);
+
+		shouldThrow = false;
+		const second = await runInventoryEnrichment(NOW + 5000, deps);
+		assert.equal(second.items, 1, 'retried and resolved on the next tick');
+		assert.equal(second.indexed, 1, 'now that it resolved, the event is indexed');
+	} finally {
+		setLogSink(null);
+	}
+});
+
+test('an item Shopify no longer has (deleted) is tombstoned so the frontier advances, with no index row', async () => {
+	// A SUCCESSFUL call that simply omits the id — exactly what fetchInventoryItems
+	// produces for a node Shopify returns null for (adminApi.ts drops the null) —
+	// means the item is permanently gone, not "not yet resolved".
+	const raw = harness();
+	await raw.events.put(inventoryEvent({ eventId: 's1:e1', resourceId: 'iDeleted' }));
+	let itemCalls = 0;
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async () => {
+			itemCalls++;
+			return [];
+		}) as EnrichDeps['fetchItems'],
 		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
 	});
 
 	const first = await runInventoryEnrichment(NOW, deps);
-	assert.equal(first.items, 0);
-	assert.equal(first.indexed, 0);
-	assert.equal(
+	assert.equal(first.indexed, 0, 'no SKU is known, so no EventSku row is written for the tombstoned item');
+	assert.equal(raw.inventoryItems.rows.get('s1:iDeleted')?.sku, undefined, 'tombstoned with no sku');
+	assert.ok(raw.inventoryItems.rows.has('s1:iDeleted'), 'a tombstone row is written so the id counts as resolved');
+	assert.notEqual(
 		raw.checkpoints.rows.get(checkpointId('s1'))?.cursor,
 		String(NOW),
-		'the checkpoint holds at the unresolved event rather than advancing past it',
+		'the checkpoint advances past the permanently-missing item instead of pinning on it forever',
 	);
 
-	resolveNow = true;
-	const second = await runInventoryEnrichment(NOW + 5000, deps);
-	assert.equal(second.items, 1, 'retried and resolved on the next tick');
-	assert.equal(second.indexed, 1, 'now that it resolved, the event is indexed');
+	// A later event for the same (now-tombstoned) item must never re-query the
+	// Admin API for it.
+	await raw.events.put(inventoryEvent({ eventId: 's1:e2', resourceId: 'iDeleted', occurredAt: NOW + 1000, receivedAt: NOW + 1000 }));
+	await runInventoryEnrichment(NOW + 1000, deps);
+	assert.equal(itemCalls, 1, 'the tombstoned id is already resolved, so it is never requested again');
+});
+
+test('a permanent (scope-denied) Admin API failure logs at error, not warn, so it is alertable', async () => {
+	const raw = harness();
+	await raw.events.put(inventoryEvent({ eventId: 's1:e1', resourceId: 'i1' }));
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async () => {
+			throw new PermanentAdminApiError('admin graphql errors: Access denied for inventoryItems field.');
+		}) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+
+	const levels: string[] = [];
+	setLogSink((level) => levels.push(level));
+	try {
+		await runInventoryEnrichment(NOW, deps);
+	} finally {
+		setLogSink(null);
+	}
+	assert.ok(levels.includes('error'), 'a permanent scope failure must be visible as error, not warn');
+	assert.ok(!levels.includes('warn'), 'it must not read as a routine, self-resolving blip');
 });
 
 test('a failing Admin API call for one shop does not abort the sweep for the rest', async () => {

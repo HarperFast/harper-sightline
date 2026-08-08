@@ -1,7 +1,7 @@
 import type { EventSku, InventoryItem, OperationalEvent, ShopLocation, WorkerCheckpoint } from './model.ts';
 import { eventSkuRows } from './eventSkus.ts';
 import { log } from './observe.ts';
-import type { fetchInventoryItems, fetchLocations } from './adminApi.ts';
+import { isPermanentAdminError, type fetchInventoryItems, type fetchLocations } from './adminApi.ts';
 
 // Inventory webhooks carry only `inventory_item_id` and a number, which is
 // unreadable to a merchant and unsearchable by SKU. This module holds both the
@@ -123,12 +123,14 @@ const SEVEN_DAYS_MS = 7 * 86_400_000;
 // keyed `enrich:<shopId>`), NOT by ENRICH_BATCH alone — ENRICH_BATCH only caps
 // how many NEW item ids one tick resolves through the Admin API. The checkpoint
 // holds a `receivedAt` frontier: each tick reads only inventory events at or
-// after it, and advances it only past events whose SKU is now known. An item
-// the Admin API can't (yet) resolve holds the frontier at its receivedAt, so it
-// is retried next tick instead of being silently skipped forever, while
-// everything already indexed is never re-read or re-indexed. A shop with a
-// stable, fully-resolved catalog therefore converges to one small (empty)
-// event query and zero writes per tick.
+// after it, and advances it only past events whose SKU is now known. A call
+// that THROWS holds the frontier at the oldest unresolved event's receivedAt,
+// so it is retried next tick instead of being silently skipped forever. A call
+// that SUCCEEDS but omits a requested id means that item is permanently gone
+// (deleted in Shopify) — it is tombstoned (resolved, no SKU) so it, too, stops
+// pinning the frontier, while everything already indexed is never re-read or
+// re-indexed. A shop with a stable, fully-resolved catalog therefore converges
+// to one small (empty) event query and zero writes per tick.
 export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Promise<EnrichResult> {
 	let items = 0;
 	let locations = 0;
@@ -150,7 +152,9 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 					locations++;
 				}
 			} catch (e: unknown) {
-				log('warn', 'enrich.locations.failed', { shop: shopId, message: (e as Error).message });
+				// A missing-scope failure (isPermanentAdminError) can never resolve on
+				// retry, so it must be loud/alertable (error), not a routine blip (warn).
+				log(isPermanentAdminError(e) ? 'error' : 'warn', 'enrich.locations.failed', { shop: shopId, message: (e as Error).message });
 			}
 		}
 
@@ -186,14 +190,33 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 		const wanted = unresolvedIds(inventoryEvents, resolved);
 		if (wanted.length > 0) {
 			try {
-				for (const facts of await deps.fetchItems(shopId, token, wanted)) {
+				const fetched = await deps.fetchItems(shopId, token, wanted);
+				for (const facts of fetched) {
 					await deps.inventoryItems.put(inventoryItemRow(shopId, facts, now));
 					resolved.add(facts.inventoryItemId);
 					if (facts.sku) skuById.set(facts.inventoryItemId, facts.sku);
 					items++;
 				}
+				// A successful call that omits a requested id means Shopify no longer
+				// has that node (fetchInventoryItems already drops the null Shopify
+				// returns for it — a deleted product/variant). Left alone, that id can
+				// never enter `resolved`, so unresolvedIds/the checkpoint frontier would
+				// retry and pin on it forever — merchants delete products routinely.
+				// Write a tombstone (id + shopId present, sku undefined) so it counts as
+				// resolved with no SKU to index. Only reachable after a call that
+				// actually succeeded — the catch below is transient and must stay
+				// retryable, never tombstoned.
+				const returned = new Set(fetched.map((f) => f.inventoryItemId));
+				for (const id of wanted) {
+					if (returned.has(id)) continue;
+					await deps.inventoryItems.put(inventoryItemRow(shopId, { inventoryItemId: id }, now));
+					resolved.add(id);
+					items++;
+				}
 			} catch (e: unknown) {
-				log('warn', 'enrich.items.failed', { shop: shopId, message: (e as Error).message });
+				// A missing-scope failure (isPermanentAdminError) can never resolve on
+				// retry, so it must be loud/alertable (error), not a routine blip (warn).
+				log(isPermanentAdminError(e) ? 'error' : 'warn', 'enrich.items.failed', { shop: shopId, message: (e as Error).message });
 			}
 		}
 

@@ -443,8 +443,12 @@ function enrichTick(): void {
 	void enrichTicker.run(async () => {
 		try {
 			const r = await runInventoryEnrichment();
+			metrics.inc(M.enrichItems, r.items);
+			metrics.inc(M.enrichLocations, r.locations);
+			metrics.inc(M.enrichIndexed, r.indexed);
 			if (r.items || r.locations || r.indexed) log('trace', 'enrich.tick', r);
 		} catch (e: unknown) {
+			metrics.inc(M.enrichError);
 			log('error', 'enrich.error', { message: (e as Error).message });
 		}
 	});
