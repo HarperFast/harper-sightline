@@ -15,8 +15,8 @@
 	"total_price": "129.95",
 	"current_total_price": "129.95",
 	"line_items": [
-		{ "id": 1, "sku": "TSHIRT-M-BLK", "title": "T-Shirt M Black", "quantity": 2, "fulfillable_quantity": 2, "requires_shipping": true },
-		{ "id": 2, "sku": "STICKER-PK", "title": "Sticker Pack", "quantity": 1, "fulfillable_quantity": 1, "requires_shipping": true }
+		{ "id": 111, "sku": "TSHIRT-BLK-M", "title": "T-Shirt M Black", "quantity": 2, "fulfillable_quantity": 2, "requires_shipping": true },
+		{ "id": 112, "sku": "STICKER-PK", "title": "Sticker Pack", "quantity": 1, "fulfillable_quantity": 1, "requires_shipping": true }
 	],
 	"__future_additive_field__": "ignored by normalizer",
 	"email": "buyer@example.com",
