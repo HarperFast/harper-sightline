@@ -82,11 +82,12 @@ function label(order: DigestOrderRef): string {
 }
 
 // Rounds to the nearest whole hour before splitting into days/hours, so both
-// parts are derived from the SAME integer. `src/orders.ts`'s `ageHours()`
-// currently floors to an integer already, but nothing here should assume that
-// stays true — Task 3 feeds this whatever a future ageHours() computation
-// produces, and a fractional hour must not leak into the rendered string
-// (`3d 8.5h` is not an age a merchant can act on).
+// parts are derived from the SAME integer. `DigestOrderRef.ageHours` is typed as
+// a plain `number`, not constrained to integers, so this makes `age()` total for
+// any numeric input rather than relying on every caller to pre-round. (Today's
+// only caller, `ageHours()` in src/orders.ts, already floors to an integer, so
+// this is defensive rather than a fix for a live fractional source — but a
+// function that renders `3d 8.5h` for a legal input is still a latent defect.)
 function age(hours: number): string {
 	const whole = Math.round(hours);
 	return whole < 24 ? `${whole}h` : `${Math.floor(whole / 24)}d ${whole % 24}h`;
