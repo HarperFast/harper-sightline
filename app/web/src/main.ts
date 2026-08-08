@@ -8,7 +8,9 @@ import {
 	apiFindings,
 	apiFinding,
 	apiPrivacy,
+	apiOrders,
 	type EventItem,
+	type OrderItem,
 	type Setup,
 	type Summary,
 } from './api.ts';
@@ -23,6 +25,9 @@ import {
 	findingDetailView,
 	findingsListView,
 	notFoundView,
+	orderQuery,
+	ordersView,
+	ORDER_FILTER_KEYS,
 	overviewView,
 	parseHash,
 	privacyView,
@@ -186,6 +191,40 @@ async function eventDetail(id: string): Promise<void> {
 	render(eventDetailView(await apiEvent(id), contextHtml));
 }
 
+let orderItems: OrderItem[] = [];
+let orderCursor: string | undefined;
+let orderQueryActive: Record<string, string> = {};
+
+async function ordersList(params: Record<string, string>): Promise<void> {
+	loading();
+	orderItems = [];
+	orderCursor = undefined;
+	orderQueryActive = orderQuery(params);
+	const contextHtml = await strip();
+	const first = await apiOrders(orderQueryActive);
+	orderItems = first.items;
+	orderCursor = first.nextCursor;
+	paintOrders(params, contextHtml);
+}
+
+function paintOrders(params: Record<string, string>, contextHtml: string): void {
+	render(ordersView(params, orderItems, Boolean(orderCursor), contextHtml));
+	bindFilters('orderFilters', () => {
+		const q = new URLSearchParams();
+		for (const key of ORDER_FILTER_KEYS) {
+			const v = fieldValue(`f-${key}`);
+			if (v) q.set(key, v);
+		}
+		location.hash = `#/orders${q.toString() ? `?${q}` : ''}`;
+	});
+	document.getElementById('loadMore')?.addEventListener('click', async () => {
+		const next = await apiOrders({ ...orderQueryActive, cursor: orderCursor });
+		orderItems.push(...next.items);
+		orderCursor = next.nextCursor;
+		paintOrders(params, contextHtml);
+	});
+}
+
 async function findingsList(params: Record<string, string>): Promise<void> {
 	loading();
 	const contextHtml = await strip();
@@ -228,6 +267,7 @@ async function route(): Promise<void> {
 		if (path === '/' || path === '') await overview();
 		else if (path === '/setup') await setupScreen();
 		else if (eventId) await eventDetail(decodeURIComponent(eventId[1]));
+		else if (path === '/orders') await ordersList(params);
 		else if (path === '/events') await eventsList(params);
 		else if (findingId) await findingDetail(decodeURIComponent(findingId[1]));
 		else if (path === '/findings') await findingsList(params);

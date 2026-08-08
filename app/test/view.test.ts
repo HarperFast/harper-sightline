@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { EventDetail, EventItem, FindingDetail, FindingItem, Privacy, Setup, Summary } from '../web/src/api.ts';
+import type { EventDetail, EventItem, FindingDetail, FindingItem, OrderItem, Privacy, Setup, Summary } from '../web/src/api.ts';
 import {
 	activityView,
 	contextStrip,
@@ -13,8 +13,10 @@ import {
 	FINDING_DISCLAIMER,
 	findingDetailView,
 	findingsListView,
+	money,
 	needsAttention,
 	observedTimeline,
+	ordersView,
 	overviewView,
 	parseHash,
 	privacyView,
@@ -616,4 +618,82 @@ test('parseHash resolves every route and its filters', () => {
 	assert.deepEqual(parseHash('#/events?domain=order&sku=A'), { path: '/events', params: { domain: 'order', sku: 'A' } });
 	assert.deepEqual(parseHash('#/findings?status=unconfirmed'), { path: '/findings', params: { status: 'unconfirmed' } });
 	assert.deepEqual(parseHash('#/events/s%3Ae1'), { path: '/events/s%3Ae1', params: {} });
+});
+
+// ── orders ───────────────────────────────────────────────────────────────────
+
+function order(over: Partial<OrderItem> = {}): OrderItem {
+	return {
+		orderId: '7518851989809',
+		orderName: '#1001',
+		state: 'awaiting',
+		paidAt: NOW - 30 * HOUR,
+		ageHours: 30,
+		orderTotal: 129.95,
+		currency: 'USD',
+		...over,
+	};
+}
+
+test('the orders worklist shows the merchant-facing name, lane, age and value', () => {
+	const html = ordersView({}, [order()], false, '');
+	assert.match(html, /#1001/);
+	assert.match(html, /awaiting/);
+	// Fixture is 30h old (paidAt: NOW - 30 * HOUR) — past the 24h cutoff, so it
+	// renders as the multi-day format, not the plain-hours one.
+	assert.match(html, /1d 6h/);
+	assert.match(html, /\$129\.95|129\.95/);
+});
+
+test('the age cell renders plain hours under the 24h cutoff and days+hours past it', () => {
+	assert.ok(ordersView({}, [order({ ageHours: 6 })], false, '').includes('<s-table-cell>6h</s-table-cell>'));
+	assert.ok(ordersView({}, [order({ ageHours: 30 })], false, '').includes('<s-table-cell>1d 6h</s-table-cell>'));
+});
+
+test('an order with no name falls back to its id so the row is never blank', () => {
+	const html = ordersView({}, [order({ orderName: undefined })], false, '');
+	assert.match(html, /7518851989809/);
+});
+
+test('a failed fulfillment attempt is flagged on the row without accusing anyone', () => {
+	const html = ordersView({}, [order({ fulfillmentFailedAt: NOW - 20 * HOUR })], false, '');
+	assert.match(html, /attempt did not succeed|failed attempt/i);
+	assert.doesNotMatch(html, /warehouse|carrier|vendor|3PL/i);
+});
+
+test('the orders screen offers lane, age and sort filters reflected in the URL', () => {
+	const html = ordersView({ state: 'awaiting', minAgeHours: '24', sort: 'oldest' }, [order()], false, '');
+	assert.match(html, /id="f-state"/);
+	assert.match(html, /id="f-minAgeHours"/);
+	assert.match(html, /id="f-sort"/);
+	assert.match(html, /value="awaiting" selected/);
+	assert.match(html, /value="24" selected/);
+	assert.match(html, /value="oldest" selected/);
+});
+
+test('an empty worklist says so rather than rendering an empty table', () => {
+	assert.match(ordersView({}, [], false, ''), /No orders match/);
+});
+
+test('load more appears only when there is another page', () => {
+	assert.match(ordersView({}, [order()], true, ''), /id="loadMore"/);
+	assert.doesNotMatch(ordersView({}, [order()], false, ''), /id="loadMore"/);
+});
+
+test('a hostile order name cannot inject markup', () => {
+	const html = ordersView({}, [order({ orderName: '"><script>alert(1)</script>' })], false, '');
+	assert.doesNotMatch(html, /<script>alert/);
+});
+
+test('money renders with its currency and omits gracefully when absent', () => {
+	assert.match(money(129.95, 'USD'), /129\.95/);
+	assert.equal(money(undefined, 'USD'), '—');
+	assert.equal(money(129.95, undefined), '129.95');
+});
+
+test('the orders screen is Polaris markup like every other screen', () => {
+	const html = ordersView({}, [order()], false, '');
+	assert.match(html, /<s-page/);
+	assert.match(html, /<s-section/);
+	assert.match(html, /<s-table/);
 });

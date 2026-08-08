@@ -1,4 +1,4 @@
-import type { EventDetail, EventItem, FindingDetail, FindingItem, Privacy, Setup, Summary } from './api.ts';
+import type { EventDetail, EventItem, FindingDetail, FindingItem, OrderItem, Privacy, Setup, Summary } from './api.ts';
 
 // Every screen's markup, as PURE functions of already-fetched data. Nothing here
 // touches the DOM, the network, or any Shopify global — main.ts owns all of that.
@@ -107,6 +107,19 @@ const STATUS_TONE: Record<string, string> = {
 };
 export function badge(text: string, tone?: string): string {
 	return `<s-badge tone="${esc(tone ?? STATUS_TONE[text] ?? 'neutral')}">${esc(text)}</s-badge>`;
+}
+
+// Money for display. Intl gives the merchant's own currency formatting; an
+// unknown/absent currency degrades to the bare amount rather than guessing a
+// symbol, and an absent amount is an em dash like every other missing value.
+export function money(amount: number | undefined, currency: string | undefined): string {
+	if (amount === undefined || amount === null) return '—';
+	if (!currency) return amount.toFixed(2);
+	try {
+		return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
+	} catch {
+		return `${amount.toFixed(2)} ${currency}`;
+	}
 }
 
 export function page(heading: string, body: string, breadcrumb?: { href: string; label: string }): string {
@@ -571,6 +584,107 @@ export function eventDetailView(e: EventDetail, strip: string): string {
 			${delayed}
 		</s-section>`,
 		{ href: '#/events', label: 'Events' },
+	);
+}
+
+// ── orders ───────────────────────────────────────────────────────────────────
+// The worklist: every order Sightline is tracking, with its lane, its age since
+// payment, and its value. This is what the Overview's counts drill into — before
+// it existed, "Awaiting confirmation: 14" was a number with nowhere to go, and
+// the only order list was the findings list, which shows only orders that have
+// ALREADY blown the deadline.
+export const ORDER_STATES = ['', 'awaiting', 'fulfilled', 'cancelled', 'refunded', 'unpaid'];
+export const ORDER_SORTS: Array<[string, string]> = [
+	['newest', 'Newest first'],
+	['oldest', 'Oldest first (most overdue)'],
+];
+// Sub-deadline aging: the confirmation detector waits 72h, so these let a
+// merchant see what is heading that way while it can still be acted on.
+export const ORDER_AGES: Array<[string, string]> = [
+	['', 'Any age'],
+	['12', 'Paid over 12h ago'],
+	['24', 'Paid over 24h ago'],
+	['48', 'Paid over 48h ago'],
+	['72', 'Paid over 72h ago'],
+];
+export const ORDER_FILTER_KEYS = ['state', 'minAgeHours', 'sort'];
+
+export function orderQuery(params: Record<string, string>): Record<string, string> {
+	const q: Record<string, string> = {};
+	for (const key of ORDER_FILTER_KEYS) {
+		if (params[key]) q[key] = params[key];
+	}
+	return q;
+}
+
+// The order's own label, never a blank cell: Shopify's merchant-facing name when
+// we have it, otherwise the raw id (which is at least copy-pasteable).
+export function orderLabel(o: { orderName?: string; orderId: string }): string {
+	return o.orderName ?? o.orderId;
+}
+
+function ageCell(o: OrderItem): string {
+	if (o.ageHours === undefined) return '—';
+	return o.ageHours < 24 ? `${o.ageHours}h` : `${Math.floor(o.ageHours / 24)}d ${o.ageHours % 24}h`;
+}
+
+// A failed attempt is stated as an observation of Shopify's own record. It is
+// direct evidence — Shopify recorded the attempt as unsuccessful — so it does not
+// hedge like an absence finding, and it still names no downstream party.
+function attemptFlag(o: OrderItem): string {
+	return o.fulfillmentFailedAt !== undefined ? ` ${badge('attempt did not succeed', 'critical')}` : '';
+}
+
+export function ordersView(params: Record<string, string>, items: OrderItem[], hasMore: boolean, strip: string): string {
+	const rows = items
+		.map(
+			(o) => `<s-table-row>
+			<s-table-cell><s-link href="#/orders/${encodeURIComponent(o.orderId)}">${esc(orderLabel(o))}</s-link></s-table-cell>
+			<s-table-cell>${badge(o.state)}${attemptFlag(o)}</s-table-cell>
+			<s-table-cell>${ts(o.paidAt)}</s-table-cell>
+			<s-table-cell>${esc(ageCell(o))}</s-table-cell>
+			<s-table-cell>${money(o.orderTotal, o.currency)}</s-table-cell>
+			<s-table-cell>${o.hasTracking ? esc(o.trackingCompany ?? 'yes') : '—'}</s-table-cell>
+		</s-table-row>`,
+		)
+		.join('');
+	const stateOptions = ORDER_STATES.map(
+		(v) => `<option value="${esc(v)}"${v === (params.state ?? '') ? ' selected' : ''}>${esc(v || 'Any lane')}</option>`,
+	).join('');
+	const ageOptions = ORDER_AGES.map(
+		([v, label]) => `<option value="${esc(v)}"${v === (params.minAgeHours ?? '') ? ' selected' : ''}>${esc(label)}</option>`,
+	).join('');
+	const sortOptions = ORDER_SORTS.map(
+		([v, label]) => `<option value="${esc(v)}"${v === (params.sort ?? 'newest') ? ' selected' : ''}>${esc(label)}</option>`,
+	).join('');
+
+	return page(
+		'Orders',
+		`${strip}
+		<s-section heading="Orders Sightline is tracking">
+			<s-paragraph><s-text color="subdued">Every order observed in the last 7 days, with how long it has been waiting since payment. Sightline is read-only — nothing here changes your store.</s-text></s-paragraph>
+			<s-stack id="orderFilters" direction="inline" gap="base" alignItems="end">
+				<s-select id="f-state" label="Lane">${stateOptions}</s-select>
+				<s-select id="f-minAgeHours" label="Age">${ageOptions}</s-select>
+				<s-select id="f-sort" label="Sort">${sortOptions}</s-select>
+				<s-button variant="primary" data-submit>Filter</s-button>
+			</s-stack>
+		</s-section>
+		<s-section>
+			${table(
+				[
+					{ label: 'Order' },
+					{ label: 'Lane' },
+					{ label: 'Paid' },
+					{ label: 'Waiting' },
+					{ label: 'Value', numeric: true },
+					{ label: 'Tracking' },
+				],
+				rows,
+				'No orders match.',
+			)}
+			${hasMore ? `<s-button id="loadMore">Load more</s-button>` : ''}
+		</s-section>`,
 	);
 }
 

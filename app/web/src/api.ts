@@ -136,6 +136,28 @@ export interface Privacy {
 	webhooks: { received: number; processed: number; deadLettered: number; healthy: boolean; lastReceivedAt?: number };
 	reconciliation: Reconciliation;
 }
+export interface OrderItem {
+	orderId: string;
+	orderName?: string;
+	state: string;
+	paidAt?: number;
+	fulfilledAt?: number;
+	cancelledAt?: number;
+	fullyRefundedAt?: number;
+	fulfillmentFailedAt?: number;
+	hasTracking?: boolean;
+	trackingCompany?: string;
+	orderTotal?: number;
+	currency?: string;
+	lastEventAt?: number;
+	ageHours?: number;
+}
+export interface OrderDetail extends OrderItem {
+	requiresFulfillment?: boolean;
+	fulfillableItemCount?: number;
+	events: EventItem[];
+	findings: Array<FindingItem & { description: string }>;
+}
 export interface Page<T> {
 	items: T[];
 	nextCursor?: string;
@@ -157,3 +179,5 @@ export const apiEvent = (id: string) => get<EventDetail>(`/api/v1/events/${encod
 export const apiFindings = (params: Record<string, string | undefined>) => get<Page<FindingItem>>(`/api/v1/findings${qs(params)}`);
 export const apiFinding = (id: string) => get<FindingDetail>(`/api/v1/findings/${encodeURIComponent(id)}`);
 export const apiPrivacy = () => get<Privacy>('/api/v1/privacy');
+export const apiOrders = (params: Record<string, string | undefined>) => get<Page<OrderItem>>(`/api/v1/orders${qs(params)}`);
+export const apiOrder = (orderId: string) => get<OrderDetail>(`/api/v1/orders/${encodeURIComponent(orderId)}`);
