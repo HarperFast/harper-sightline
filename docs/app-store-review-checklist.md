@@ -28,7 +28,7 @@ A production install on dev-fallback secrets is not a launch candidate, so (2) g
 | Webhook HMAC verification | ✅ | Raw-body constant-time verify before parse (`src/webhookHmac.ts`); invalid → 401, no mutation |
 | Mandatory compliance webhooks | ✅ | `customers/data_request`, `customers/redact`, `shop/redact` declared in `shopify.app.toml` and implemented in `src/compliance.ts`; live-verified (#21) |
 | `app/uninstalled` handling | ✅ | Token revoked, shop data erased (`src/lifecycle.ts`, `src/redaction.ts`) |
-| No write scopes / no store mutation | ✅ | `scopes = "read_orders,read_fulfillments,read_inventory"`; all write capabilities hard-`false` in `src/capabilities.ts` |
+| No write scopes / no store mutation | ✅ | `scopes = "read_orders,read_fulfillments,read_inventory,read_products,read_locations"`; all write capabilities hard-`false` in `src/capabilities.ts` |
 | Performance: fast webhook ack | ✅ | Ack p95 gate documented and tested (#24, `docs/reliability-report.md`) |
 | Pinned API version | ✅ | `api_version = "2026-07"`; quarterly bump is a standing operational task (threat model §5) |
 | **Load burst + backup/restore drills** | ☐ | Tooled and documented in #24, deferred to live infra. `npm run loadtest`; restore procedure in `docs/reliability-report.md` |

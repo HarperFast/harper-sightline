@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { privacyPolicyHtml, POLICY_ENTITY } from '../src/privacyPolicy.ts';
+import { readFileSync } from 'node:fs';
 import { supportContact, supportConfigured, DEFAULT_SUPPORT_EMAIL } from '../src/support.ts';
 import { WINDOW_DAYS } from '../src/apiContract.ts';
 import { EXCLUDED_CUSTOMER_FIELDS } from '../src/queries.ts';
@@ -9,6 +10,16 @@ import { EXCLUDED_CUSTOMER_FIELDS } from '../src/queries.ts';
 // drift from what the code actually does. These tests pin the claims that would
 // become false if behavior changed, and the two failure modes that matter most:
 // fabricating a support contact, and claiming to store less than we do.
+
+// The granted scopes, read from the actual config Shopify enforces at install —
+// NOT retyped here — so this test fails loudly the next time `shopify.app.toml`'s
+// scope list changes in either direction (a scope added there but left off the
+// policy, as happened with read_products/read_locations; or a scope removed
+// there but left dangling in the policy text).
+const APP_TOML = readFileSync(new URL('../../shopify.app.toml', import.meta.url), 'utf8');
+const GRANTED_SCOPES = APP_TOML.match(/^\s*scopes\s*=\s*"([^"]+)"/m)![1]
+	.split(',')
+	.map((s) => s.trim());
 
 test('a deployment that configures nothing still has a reachable support contact', () => {
 	// The contact is product metadata, identical everywhere, so it ships in code —
@@ -93,12 +104,27 @@ test('the policy discloses exactly what IS stored, and no more', () => {
 	]);
 });
 
+test('the policy names exactly the scopes shopify.app.toml actually grants — no more, no fewer', () => {
+	// A substring/single-scope check (e.g. just `read_orders`) would still pass if
+	// a scope were added to shopify.app.toml and never added here — precisely the
+	// gap that let read_products/read_locations go undisclosed. Extracting every
+	// `<code>read_*</code>` token from the "Shopify's role" section and
+	// deep-equaling it against the actual config closes that gap in both
+	// directions: it fails if a granted scope is missing from the policy, and it
+	// fails if the policy names a scope that was removed from the config.
+	assert.ok(GRANTED_SCOPES.length > 0, 'sanity: the scopes regex actually matched shopify.app.toml');
+	const html = privacyPolicyHtml({});
+	const section = html.match(/<h2>Shopify's role<\/h2>\s*<p>([\s\S]*?)<\/p>/);
+	assert.ok(section, 'the "Shopify\'s role" section must exist');
+	const namedScopes = [...section[1].matchAll(/<code>(read_[a-z_]+)<\/code>/g)].map((m) => m[1]);
+	assert.deepEqual(new Set(namedScopes), new Set(GRANTED_SCOPES));
+});
+
 test('the policy states the no-PII headline and the operating entity', () => {
 	const html = privacyPolicyHtml({});
 	assert.match(html, /does not collect or store your customers' personal information/i);
 	assert.ok(html.includes(POLICY_ENTITY));
 	assert.match(html, /United States/, 'processing location is disclosed');
-	assert.match(html, /read_orders/, 'the granted scopes are named');
 	assert.match(html, /no write access/i);
 });
 

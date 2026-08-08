@@ -132,8 +132,8 @@ availability. We do not transfer your data to any other processor.</p>
 <h2>Shopify's role</h2>
 <p>Shopify is the source of the data described above and its own privacy terms govern your store.
 Sightline receives data from Shopify only under the read scopes you granted at install
-(<code>read_orders</code>, <code>read_fulfillments</code>, <code>read_inventory</code>) and requests
-no write access of any kind.</p>
+(<code>read_orders</code>, <code>read_fulfillments</code>, <code>read_inventory</code>,
+<code>read_products</code>, <code>read_locations</code>) and requests no write access of any kind.</p>
 
 <h2>Changes to this policy</h2>
 <p>Material changes will be reflected in the "last updated" date above, and the policy is versioned
