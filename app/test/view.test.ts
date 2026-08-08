@@ -944,3 +944,9 @@ test('a hostile order name cannot inject markup on the order detail screen', () 
 	assert.match(html, /heading="Order &quot;&gt;&lt;script&gt;/, 'the page heading escapes the name');
 	assert.match(html, /<s-table-cell>&quot;&gt;&lt;script&gt;/, 'the fields table escapes the name');
 });
+
+test('every list screen offers a CSV export', () => {
+	assert.match(eventsView({}, [], false, ''), /data-export="events"/);
+	assert.match(findingsListView({}, [], NOW, ''), /data-export="findings"/);
+	assert.match(ordersView({}, [], false, ''), /data-export="orders"/);
+});

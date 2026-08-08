@@ -203,6 +203,16 @@
 				"findings"
 			]
 		},
+		"export": {
+			"path": "/api/v1/export/:kind.csv",
+			"kinds": [
+				"events",
+				"findings",
+				"orders"
+			],
+			"format": "text/csv",
+			"maxRows": 5000
+		},
 		"privacy": {
 			"path": "/api/v1/privacy",
 			"fields": [

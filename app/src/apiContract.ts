@@ -114,6 +114,12 @@ export const API_CONTRACT = {
 			filters: ['state', 'minAgeHours', 'sort', 'cursor', 'limit'],
 		},
 		orderDetail: { path: '/api/v1/orders/:orderId', fields: [...ORDER_FIELDS, 'events', 'findings'] },
+		export: {
+			path: '/api/v1/export/:kind.csv',
+			kinds: ['events', 'findings', 'orders'],
+			format: 'text/csv',
+			maxRows: 5000,
+		},
 		privacy: {
 			path: '/api/v1/privacy',
 			fields: [

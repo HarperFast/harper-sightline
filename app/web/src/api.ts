@@ -185,3 +185,25 @@ export const apiFinding = (id: string) => get<FindingDetail>(`/api/v1/findings/$
 export const apiPrivacy = () => get<Privacy>('/api/v1/privacy');
 export const apiOrders = (params: Record<string, string | undefined>) => get<Page<OrderItem>>(`/api/v1/orders${qs(params)}`);
 export const apiOrder = (orderId: string) => get<OrderDetail>(`/api/v1/orders/${encodeURIComponent(orderId)}`);
+
+// Export is a file, not JSON, so it bypasses get<T>(): the same session-token
+// header, but the body is text and the row-count/truncation signals come back as
+// response headers.
+export async function apiExport(
+	kind: string,
+	params: Record<string, string | undefined>,
+): Promise<{ csv: string; truncated: boolean; rows: number; filename: string }> {
+	const token = await shopify.idToken();
+	const res = await nativeFetch()(`/api/v1/export/${encodeURIComponent(kind)}.csv${qs(params)}`, {
+		headers: { 'X-Shopify-Session-Token': token },
+	});
+	if (!res.ok) throw new Error(`${res.status}`);
+	const disposition = res.headers.get('content-disposition') ?? '';
+	const match = disposition.match(/filename="([^"]+)"/);
+	return {
+		csv: await res.text(),
+		truncated: res.headers.get('x-sightline-truncated') === 'true',
+		rows: Number(res.headers.get('x-sightline-row-count') ?? 0),
+		filename: match ? match[1] : `sightline-${kind}.csv`,
+	};
+}

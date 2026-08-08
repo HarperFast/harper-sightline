@@ -109,6 +109,13 @@ export function badge(text: string, tone?: string): string {
 	return `<s-badge tone="${esc(tone ?? STATUS_TONE[text] ?? 'neutral')}">${esc(text)}</s-badge>`;
 }
 
+// Export the CURRENT filter set, not the whole ledger — the useful artifact is
+// the scoped list ("these 39 orders"), which is what an ops team otherwise
+// rebuilds by hand.
+export function exportButton(kind: string): string {
+	return `<s-button data-export="${esc(kind)}">Export CSV</s-button>`;
+}
+
 // Money for display. Intl gives the merchant's own currency formatting; an
 // unknown/absent currency degrades to the bare amount rather than guessing a
 // symbol, and an absent amount is an em dash like every other missing value.
@@ -664,6 +671,7 @@ export function eventsView(params: Record<string, string>, items: EventItem[], h
 				<s-text-field id="f-sku" label="SKU" value="${esc(params.sku ?? '')}"></s-text-field>
 				<s-select id="f-source" label="Evidence source">${selectOptions(SOURCES, params.source ?? '', 'Any source')}</s-select>
 				<s-button variant="primary" data-submit>Search</s-button>
+				${exportButton('events')}
 			</s-stack>
 		</s-section>
 		<s-section>
@@ -805,6 +813,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 				<s-select id="f-minAgeHours" label="Age">${ageOptions}</s-select>
 				<s-select id="f-sort" label="Sort">${sortOptions}</s-select>
 				<s-button variant="primary" data-submit>Filter</s-button>
+				${exportButton('orders')}
 			</s-stack>
 		</s-section>
 		<s-section>
@@ -949,6 +958,7 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 			<s-stack id="findingFilters" direction="inline" gap="base" alignItems="end">
 				<s-select id="f-status" label="Status">${selectOptions(STATUSES, params.status ?? '', 'Any status')}</s-select>
 				<s-button variant="primary" data-submit>Filter</s-button>
+				${exportButton('findings')}
 			</s-stack>
 		</s-section>
 		<s-section>

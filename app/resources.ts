@@ -33,6 +33,8 @@ import {
 	getOrderDetail,
 	type QueryTable,
 } from './src/queries.ts';
+import { EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from './src/csv.ts';
+import { MAX_LIMIT } from './src/apiContract.ts';
 import { supportContact } from './src/support.ts';
 import { privacyPolicyHtml } from './src/privacyPolicy.ts';
 import { redactShop, redactOrders } from './src/redaction.ts';
@@ -286,6 +288,95 @@ export class OrdersResource extends Resource {
 			sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
 			cursor: p.get('cursor') ?? undefined,
 			limit: p.get('limit') ?? undefined,
+		});
+	}
+}
+
+// CSV export of any filtered list. The one differentiator over Shopify's own
+// activity log that a merchant can hold in their hand — the log is view-only,
+// non-exportable, and capped at 250 rows.
+//
+// Authenticated by the same session token as every other read, which is why the
+// SPA fetches this and downloads from a blob rather than linking directly: a
+// browser navigation cannot carry the X-Shopify-Session-Token header.
+//
+// Bounded at MAX_EXPORT_ROWS. A truncated export SAYS SO in a response header and
+// in the UI — silent truncation would read as "this is everything".
+export class ExportResource extends Resource {
+	static path = '/api/v1/export';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const url = parseUrl(ctx.url);
+		const raw = trailingId(url.pathname, '/api/v1/export') ?? '';
+		const kind = raw.replace(/\.csv$/, '');
+		if (kind !== 'events' && kind !== 'findings' && kind !== 'orders') throw httpError('unknown export kind', 404);
+
+		const now = Date.now();
+		const p = url.searchParams;
+		const rows: Array<Record<string, unknown>> = [];
+		let cursor: string | undefined = p.get('cursor') ?? undefined;
+		// Page through the SAME query functions the screens use, so an export can
+		// never see a row the UI could not, and tenant scoping is identical.
+		do {
+			let page: { items: Array<Record<string, unknown>>; nextCursor?: string };
+			if (kind === 'events') {
+				page = await listEvents(
+					EventsQ,
+					shopId,
+					now,
+					{
+						domain: p.get('domain') ?? undefined,
+						topic: p.get('topic') ?? undefined,
+						resourceId: p.get('resourceId') ?? undefined,
+						sku: p.get('sku') ?? undefined,
+						source: p.get('source') ?? undefined,
+						since: numParam(p, 'since'),
+						until: numParam(p, 'until'),
+						cursor,
+						limit: MAX_LIMIT,
+					},
+					EventSkusQ,
+				);
+			} else if (kind === 'findings') {
+				page = await listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
+					status: p.get('status') ?? undefined,
+					detector: p.get('detector') ?? undefined,
+					cursor,
+					limit: MAX_LIMIT,
+				});
+			} else {
+				page = await listOrders(ProjectionsQ, shopId, now, {
+					state: p.get('state') ?? undefined,
+					minAgeHours: numParam(p, 'minAgeHours'),
+					sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
+					cursor,
+					limit: MAX_LIMIT,
+				});
+			}
+			rows.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor && rows.length < MAX_EXPORT_ROWS);
+
+		const truncated = rows.length > MAX_EXPORT_ROWS;
+		const bounded = rows.slice(0, MAX_EXPORT_ROWS);
+		const columns = EXPORT_COLUMNS[kind];
+		const body = toCsv(
+			columns.map((c) => c.header),
+			bounded.map((row) => columns.map((c) => row[c.field])),
+		);
+		log('trace', 'export.served', { kind, rows: bounded.length, truncated });
+		return new Response(body, {
+			status: 200,
+			headers: {
+				'content-type': 'text/csv; charset=utf-8',
+				'content-disposition': `attachment; filename="${exportFilename(kind, now)}"`,
+				'x-sightline-row-count': String(bounded.length),
+				'x-sightline-truncated': String(truncated),
+			},
 		});
 	}
 }

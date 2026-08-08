@@ -14,7 +14,8 @@ import {
 	getOrderDetail,
 } from '../src/queries.ts';
 import { detectorKey } from '../src/detector.ts';
-import { encodeCursor } from '../src/apiContract.ts';
+import { encodeCursor, EVENT_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/apiContract.ts';
+import { EXPORT_COLUMNS } from '../src/csv.ts';
 
 // Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
 // `victim` and `attacker`. The attacker deliberately (a) reuses the victim's
@@ -340,4 +341,17 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 	const wide = await listOrders(projections, A, NOW, { minAgeHours: 0 });
 	assert.deepEqual(new Set(wide.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3']));
 	assert.equal(wide.items.length, 3, "never the victim's two orders too");
+});
+
+test('export columns never reference a field outside the API allowlist', () => {
+	const allowed: Record<string, readonly string[]> = {
+		events: EVENT_FIELDS,
+		findings: FINDING_LIST_FIELDS,
+		orders: ORDER_LIST_FIELDS,
+	};
+	for (const kind of ['events', 'findings', 'orders'] as const) {
+		for (const column of EXPORT_COLUMNS[kind]) {
+			assert.ok(allowed[kind].includes(column.field), `${kind}.${column.field} is not in the API allowlist`);
+		}
+	}
 });

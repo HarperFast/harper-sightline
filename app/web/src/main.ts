@@ -5,6 +5,7 @@ import {
 	apiFlows,
 	apiEvents,
 	apiEvent,
+	apiExport,
 	apiFindings,
 	apiFinding,
 	apiPrivacy,
@@ -81,6 +82,37 @@ function bindFilters(containerId: string, submit: () => void): void {
 			submit();
 		}
 	});
+}
+
+// Download the export as a blob. A direct link cannot carry the session-token
+// header, so the file is fetched and handed to a synthetic anchor.
+async function downloadExport(kind: string, params: Record<string, string | undefined>): Promise<void> {
+	const result = await apiExport(kind, params);
+	const url = URL.createObjectURL(new Blob([result.csv], { type: 'text/csv;charset=utf-8' }));
+	const anchor = document.createElement('a');
+	anchor.href = url;
+	anchor.download = result.filename;
+	document.body.appendChild(anchor);
+	anchor.click();
+	anchor.remove();
+	URL.revokeObjectURL(url);
+	if (result.truncated) {
+		// Never let a capped export read as "this is everything".
+		window.alert(`Exported the first ${result.rows} rows. Narrow the filters to export the rest.`);
+	}
+}
+
+function bindExport(params: Record<string, string | undefined>): void {
+	for (const button of document.querySelectorAll<HTMLElement>('[data-export]')) {
+		button.addEventListener('click', () => {
+			// A rejected fetch (e.g. an expired session token) must not fail silently
+			// as an unhandled promise rejection — the merchant needs to know the
+			// export did not happen.
+			downloadExport(button.getAttribute('data-export') ?? '', params).catch(() => {
+				window.alert('Export failed. Try again, or reload the page if you were signed out.');
+			});
+		});
+	}
 }
 
 function setActiveNav(path: string): void {
@@ -186,6 +218,7 @@ function paintEvents(params: Record<string, string>, contextHtml: string): void 
 		eventCursor = next.nextCursor;
 		paintEvents(params, contextHtml);
 	});
+	bindExport(eventQueryActive);
 }
 
 async function eventDetail(id: string): Promise<void> {
@@ -226,6 +259,7 @@ function paintOrders(params: Record<string, string>, contextHtml: string): void 
 		orderCursor = next.nextCursor;
 		paintOrders(params, contextHtml);
 	});
+	bindExport(orderQueryActive);
 }
 
 async function orderDetail(orderId: string): Promise<void> {
@@ -243,6 +277,7 @@ async function findingsList(params: Record<string, string>): Promise<void> {
 		const v = fieldValue('f-status');
 		location.hash = `#/findings${v ? `?status=${encodeURIComponent(v)}` : ''}`;
 	});
+	bindExport(params);
 }
 
 async function findingDetail(id: string): Promise<void> {
