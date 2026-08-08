@@ -1,5 +1,3 @@
-import { EVENT_FIELDS } from './apiContract.ts';
-
 // CSV serialization for the export endpoint.
 //
 // Two hazards, both handled here so no call site has to remember them:
@@ -91,7 +89,30 @@ export function exportFilename(kind: string, now: number): string {
 	return `sightline-${safeKind}-${day}.csv`;
 }
 
-// The events export needs the same field set the API exposes, so a column added
-// to EXPORT_COLUMNS.events that the API does not allowlist fails loudly in tests
-// rather than exporting an empty column.
-export const EXPORTABLE_EVENT_FIELDS: readonly string[] = EVENT_FIELDS;
+// Pages through a query function (any of listEvents/listFindings/listOrders)
+// until either the source is exhausted or `cap` rows have been collected, then
+// reports whether more rows existed beyond the cap.
+//
+// `truncated` MUST be derived from why the loop stopped (was there still a
+// cursor to follow?), never from comparing the collected count to `cap`. The
+// cap is always a multiple of the page size (MAX_EXPORT_ROWS / MAX_LIMIT), so a
+// truncated result set accumulates to EXACTLY `cap` — never over it — and a
+// `rows.length > cap` check is false in precisely the case it exists to catch.
+// Capturing `Boolean(cursor)` right after the loop, before any slicing, is
+// correct in all three cases: exhausted (falsy), cap reached with more data
+// available (truthy), and any hypothetical overshoot (truthy).
+export async function collectExportRows<T>(
+	fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
+	cap: number,
+	initialCursor?: string,
+): Promise<{ rows: T[]; truncated: boolean }> {
+	const rows: T[] = [];
+	let cursor = initialCursor;
+	do {
+		const page = await fetchPage(cursor);
+		rows.push(...page.items);
+		cursor = page.nextCursor;
+	} while (cursor && rows.length < cap);
+	const truncated = Boolean(cursor);
+	return { rows: rows.slice(0, cap), truncated };
+}

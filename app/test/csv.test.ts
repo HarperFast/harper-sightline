@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { csvCell, csvRow, EXPORT_COLUMNS, exportFilename, MAX_EXPORT_ROWS, toCsv } from '../src/csv.ts';
+import { collectExportRows, csvCell, csvRow, EXPORT_COLUMNS, exportFilename, MAX_EXPORT_ROWS, toCsv } from '../src/csv.ts';
 
 test('plain values are unquoted', () => {
 	assert.equal(csvCell('TSHIRT'), 'TSHIRT');
@@ -49,4 +49,41 @@ test('filenames are stable, sortable, and safe', () => {
 	const name = exportFilename('findings', Date.parse('2026-08-07T12:34:56Z'));
 	assert.equal(name, 'sightline-findings-2026-08-07.csv');
 	assert.doesNotMatch(exportFilename('../etc/passwd', 0), /\.\.|\//);
+});
+
+// A fake pager over fixed-size pages of a fixed-length source, mirroring the
+// shape of listEvents/listFindings/listOrders: each call returns the next
+// `pageSize` items and a nextCursor iff more remain.
+function fakePager(total: number, pageSize: number) {
+	return async (cursor: string | undefined) => {
+		const offset = cursor ? Number(cursor) : 0;
+		const items = Array.from({ length: Math.min(pageSize, total - offset) }, (_, i) => offset + i);
+		const end = offset + items.length;
+		return { items, nextCursor: end < total ? String(end) : undefined };
+	};
+}
+
+test('collectExportRows: exhausted below the cap is not truncated', async () => {
+	const { rows, truncated } = await collectExportRows(fakePager(3, 2), 5);
+	assert.deepEqual(rows, [0, 1, 2]);
+	assert.equal(truncated, false);
+});
+
+test('collectExportRows: landing exactly on the cap with more data available IS truncated', async () => {
+	// The bug this guards: MAX_EXPORT_ROWS (5000) is an exact multiple of the
+	// page size (MAX_LIMIT=100), so a truncated real export always accumulates
+	// to EXACTLY the cap, never past it. A `rows.length > cap` check is false
+	// here — the one case it must catch.
+	const { rows, truncated } = await collectExportRows(fakePager(10, 2), 4);
+	assert.deepEqual(rows, [0, 1, 2, 3]);
+	assert.equal(truncated, true);
+});
+
+test('collectExportRows: exhausted exactly at the cap, with no more data, is not truncated', async () => {
+	// Pins the fix at the right moment: reading `cursor` after the loop must see
+	// the falsy value from the FINAL page, not a stale truthy value from an
+	// earlier one.
+	const { rows, truncated } = await collectExportRows(fakePager(4, 2), 4);
+	assert.deepEqual(rows, [0, 1, 2, 3]);
+	assert.equal(truncated, false);
 });

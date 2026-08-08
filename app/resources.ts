@@ -33,7 +33,7 @@ import {
 	getOrderDetail,
 	type QueryTable,
 } from './src/queries.ts';
-import { EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from './src/csv.ts';
+import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from './src/csv.ts';
 import { MAX_LIMIT } from './src/apiContract.ts';
 import { supportContact } from './src/support.ts';
 import { privacyPolicyHtml } from './src/privacyPolicy.ts';
@@ -317,14 +317,14 @@ export class ExportResource extends Resource {
 
 		const now = Date.now();
 		const p = url.searchParams;
-		const rows: Array<Record<string, unknown>> = [];
-		let cursor: string | undefined = p.get('cursor') ?? undefined;
-		// Page through the SAME query functions the screens use, so an export can
-		// never see a row the UI could not, and tenant scoping is identical.
-		do {
-			let page: { items: Array<Record<string, unknown>>; nextCursor?: string };
+		// One page-fetching closure per kind, over the SAME query functions the
+		// screens use, so an export can never see a row the UI could not, and
+		// tenant scoping is identical. collectExportRows (src/csv.ts) owns the
+		// accumulate-until-cap loop and the truncation determination — pure and
+		// unit-tested, since a Resource class needs the Harper runtime to test.
+		const fetchPage = (cursor: string | undefined) => {
 			if (kind === 'events') {
-				page = await listEvents(
+				return listEvents(
 					EventsQ,
 					shopId,
 					now,
@@ -341,28 +341,24 @@ export class ExportResource extends Resource {
 					},
 					EventSkusQ,
 				);
-			} else if (kind === 'findings') {
-				page = await listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
+			}
+			if (kind === 'findings') {
+				return listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
 					status: p.get('status') ?? undefined,
 					detector: p.get('detector') ?? undefined,
 					cursor,
 					limit: MAX_LIMIT,
 				});
-			} else {
-				page = await listOrders(ProjectionsQ, shopId, now, {
-					state: p.get('state') ?? undefined,
-					minAgeHours: numParam(p, 'minAgeHours'),
-					sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
-					cursor,
-					limit: MAX_LIMIT,
-				});
 			}
-			rows.push(...page.items);
-			cursor = page.nextCursor;
-		} while (cursor && rows.length < MAX_EXPORT_ROWS);
-
-		const truncated = rows.length > MAX_EXPORT_ROWS;
-		const bounded = rows.slice(0, MAX_EXPORT_ROWS);
+			return listOrders(ProjectionsQ, shopId, now, {
+				state: p.get('state') ?? undefined,
+				minAgeHours: numParam(p, 'minAgeHours'),
+				sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
+				cursor,
+				limit: MAX_LIMIT,
+			});
+		};
+		const { rows: bounded, truncated } = await collectExportRows(fetchPage, MAX_EXPORT_ROWS, p.get('cursor') ?? undefined);
 		const columns = EXPORT_COLUMNS[kind];
 		const body = toCsv(
 			columns.map((c) => c.header),
