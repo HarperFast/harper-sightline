@@ -159,24 +159,31 @@ export function statGrid(tiles: Array<[string, number]>): string {
 
 // Stat tiles that are also links. A count with nowhere to go is a dead end: the
 // merchant's next question is always "which ones?", and the worklist answers it.
-export function statGridLinked(tiles: Array<[string, number, string]>): string {
+//
+// The href is per-tile and optional: a tile whose count has no worklist filter
+// that reproduces it (e.g. "Paid" — every paid order regardless of lane, and
+// there is no `state=` value meaning that) renders as a plain, unlinked cell
+// instead of a link to a page that would show a different number.
+export function statGridLinked(tiles: Array<[string, number, string?]>): string {
 	const cells = tiles
-		.map(
-			([label, value, href]) => `<s-grid-item><s-box padding="base" background="subdued" borderRadius="base">
-			<s-link href="${esc(href)}">
-				<s-text type="strong" fontVariantNumeric="tabular-nums">${value}</s-text>
-				<s-paragraph><s-text color="subdued">${esc(label)}</s-text></s-paragraph>
-			</s-link>
-		</s-box></s-grid-item>`,
-		)
+		.map(([label, value, href]) => {
+			const inner = `<s-text type="strong" fontVariantNumeric="tabular-nums">${value}</s-text>
+				<s-paragraph><s-text color="subdued">${esc(label)}</s-text></s-paragraph>`;
+			const content = href ? `<s-link href="${esc(href)}">${inner}</s-link>` : inner;
+			return `<s-grid-item><s-box padding="base" background="subdued" borderRadius="base">${content}</s-box></s-grid-item>`;
+		})
 		.join('');
 	return `<s-grid gridTemplateColumns="@container (inline-size > 600px) repeat(4, 1fr), repeat(2, 1fr)" gap="base">${cells}</s-grid>`;
 }
 
 // The API's bucket keys are opaque strings; this is the one place that maps them
-// to the worklist's numeric threshold, so a renamed bucket breaks here loudly
-// rather than producing a silently wrong link.
-function bucketMinHours(key: string): number {
+// to the worklist's numeric threshold. An unrecognized key silently falls back to
+// the last (over72) threshold rather than throwing — a throw here would blank the
+// whole Overview at runtime over what is really a build-time mismatch. The
+// fail-loud guarantee instead lives in a test (view.test.ts) that asserts this
+// function agrees with AGE_BUCKETS for every key, so a renamed or added bucket
+// fails CI rather than producing a plausible-but-wrong link in production.
+export function bucketMinHours(key: string): number {
 	switch (key) {
 		case 'under24':
 			return 0;
@@ -485,16 +492,19 @@ export function overviewView(d: OverviewData): string {
 					[{ label: 'Lane' }, { label: 'Orders', numeric: true }],
 					(
 						[
-							['Paid', d.flows.lanes.paid, '#/orders'],
+							// Paid has no worklist filter of its own — "awaiting" is only the
+							// still-unfulfilled subset of paid orders — so it stays a plain
+							// count rather than linking to a page showing a different number.
+							['Paid', d.flows.lanes.paid],
 							['Fulfilled', d.flows.lanes.fulfilled, '#/orders?state=fulfilled'],
 							['Awaiting confirmation', d.flows.lanes.awaitingConfirmation, '#/orders?state=awaiting'],
 							['Cancelled', d.flows.lanes.cancelled, '#/orders?state=cancelled'],
 							['Refunded', d.flows.lanes.refunded, '#/orders?state=refunded'],
-						] as Array<[string, number, string]>
+						] as Array<[string, number, string?]>
 					)
 						.map(
 							([label, n, href]) =>
-								`<s-table-row><s-table-cell><s-link href="${esc(href)}">${esc(label)}</s-link></s-table-cell><s-table-cell>${n}</s-table-cell></s-table-row>`,
+								`<s-table-row><s-table-cell>${href ? `<s-link href="${esc(href)}">${esc(label)}</s-link>` : esc(label)}</s-table-cell><s-table-cell>${n}</s-table-cell></s-table-row>`,
 						)
 						.join(''),
 					'No order activity in the window.',
@@ -509,7 +519,10 @@ export function overviewView(d: OverviewData): string {
 		<s-section heading="Orders (last ${s.windowDays} days)">
 			${statGridLinked([
 				['Tracked', s.orders.tracked, '#/orders'],
-				['Paid', s.orders.paid, '#/orders?state=awaiting'],
+				// No lane means "paid, in any state" — there is no worklist filter that
+				// reproduces this exact count, so it is not a link (see the comment on
+				// statGridLinked).
+				['Paid', s.orders.paid],
 				['Fulfilled', s.orders.fulfilled, '#/orders?state=fulfilled'],
 				['Awaiting confirmation', s.orders.awaitingConfirmation, '#/orders?state=awaiting'],
 			])}

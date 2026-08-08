@@ -14,6 +14,7 @@ import type {
 import {
 	activityView,
 	agingView,
+	bucketMinHours,
 	contextStrip,
 	errorViewMarkup,
 	authExpiredView,
@@ -38,6 +39,7 @@ import {
 	useShopTimeZone,
 	zoneText,
 } from '../web/src/view.ts';
+import { AGE_BUCKETS } from '../src/orders.ts';
 
 // UI tests. view.ts is pure — every screen is a function from data to markup — so
 // these run in plain node with no browser, DOM shim, or extra dependency. They
@@ -294,10 +296,36 @@ test('the aging breakdown links each bucket into the filtered worklist', () => {
 	assert.match(html, /href="#\/orders\?state=awaiting&amp;minAgeHours=72"/);
 });
 
-test('the overview stat tiles link into the worklist', () => {
-	const html = overviewView({ summary: summary(), flows: null, unconfirmed: [], setup: null, now: NOW });
-	assert.match(html, /href="#\/orders\?state=awaiting"/);
-	assert.match(html, /href="#\/orders\?state=fulfilled"/);
+// Pull out one <s-grid-item>…</s-grid-item> block by the label it renders, so an
+// assertion can check that block's own href/count rather than matching anywhere
+// in the page — the loose-match failure mode that let an earlier defect (the
+// Paid tile linking to a page showing a different count) pass silently.
+function gridItem(html: string, label: string): string {
+	const items = html.match(/<s-grid-item>[\s\S]*?<\/s-grid-item>/g) ?? [];
+	const found = items.find((item) => item.includes(`>${label}<`));
+	assert.ok(found, `no stat tile found for "${label}"`);
+	return found!;
+}
+
+test('the overview stat tiles link into the worklist, each to its own count', () => {
+	const html = overviewView({ ...OVERVIEW_BASE, summary: summary() });
+	// summary()'s orders are { tracked: 4, paid: 3, fulfilled: 2, awaitingConfirmation: 1 }.
+	assert.match(gridItem(html, 'Tracked'), /href="#\/orders"[\s\S]*>4</);
+	assert.match(gridItem(html, 'Fulfilled'), /href="#\/orders\?state=fulfilled"[\s\S]*>2</);
+	assert.match(gridItem(html, 'Awaiting confirmation'), /href="#\/orders\?state=awaiting"[\s\S]*>1</);
+});
+
+test('the Paid stat tile and the Paid flow lane are never links — no worklist filter reproduces "every paid order regardless of lane"', () => {
+	const html = overviewView({ ...OVERVIEW_BASE, summary: summary() });
+	assert.doesNotMatch(gridItem(html, 'Paid'), /<s-link/, 'the Paid stat tile has no href');
+	assert.match(html, /<s-table-cell>Paid<\/s-table-cell>/, 'the Paid flow lane renders as a plain cell');
+	assert.doesNotMatch(html, /<s-link[^>]*>Paid<\/s-link>/, 'no href wraps the Paid flow-lane label');
+});
+
+test('bucketMinHours agrees with AGE_BUCKETS for every key, so a renamed bucket fails a test instead of silently mapping to 72', () => {
+	for (const bucket of AGE_BUCKETS) {
+		assert.equal(bucketMinHours(bucket.key), bucket.minHours, `bucketMinHours('${bucket.key}') must match AGE_BUCKETS`);
+	}
 });
 
 test('a zero-count aging bucket still renders, so the breakdown is readable', () => {
