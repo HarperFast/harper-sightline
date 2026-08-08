@@ -60,9 +60,17 @@ export function applyEvent(current: OrderProjection | undefined, event: Operatio
 			next.fulfillmentFailedAt = earliest(base.fulfillmentFailedAt, event.occurredAt);
 		}
 		// Monotonic true: "some fulfillment carried tracking" can only become true.
+		// The CARRIER, though, is not a single fact about an order — a split
+		// shipment can go out with two. Latching it to the earliest tracked
+		// fulfillment (the same earliest-wins shape as orderTotal) gives it one
+		// deterministic meaning instead of "whichever event we folded last",
+		// which would differ between rebuilds of the same events.
 		if (event.hasTracking === true) {
 			next.hasTracking = true;
-			if (event.trackingCompany !== undefined) next.trackingCompany = event.trackingCompany;
+			if (base.trackingAt === undefined || event.occurredAt < base.trackingAt) {
+				if (event.trackingCompany !== undefined) next.trackingCompany = event.trackingCompany;
+			}
+			next.trackingAt = earliest(base.trackingAt, event.occurredAt);
 		}
 	}
 	// refund domain: contributes timeline evidence (the OperationalEvent) but no

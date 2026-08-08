@@ -94,6 +94,7 @@ export interface OrderProjection {
 	fulfillmentFailedAt?: number;
 	hasTracking?: boolean;
 	trackingCompany?: string;
+	trackingAt?: number;
 	fulfillableItemCount?: number;
 	state?: ProjectionState;
 	deadline?: number;

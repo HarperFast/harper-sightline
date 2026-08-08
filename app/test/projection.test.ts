@@ -150,6 +150,30 @@ test('tracking presence latches true and never back to false', () => {
 	assert.equal(p?.trackingCompany, 'UPS');
 });
 
+test('trackingCompany is latched from the earliest tracked fulfillment, not fold order', () => {
+	// Two fulfillments, two carriers — an ordinary split shipment. Whichever
+	// carrier is "true" for the order must not depend on which event we folded
+	// last, since Events.search() gives no ordering guarantee.
+	const forward = rebuildProjection([
+		ev('fulfillment', 100, { eventId: 'e1', state: 'success', hasTracking: true, trackingCompany: 'UPS' }),
+		ev('fulfillment', 200, { eventId: 'e2', state: 'success', hasTracking: true, trackingCompany: 'FedEx' }),
+	]);
+	const reverse = rebuildProjection([
+		ev('fulfillment', 200, { eventId: 'e2', state: 'success', hasTracking: true, trackingCompany: 'FedEx' }),
+		ev('fulfillment', 100, { eventId: 'e1', state: 'success', hasTracking: true, trackingCompany: 'UPS' }),
+	]);
+	assert.equal(forward?.trackingCompany, 'UPS');
+	assert.equal(reverse?.trackingCompany, 'UPS');
+});
+
+test('a later tracked fulfillment with no carrier does not blank a known carrier', () => {
+	const p = rebuildProjection([
+		ev('fulfillment', 100, { eventId: 'e1', state: 'success', hasTracking: true, trackingCompany: 'UPS' }),
+		ev('fulfillment', 200, { eventId: 'e2', state: 'success', hasTracking: true }),
+	]);
+	assert.equal(p?.trackingCompany, 'UPS');
+});
+
 test('order value is latched from the EARLIEST paid event, with its currency', () => {
 	const p = rebuildProjection([
 		ev('order', 200, { eventId: 'e1', topic: 'orders/paid', state: 'paid', totalPrice: 50, currency: 'USD' }),
@@ -179,10 +203,16 @@ test('rebuild equality holds for every new latch under shuffled event order', ()
 		ev('fulfillment', 200, { eventId: 'e2', state: 'error' }),
 		ev('fulfillment', 400, { eventId: 'e3', state: 'success', hasTracking: true, trackingCompany: 'UPS' }),
 		ev('order', 300, { eventId: 'e4', topic: 'orders/paid', state: 'paid', totalPrice: 55, currency: 'USD' }),
+		// A second tracked fulfillment, earlier than e3 and with a different
+		// carrier — a split shipment. This is the case that would have caught the
+		// "last fold wins" bug: e3 and e5 fold in different relative orders under
+		// forward/reverse/shuffled, so a fold-order-dependent latch would diverge.
+		ev('fulfillment', 350, { eventId: 'e5', state: 'success', hasTracking: true, trackingCompany: 'FedEx' }),
 	];
 	const forward = rebuildProjection(events);
 	const reverse = rebuildProjection([...events].reverse());
-	const shuffled = rebuildProjection([events[2], events[0], events[3], events[1]]);
+	const shuffled = rebuildProjection([events[2], events[4], events[0], events[3], events[1]]);
 	assert.deepEqual(reverse, forward);
 	assert.deepEqual(shuffled, forward);
+	assert.equal(forward?.trackingCompany, 'FedEx'); // earliest tracked fulfillment (e5 @350) wins over e3 @400
 });

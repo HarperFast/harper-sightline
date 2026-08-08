@@ -111,6 +111,7 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	fulfillmentFailedAt: Float # earliest fulfillment event with status error|failure (latch)
 	hasTracking: Boolean # any fulfillment carried a tracking number (latch, monotonic true)
 	trackingCompany: String
+	trackingAt: Float # earliest fulfillment observed carrying tracking (latch) — keys trackingCompany
 	fulfillableItemCount: Int
 	state: String @indexed # pending | awaiting_window | confirmed | unconfirmed
 	deadline: Float @indexed
