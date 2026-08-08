@@ -2,6 +2,8 @@ import {
 	Shops,
 	Credentials,
 	AuditEvents,
+	DigestSubscriptions,
+	DigestOutboxes,
 	Deliveries,
 	Events,
 	Projections,
@@ -55,4 +57,18 @@ export const REDACT_TARGETS: RedactTarget[] = [
 	// week would be pointless Admin API traffic).
 	{ name: 'InventoryItem', keyField: 'id', shopField: 'shopId', table: purgeable(InventoryItems) },
 	{ name: 'ShopLocation', keyField: 'id', shopField: 'shopId', table: purgeable(ShopLocations) },
+	// The notification address and the generated digests. No orderField: neither is
+	// linked to a customer or an order, so customers/redact must NOT reach them —
+	// only uninstall / shop-redact does.
+	{ name: 'DigestSubscription', keyField: 'shopId', shopField: 'shopId', table: purgeable(DigestSubscriptions) },
+	{ name: 'DigestOutbox', keyField: 'id', shopField: 'shopId', table: purgeable(DigestOutboxes) },
+];
+
+// The digest outbox keeps a longer history than the 7-day ledger: a digest is a
+// record of what the merchant was told, which is worth having after the events it
+// described have been purged. It is NOT in RETENTION_TARGETS because that list is
+// swept with a single seven-day cutoff.
+export const OUTBOX_RETENTION_DAYS = 30;
+export const OUTBOX_RETENTION_TARGETS: RetentionTarget[] = [
+	{ name: 'DigestOutbox', keyField: 'id', tsField: 'createdAt', table: purgeable(DigestOutboxes) },
 ];

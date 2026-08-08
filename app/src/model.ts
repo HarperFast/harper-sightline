@@ -51,6 +51,37 @@ export interface AppAuditEvent {
 	detail?: string;
 }
 
+export type DigestCadence = 'daily' | 'weekly';
+export type DigestStatus = 'pending' | 'sent' | 'skipped';
+
+export interface DigestSubscription {
+	shopId: string;
+	email?: string;
+	cadence?: DigestCadence;
+	status?: 'active' | 'paused';
+	createdAt?: number;
+	updatedAt?: number;
+	lastBuiltAt?: number;
+}
+
+export interface DigestOutbox {
+	id: string; // `${shopId}:${periodStart}`
+	shopId: string;
+	email?: string;
+	cadence?: DigestCadence;
+	periodStart: number;
+	periodEnd?: number;
+	subject?: string;
+	bodyText?: string;
+	bodyHtml?: string;
+	unconfirmed?: number;
+	failedAttempts?: number;
+	deliveryGaps?: number;
+	recorderHealthy?: boolean;
+	status: DigestStatus;
+	createdAt: number;
+}
+
 // ─── sightline_ledger ─────────────────────────────────────────────────────────
 
 export interface WebhookDelivery {

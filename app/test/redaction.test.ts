@@ -68,3 +68,32 @@ test('redactOrders is idempotent and handles multiple orders', async () => {
 	const second = await redactOrders(targets, 's1', ['o1', 'o2']);
 	assert.equal(second.deleted, 0);
 });
+
+test('shop redaction erases the notification subscription and the digest outbox', async () => {
+	const subscriptions = new FakeTable('shopId', [
+		{ shopId: 's1', email: 'ops@merchant.example', cadence: 'daily', status: 'active' },
+		{ shopId: 's2', email: 'other@merchant.example', cadence: 'daily', status: 'active' },
+	]);
+	const outbox = new FakeTable('id', [
+		{ id: 's1:100', shopId: 's1', periodStart: 100, status: 'pending', createdAt: 100 },
+		{ id: 's2:100', shopId: 's2', periodStart: 100, status: 'pending', createdAt: 100 },
+	]);
+	await redactShop(
+		[
+			{ name: 'DigestSubscription', keyField: 'shopId', shopField: 'shopId', table: subscriptions },
+			{ name: 'DigestOutbox', keyField: 'id', shopField: 'shopId', table: outbox },
+		],
+		's1',
+	);
+	assert.equal(await subscriptions.get('s1'), undefined);
+	assert.equal(await outbox.get('s1:100'), undefined);
+	// The other tenant is untouched.
+	assert.notEqual(await subscriptions.get('s2'), undefined);
+	assert.notEqual(await outbox.get('s2:100'), undefined);
+});
+
+test('customer redaction does NOT touch digest tables — they carry no customer linkage', async () => {
+	const subscriptions = new FakeTable('shopId', [{ shopId: 's1', email: 'ops@merchant.example', status: 'active' }]);
+	await redactOrders([{ name: 'DigestSubscription', keyField: 'shopId', shopField: 'shopId', table: subscriptions }], 's1', ['o1']);
+	assert.notEqual(await subscriptions.get('s1'), undefined);
+});

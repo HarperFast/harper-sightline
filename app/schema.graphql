@@ -47,6 +47,46 @@ type AppAuditEvent @table(database: "sightline_core") @sealed {
 	detail: String
 }
 
+type DigestSubscription @table(database: "sightline_core") @sealed {
+	# One notification address per shop. The ONLY merchant-identifying string this
+	# app stores — it is a staff address supplied by the merchant, not customer
+	# data, and it is disclosed on the Privacy screen and in the privacy policy.
+	# Erased on uninstall and on shop redaction.
+	shopId: ID! @primaryKey
+	email: String
+	cadence: String # daily | weekly
+	status: String @indexed # active | paused
+	createdAt: Float
+	updatedAt: Float
+	# Period start of the last digest built for this shop. The build decision keys
+	# on this, so a re-run inside the same period is a no-op.
+	lastBuiltAt: Float
+}
+
+type DigestOutbox @table(database: "sightline_core") @sealed {
+	# A fully-rendered digest, ready for a sender that does not exist yet. Keyed
+	# `${shopId}:${periodStart}` so rebuilding a period upserts one row rather than
+	# duplicating it. Bodies contain order names, counts and timestamps only — never
+	# customer data.
+	id: ID! @primaryKey
+	shopId: String! @indexed
+	email: String
+	cadence: String
+	periodStart: Float! @indexed
+	periodEnd: Float
+	subject: String
+	bodyText: String
+	bodyHtml: String
+	# The headline numbers, kept as columns so an operator can see what a digest
+	# said without parsing its body.
+	unconfirmed: Int
+	failedAttempts: Int
+	deliveryGaps: Int
+	recorderHealthy: Boolean
+	status: String! @indexed # pending | sent | skipped
+	createdAt: Float! @indexed # retention key (30 days, not the ledger's 7)
+}
+
 # ─── sightline_ledger ────────────────────────────────────────────────────────
 
 type WebhookDelivery @table(database: "sightline_ledger") @sealed {
