@@ -418,6 +418,38 @@ export function activityView(a: Summary['activity']): string {
 	</s-section>`;
 }
 
+// Capture integrity: how much of the window arrived as a webhook versus how much
+// Sightline found only by checking Shopify directly.
+//
+// The wording here is load-bearing. A direct-check discovery means the webhook
+// did not reach US — it does NOT prove Shopify failed to deliver, and it says
+// nothing about any other app's subscription, which is independent of ours.
+// Sightline's own downtime is an equally valid explanation. State the observation
+// and let the merchant draw the conclusion.
+//
+// The banner copy must DENY the "Shopify failed" claim without containing that
+// literal phrase: the regression test guarding this boundary (view.test.ts, "does
+// not claim Shopify failed") is a deliberately blunt substring check, and it can't
+// tell a denial from an assertion. Don't "fix" this sentence back into containing
+// "Shopify failed" — say the same thing without that substring instead.
+export function integrityView(integrity: Summary['integrity']): string {
+	const clean = integrity.reconciliationOnlyEvents === 0;
+	return `<s-section heading="Capture integrity">
+		${
+			clean
+				? `<s-paragraph>Every change Sightline recorded in this window arrived as a webhook. Nothing had to be recovered by a direct check.</s-paragraph>`
+				: `<s-banner tone="info" heading="${esc(String(integrity.reconciliationOnlyEvents))} change(s) found by direct check">
+						<s-paragraph>Sightline found these by querying Shopify directly rather than receiving a webhook for them. That means the webhook did not reach Sightline. It is not proof that Shopify never sent one, and it says nothing about the webhook subscriptions your other apps have, which are independent of Sightline's.</s-paragraph>
+						<s-link href="#/events?source=reconciliation">View these events</s-link>
+					</s-banner>`
+		}
+		${fields([
+			['Arrived as a webhook', String(integrity.webhookEvents)],
+			['Found by direct check', String(integrity.reconciliationOnlyEvents)],
+		])}
+	</s-section>`;
+}
+
 // The overview's "needs attention" list: recent orders with no observed Shopify
 // fulfillment confirmation. Copy is non-accusatory (screen spec §2) — it never
 // says a warehouse/carrier failed, only that Shopify has not shown confirmation.
@@ -537,6 +569,7 @@ export function overviewView(d: OverviewData): string {
 		${flows}
 		${s.aging ? agingView(s.aging) : ''}
 		${s.activity ? activityView(s.activity) : ''}
+		${s.integrity ? integrityView(s.integrity) : ''}
 		${d.unconfirmed ? needsAttention(d.unconfirmed, now) : ''}
 		<s-section><s-paragraph><s-text color="subdued">${s.events.total} normalized events recorded in the window.</s-text></s-paragraph></s-section>`,
 	);

@@ -25,6 +25,7 @@ import {
 	FINDING_DISCLAIMER,
 	findingDetailView,
 	findingsListView,
+	integrityView,
 	money,
 	needsAttention,
 	observedTimeline,
@@ -73,6 +74,7 @@ function summary(over: Partial<Summary> = {}): Summary {
 				refund: 0,
 			})),
 		},
+		integrity: { webhookEvents: 0, reconciliationOnlyEvents: 0 },
 		...over,
 	};
 }
@@ -347,6 +349,19 @@ test('a zero-count day renders no bar height, so magnitude never overstates', ()
 	const html = activityView(summary().activity);
 	assert.ok(html.includes('style="height:0%"'), 'empty days are visibly empty');
 	assert.ok(html.includes('style="height:100%"'), 'the peak day fills the track');
+});
+
+test('the integrity section states what a direct-check discovery does and does not mean', () => {
+	const html = integrityView({ webhookEvents: 40, reconciliationOnlyEvents: 3 });
+	assert.match(html, /3/);
+	assert.match(html, /direct check/i);
+	// It must NOT claim Shopify failed, or that other apps missed anything.
+	assert.doesNotMatch(html, /Shopify failed|never delivered to your|your vendors did not/i);
+	assert.match(html, /href="#\/events\?source=reconciliation"/);
+});
+
+test('zero direct-check discoveries reads as healthy, not as an absence of data', () => {
+	assert.match(integrityView({ webhookEvents: 40, reconciliationOnlyEvents: 0 }), /Every change[\s\S]*webhook/i);
 });
 
 // ── escaping ─────────────────────────────────────────────────────────────────

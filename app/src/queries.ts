@@ -460,15 +460,24 @@ export async function getSummary(
 	const windowStart = now - WINDOW_MS;
 	const buckets = emptyBuckets(windowStart);
 	let eventsTotal = 0;
+	// Capture-integrity tally. An event whose only source is a reconciliation sweep
+	// is one that did NOT arrive as a webhook — the failure class merchants cannot
+	// otherwise see. It is evidence about OUR capture path, not proof about anyone
+	// else's: every app's subscription is independent, and our own downtime is an
+	// alternative explanation. The UI copy carries that boundary.
+	let webhookEvents = 0;
+	let reconciliationOnlyEvents = 0;
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
 			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
-		select: ['occurredAt', 'domain'],
+		select: ['occurredAt', 'domain', 'source'],
 	})) {
 		eventsTotal++;
+		if (String(e.source) === 'reconciliation') reconciliationOnlyEvents++;
+		else webhookEvents++;
 		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((Number(e.occurredAt) - windowStart) / DAY_MS)));
 		const bucket = buckets[index];
 		bucket.total++;
@@ -517,6 +526,7 @@ export async function getSummary(
 		recorder: { healthy: deadLettered === 0, deadLetteredDeliveries: deadLettered },
 		reconciliation: reconciliationView(shop, now),
 		activity: { days: WINDOW_DAYS, domains: [...ACTIVITY_DOMAINS], buckets },
+		integrity: { webhookEvents, reconciliationOnlyEvents },
 	};
 }
 

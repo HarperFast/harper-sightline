@@ -62,6 +62,7 @@ export interface Summary {
 	recorder: { healthy: boolean; deadLetteredDeliveries: number };
 	reconciliation: Reconciliation;
 	activity: { days: number; domains: string[]; buckets: ActivityBucket[] };
+	integrity: { webhookEvents: number; reconciliationOnlyEvents: number };
 }
 export interface SetupStep {
 	key: string;

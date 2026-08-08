@@ -691,6 +691,39 @@ test('the aging breakdown never counts another tenant orders', async () => {
 	);
 });
 
+test('the summary counts events observed by direct check rather than by webhook', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	await events.put({
+		eventId: 'recon:s1:o9:paid',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o9',
+		source: 'reconciliation',
+		occurredAt: NOW - 2000,
+		receivedAt: NOW - 2000,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	const integrity = summary.integrity as { webhookEvents: number; reconciliationOnlyEvents: number };
+	assert.equal(integrity.reconciliationOnlyEvents, 1);
+	assert.ok(integrity.webhookEvents >= 1);
+});
+
+test('integrity counts are scoped to the shop', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	await events.put({
+		eventId: 'recon:s2:o9:paid',
+		shopId: 's2',
+		domain: 'order',
+		resourceId: 'o9',
+		source: 'reconciliation',
+		occurredAt: NOW - 2000,
+		receivedAt: NOW - 2000,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 0);
+});
+
 test('orders default to newest-paid first and carry the worklist columns', async () => {
 	const { projections } = fixtures();
 	const page = await listOrders(projections, 's1', NOW, {});

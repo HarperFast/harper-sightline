@@ -38,7 +38,8 @@
 				"findings",
 				"recorder",
 				"reconciliation",
-				"activity"
+				"activity",
+				"integrity"
 			]
 		},
 		"events": {
