@@ -1,6 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { EventDetail, EventItem, FindingDetail, FindingItem, OrderItem, Privacy, Setup, Summary } from '../web/src/api.ts';
+import type {
+	EventDetail,
+	EventItem,
+	FindingDetail,
+	FindingItem,
+	OrderDetail,
+	OrderItem,
+	Privacy,
+	Setup,
+	Summary,
+} from '../web/src/api.ts';
 import {
 	activityView,
 	contextStrip,
@@ -16,6 +26,8 @@ import {
 	money,
 	needsAttention,
 	observedTimeline,
+	orderDetailView,
+	orderTimeline,
 	ordersView,
 	overviewView,
 	parseHash,
@@ -696,4 +708,76 @@ test('the orders screen is Polaris markup like every other screen', () => {
 	assert.match(html, /<s-page/);
 	assert.match(html, /<s-section/);
 	assert.match(html, /<s-table/);
+});
+
+function orderDetail(over: Partial<OrderDetail> = {}): OrderDetail {
+	return {
+		orderId: '7518851989809',
+		orderName: '#1001',
+		state: 'awaiting',
+		paidAt: NOW - 30 * HOUR,
+		ageHours: 30,
+		orderTotal: 129.95,
+		currency: 'USD',
+		requiresFulfillment: true,
+		events: [],
+		findings: [],
+		...over,
+	};
+}
+
+test('the order timeline is chronological and every entry is an observation', () => {
+	const entries = orderTimeline(orderDetail({ paidAt: 300, fulfillmentFailedAt: 500, fulfilledAt: 700 }));
+	assert.deepEqual(
+		entries.map((e) => e.at),
+		[300, 500, 700],
+	);
+	assert.match(entries[0].text, /paid/i);
+	assert.match(entries[1].text, /did not succeed/i);
+	assert.match(entries[2].text, /confirmation observed/i);
+});
+
+test('order detail renders the timeline, the events, and any findings', () => {
+	const html = orderDetailView(
+		orderDetail({
+			events: [
+				{
+					eventId: 's1:e1',
+					domain: 'order',
+					topic: 'orders/paid',
+					source: 'webhook',
+					occurredAt: NOW - 30 * HOUR,
+					receivedAt: NOW - 30 * HOUR,
+				},
+			],
+			findings: [
+				{
+					id: 'f1',
+					orderId: '7518851989809',
+					status: 'unconfirmed',
+					detectedAt: NOW - 2 * HOUR,
+					description: 'No Shopify fulfillment confirmation was observed for this paid, fulfillment-eligible order by the expected time.',
+				},
+			],
+		}),
+		'',
+	);
+	assert.match(html, /#1001/);
+	assert.match(html, /What Sightline observed/);
+	assert.match(html, /orders\/paid/);
+	assert.match(html, /No Shopify fulfillment confirmation/);
+});
+
+test('order detail has a breadcrumb back to the worklist', () => {
+	assert.match(orderDetailView(orderDetail(), ''), /href="#\/orders"/);
+});
+
+test('an order with nothing but a payment still renders, with an empty-state note', () => {
+	const html = orderDetailView(orderDetail({ events: [], findings: [] }), '');
+	assert.match(html, /No events recorded|No findings/);
+});
+
+test('order detail never claims a downstream party failed', () => {
+	const html = orderDetailView(orderDetail({ fulfillmentFailedAt: NOW - 5 * HOUR }), '');
+	assert.doesNotMatch(html, /warehouse|carrier|vendor|3PL/i);
 });

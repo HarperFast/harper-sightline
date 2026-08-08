@@ -1,4 +1,4 @@
-import type { EventDetail, EventItem, FindingDetail, FindingItem, OrderItem, Privacy, Setup, Summary } from './api.ts';
+import type { EventDetail, EventItem, FindingDetail, FindingItem, OrderDetail, OrderItem, Privacy, Setup, Summary } from './api.ts';
 
 // Every screen's markup, as PURE functions of already-fetched data. Nothing here
 // touches the DOM, the network, or any Shopify global — main.ts owns all of that.
@@ -685,6 +685,84 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 			)}
 			${hasMore ? `<s-button id="loadMore">Load more</s-button>` : ''}
 		</s-section>`,
+	);
+}
+
+// One order's observed history. Same discipline as the finding timeline: every
+// entry is something Sightline OBSERVED in Shopify, with a source timestamp, and
+// nothing is inferred about a downstream system.
+export function orderTimeline(o: OrderDetail): Array<{ at: number; text: string }> {
+	const entries: Array<{ at: number; text: string }> = [];
+	if (o.paidAt !== undefined) entries.push({ at: o.paidAt, text: 'Order paid' });
+	if (o.fulfillmentFailedAt !== undefined)
+		entries.push({ at: o.fulfillmentFailedAt, text: 'Shopify recorded a fulfillment attempt that did not succeed' });
+	if (o.fulfilledAt !== undefined) entries.push({ at: o.fulfilledAt, text: 'Fulfillment confirmation observed in Shopify' });
+	if (o.cancelledAt !== undefined) entries.push({ at: o.cancelledAt, text: 'Order cancelled — confirmation no longer expected' });
+	if (o.fullyRefundedAt !== undefined)
+		entries.push({ at: o.fullyRefundedAt, text: 'Order fully refunded — confirmation no longer expected' });
+	return entries.sort((a, b) => a.at - b.at);
+}
+
+// Replaced with a real Admin deep link in the deep-links task.
+function adminOrderLink(_orderId: string): string {
+	return '';
+}
+
+export function orderDetailView(o: OrderDetail, strip: string): string {
+	const timeline = orderTimeline(o)
+		.map(
+			(entry) =>
+				`<s-table-row><s-table-cell>${ts(entry.at, CLOCK_FMT)}</s-table-cell><s-table-cell>${esc(entry.text)}</s-table-cell></s-table-row>`,
+		)
+		.join('');
+
+	const eventRows = o.events
+		.map(
+			(e) => `<s-table-row>
+			<s-table-cell><s-link href="#/events/${encodeURIComponent(e.eventId)}">${ts(e.occurredAt)}</s-link></s-table-cell>
+			<s-table-cell>${esc(e.domain)}</s-table-cell>
+			<s-table-cell>${esc(e.topic ?? '')}</s-table-cell>
+			<s-table-cell>${e.state ? badge(e.state) : ''}</s-table-cell>
+			<s-table-cell>${esc(e.source)}</s-table-cell>
+		</s-table-row>`,
+		)
+		.join('');
+
+	const findingRows = o.findings
+		.map(
+			(f) => `<s-table-row>
+			<s-table-cell><s-link href="#/findings/${encodeURIComponent(f.id)}">${badge(f.status)}</s-link></s-table-cell>
+			<s-table-cell>${esc(f.description)}</s-table-cell>
+			<s-table-cell>${ts(f.detectedAt)}</s-table-cell>
+		</s-table-row>`,
+		)
+		.join('');
+
+	return page(
+		`Order ${orderLabel(o)}`,
+		`${strip}
+		<s-section>
+			<s-stack direction="inline" gap="small-200" alignItems="center">${badge(o.state)}${adminOrderLink(o.orderId)}</s-stack>
+			${fields([
+				['Order', esc(orderLabel(o))],
+				['Value', money(o.orderTotal, o.currency)],
+				['Paid', ts(o.paidAt)],
+				['Waiting since payment', o.ageHours === undefined ? '—' : esc(`${o.ageHours}h`)],
+				['Needs shipping', o.requiresFulfillment ? 'Yes' : 'No'],
+				['Fulfillment confirmed', ts(o.fulfilledAt)],
+				['Tracking', o.hasTracking ? esc(o.trackingCompany ?? 'present') : 'none observed'],
+			])}
+		</s-section>
+		<s-section heading="What Sightline observed">
+			${table([{ label: 'Time' }, { label: 'Observation' }], timeline, 'No observations recorded.')}
+		</s-section>
+		<s-section heading="Findings">
+			${table([{ label: 'Status' }, { label: 'Observation' }, { label: 'Detected' }], findingRows, 'No findings for this order.')}
+		</s-section>
+		<s-section heading="Events">
+			${table([{ label: 'Time' }, { label: 'Domain' }, { label: 'Topic' }, { label: 'State' }, { label: 'Source' }], eventRows, 'No events recorded in the window.')}
+		</s-section>`,
+		{ href: '#/orders', label: 'Orders' },
 	);
 }
 

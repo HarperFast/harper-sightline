@@ -9,6 +9,7 @@ import {
 	apiFinding,
 	apiPrivacy,
 	apiOrders,
+	apiOrder,
 	type EventItem,
 	type OrderItem,
 	type Setup,
@@ -25,6 +26,7 @@ import {
 	findingDetailView,
 	findingsListView,
 	notFoundView,
+	orderDetailView,
 	orderQuery,
 	ordersView,
 	ORDER_FILTER_KEYS,
@@ -225,6 +227,12 @@ function paintOrders(params: Record<string, string>, contextHtml: string): void 
 	});
 }
 
+async function orderDetail(orderId: string): Promise<void> {
+	loading();
+	const contextHtml = await strip();
+	render(orderDetailView(await apiOrder(orderId), contextHtml));
+}
+
 async function findingsList(params: Record<string, string>): Promise<void> {
 	loading();
 	const contextHtml = await strip();
@@ -264,9 +272,11 @@ async function route(): Promise<void> {
 	try {
 		const eventId = path.match(/^\/events\/(.+)$/);
 		const findingId = path.match(/^\/findings\/(.+)$/);
+		const orderId = path.match(/^\/orders\/(.+)$/);
 		if (path === '/' || path === '') await overview();
 		else if (path === '/setup') await setupScreen();
 		else if (eventId) await eventDetail(decodeURIComponent(eventId[1]));
+		else if (orderId) await orderDetail(decodeURIComponent(orderId[1]));
 		else if (path === '/orders') await ordersList(params);
 		else if (path === '/events') await eventsList(params);
 		else if (findingId) await findingDetail(decodeURIComponent(findingId[1]));
