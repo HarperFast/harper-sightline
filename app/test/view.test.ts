@@ -185,14 +185,27 @@ test('findings show which detector produced them', () => {
 		detectedAt: NOW - HOUR,
 	};
 	const html = findingsListView({}, [absence, failed], NOW, '');
-	assert.match(html, /No confirmation observed/);
-	assert.match(html, /Attempt did not succeed/);
+	// Scoped to each row's own Order cell + the Type cell immediately after it, so
+	// a label appearing anywhere else on the page (e.g. a filter option) can't make
+	// this pass for the wrong row.
+	assert.match(
+		html,
+		/<s-table-cell><s-link href="#\/findings\/f1">#1001<\/s-link><\/s-table-cell>\s*<s-table-cell>No confirmation observed<\/s-table-cell>/,
+	);
+	assert.match(
+		html,
+		/<s-table-cell><s-link href="#\/findings\/f2">#1002<\/s-link><\/s-table-cell>\s*<s-table-cell>Attempt did not succeed<\/s-table-cell>/,
+	);
 });
 
 test('the findings list offers a detector filter', () => {
 	const html = findingsListView({ detector: 'fulfillment_attempt_failed' }, [], NOW, '');
-	assert.match(html, /id="f-detector"/);
-	assert.match(html, /value="fulfillment_attempt_failed" selected/);
+	// Scoped to the f-detector select itself, so a coincidental match elsewhere on
+	// the page (e.g. a different control) can't make this pass.
+	assert.match(
+		html,
+		/<s-select id="f-detector" label="Type">[\s\S]*?<option value="fulfillment_attempt_failed" selected>[\s\S]*?<\/s-select>/,
+	);
 });
 
 test('the finding detail evidence table names which detector produced it', () => {
@@ -390,14 +403,17 @@ test('the Paid stat tile and the Paid flow lane are never links — no worklist 
 	assert.doesNotMatch(html, /<s-link[^>]*>Paid<\/s-link>/, 'no href wraps the Paid flow-lane label');
 });
 
-test('the overview surfaces failed attempts as their own count', () => {
+test('the overview surfaces failed attempts as their own count, linking to the exact set it counts', () => {
 	const s = summary({ findings: { unconfirmed: 3, resolved: 1, suppressed: 0, failedAttempts: 2 } });
 	const html = overviewView({ summary: s, flows: null, unconfirmed: [], setup: null, now: NOW });
-	assert.match(html, /Failed attempts/);
-	assert.match(html, /href="#\/findings\?detector=fulfillment_attempt_failed"/);
-	// Scoped to the tile itself: the earlier "Paid tile links to a different count"
-	// defect would have passed a loose match like the two assertions above.
-	assert.match(gridItem(html, 'Failed attempts'), /href="#\/findings\?detector=fulfillment_attempt_failed"[\s\S]*>2</);
+	// failedAttempts only counts UNCONFIRMED failed-attempt findings (a resolved or
+	// suppressed one is still counted in its own status bucket) — so the link must
+	// carry status=unconfirmed too, or it opens a bigger set than the tile shows
+	// (the same class of defect this plan already caught on the Paid tile).
+	assert.match(
+		gridItem(html, 'Failed attempts'),
+		/href="#\/findings\?detector=fulfillment_attempt_failed&amp;status=unconfirmed"[\s\S]*>2</,
+	);
 });
 
 test('bucketMinHours agrees with AGE_BUCKETS for every key, so a renamed bucket fails a test instead of silently mapping to 72', () => {

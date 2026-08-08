@@ -600,7 +600,13 @@ export function overviewView(d: OverviewData): string {
 		<s-section heading="Findings">
 			${statGridLinked([
 				['Unconfirmed', s.findings.unconfirmed, '#/findings?status=unconfirmed'],
-				['Failed attempts', s.findings.failedAttempts ?? 0, '#/findings?detector=fulfillment_attempt_failed'],
+				// failedAttempts only counts UNCONFIRMED failed-attempt findings — a
+				// resolved or suppressed one is still counted in ITS OWN bucket above — so
+				// the link must carry status=unconfirmed too, or it opens a bigger set than
+				// the tile shows (same defect class already caught on the Paid tile).
+				// statGridLinked runs this href through esc(), which turns the plain `&`
+				// below into `&amp;` — do not pre-encode it here, or it would double-escape.
+				['Failed attempts', s.findings.failedAttempts ?? 0, '#/findings?detector=fulfillment_attempt_failed&status=unconfirmed'],
 				['Resolved', s.findings.resolved, '#/findings?status=resolved'],
 				['Suppressed', s.findings.suppressed, '#/findings?status=suppressed'],
 			])}
