@@ -100,7 +100,7 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	orderId: String!
 	financialStatus: String
 	fulfillmentStatus: String
-	paidAt: Float # earliest paid time (latch)
+	paidAt: Float @indexed # earliest paid time (latch) — indexed: the worklist sorts/filters by order age
 	cancelledAt: Float # earliest cancellation (latch)
 	fullyRefundedAt: Float # earliest full-refund (latch)
 	fulfilledAt: Float # earliest successful fulfillment (latch)
@@ -113,8 +113,8 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	trackingCompany: String
 	trackingAt: Float # earliest fulfillment observed carrying tracking (latch) — keys trackingCompany
 	fulfillableItemCount: Int
-	state: String @indexed # pending | awaiting_window | confirmed | unconfirmed
-	deadline: Float @indexed
+	state: String @indexed # unpaid | awaiting | fulfilled | cancelled | refunded (derived, src/orders.ts)
+	deadline: Float @indexed # RESERVED — not written; the expectation owns the deadline
 	lastEventAt: Float
 	lastSourceVersion: Float
 }

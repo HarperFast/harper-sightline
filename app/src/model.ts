@@ -5,7 +5,11 @@ export type ShopStatus = 'active' | 'reauthorization_required' | 'uninstalled';
 export type DeliveryStatus = 'accepted' | 'processed' | 'dead_letter';
 export type EventDomain = 'order' | 'fulfillment' | 'inventory' | 'refund';
 export type EventSource = 'webhook' | 'reconciliation';
-export type ProjectionState = 'pending' | 'awaiting_window' | 'confirmed' | 'unconfirmed';
+// The order's lane, derived from the latches by src/orders.ts. NOTE: this
+// replaces an earlier value set ('pending' | 'awaiting_window' | 'confirmed' |
+// 'unconfirmed') that was declared but never written by any code path — no stored
+// row has ever carried it, so redefining the column's meaning is safe.
+export type ProjectionState = 'unpaid' | 'awaiting' | 'fulfilled' | 'cancelled' | 'refunded';
 export type ExpectationState = 'pending' | 'resolved' | 'suppressed' | 'expired';
 export type FindingStatus = 'pending' | 'unconfirmed' | 'resolved' | 'suppressed';
 

@@ -1,4 +1,5 @@
 import type { OperationalEvent, OrderProjection } from './model.ts';
+import { deriveOrderLane } from './orders.ts';
 
 // Order-linked domains — the ones that update an order's projection. Inventory
 // events key `resourceId` by inventory_item_id (not an order) and are excluded.
@@ -27,6 +28,11 @@ export const FAILED_FULFILLMENT_STATES = new Set(['error', 'failure']);
 // (financialStatus/fulfillmentStatus) are intentionally NOT stored — a shared
 // version guard would make them order-dependent, breaking rebuild equality. The
 // detector (#14) and UI (#18) derive display status from these latches instead.
+// `state` below looks like it breaks that rule, but it does not: it is not
+// folded from any single event and carries no version guard of its own — it is
+// recomputed from this record's own latches on every call, so it is exactly as
+// rebuild-equal as they are. Storing it is a projection of already-commutative
+// data, not a second source of truth.
 export function applyEvent(current: OrderProjection | undefined, event: OperationalEvent): OrderProjection {
 	const orderId = event.resourceId as string;
 	const base: OrderProjection = current ?? { id: `${event.shopId}:${orderId}`, shopId: event.shopId, orderId };
@@ -79,6 +85,12 @@ export function applyEvent(current: OrderProjection | undefined, event: Operatio
 	// Order name is immutable in Shopify, so first-seen-wins is stable across
 	// any event ordering.
 	if (next.orderName === undefined && event.orderName !== undefined) next.orderName = event.orderName;
+
+	// Derived, not latched: a pure function of the latches above, so it is
+	// rebuild-equal under any event ordering. Written to the (indexed) `state`
+	// column so the orders worklist can filter and page in the database rather
+	// than post-filtering, which would return short pages and a false "load more".
+	next.state = deriveOrderLane(next);
 
 	return next;
 }
