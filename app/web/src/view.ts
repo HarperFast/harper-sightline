@@ -586,6 +586,17 @@ export const FINDING_DISCLAIMER =
 
 export const STATUSES = ['', 'unconfirmed', 'resolved', 'suppressed'];
 
+// Which finding-detail copy applies is a single fact, not three independently
+// -drifting checks: the ABSENCE detector ('fulfillment_confirmation', or no
+// `detector` at all on rows written before that column existed) is the only one
+// whose confirmation-window disclaimer/"why this qualified" copy is true. The
+// PRESENCE detector ('fulfillment_attempt_failed', src/detector.ts DETECTOR_FAILED)
+// fires on a fulfillment Shopify itself recorded as failed — the disclaimer's "has
+// not shown … yet" wording would be false for it (C2).
+function isAbsenceFinding(f: { detector?: string }): boolean {
+	return f.detector === undefined || f.detector === 'fulfillment_confirmation';
+}
+
 export function findingsListView(params: Record<string, string>, items: FindingItem[], now: number, strip: string): string {
 	const rows = items
 		.map(
@@ -625,12 +636,19 @@ export function observedTimeline(f: FindingDetail, lastReconciledAt: number | un
 	const p = f.projection;
 	const entries: Array<{ at: number; text: string }> = [];
 	if (p?.paidAt !== undefined) entries.push({ at: p.paidAt, text: 'Order paid' });
-	if (f.expectation?.deadline !== undefined)
-		entries.push({
-			at: f.expectation.deadline,
-			text: `Fulfillment confirmation expected by ${DEADLINE_FMT.format(new Date(f.expectation.deadline))}`,
-		});
-	if (f.detectedAt !== undefined) entries.push({ at: f.detectedAt, text: 'No qualifying fulfillment confirmation observed' });
+	if (isAbsenceFinding(f)) {
+		if (f.expectation?.deadline !== undefined)
+			entries.push({
+				at: f.expectation.deadline,
+				text: `Fulfillment confirmation expected by ${DEADLINE_FMT.format(new Date(f.expectation.deadline))}`,
+			});
+		if (f.detectedAt !== undefined) entries.push({ at: f.detectedAt, text: 'No qualifying fulfillment confirmation observed' });
+	} else if (f.detectedAt !== undefined) {
+		// The presence detector's own observation — Shopify recorded the attempt as
+		// failed, so the entry states that fact rather than an absence (matches
+		// describeFinding's DETECTOR_FAILED 'unconfirmed' copy, src/detector.ts).
+		entries.push({ at: f.detectedAt, text: 'Shopify recorded a fulfillment attempt for this order that did not succeed' });
+	}
 	if (p?.fulfilledAt !== undefined) entries.push({ at: p.fulfilledAt, text: 'Fulfillment confirmation observed in Shopify' });
 	if (p?.cancelledAt !== undefined) entries.push({ at: p.cancelledAt, text: 'Order cancelled — confirmation no longer expected' });
 	if (p?.fullyRefundedAt !== undefined)
@@ -656,10 +674,14 @@ export function findingDetailView(f: FindingDetail, lastReconciledAt: number | u
 	// "Why this qualified" (screen spec §4): the eligibility rule, shown from the
 	// projection/expectation already in the payload. Only meaningful while the
 	// order is unconfirmed — resolved/suppressed findings explain themselves via
-	// the (retained) description.
+	// the (retained) description. And only meaningful for the ABSENCE detector:
+	// the presence detector has no confirmation window (deadlineMs is 0), so there
+	// is no "window elapsed" rule to explain here (C2) — its own description
+	// already states what was observed.
 	const p = f.projection;
+	const absence = isAbsenceFinding(f);
 	const why =
-		f.status === 'unconfirmed' && p
+		absence && f.status === 'unconfirmed' && p
 			? `<s-section heading="Why this qualified"><s-unordered-list>
 				${p.requiresFulfillment ? '<s-list-item>Contains fulfillment-eligible items</s-list-item>' : ''}
 				${p.paidAt !== undefined ? '<s-list-item>Payment was observed</s-list-item>' : ''}
@@ -667,10 +689,13 @@ export function findingDetailView(f: FindingDetail, lastReconciledAt: number | u
 				<s-list-item>The confirmation window elapsed without an observed fulfillment</s-list-item>
 			</s-unordered-list></s-section>`
 			: '';
-	// The disclaimer is only literally true while confirmation is still absent;
-	// resolved/suppressed findings carry their own accurate description instead.
+	// The disclaimer is only literally true for the ABSENCE detector while
+	// confirmation is still absent — for the presence detector it would be
+	// self-contradictory (Shopify DID record a failed attempt) and is never shown
+	// regardless of status (C2). Resolved/suppressed absence findings carry their
+	// own accurate description instead.
 	const disclaimer =
-		f.status === 'unconfirmed'
+		absence && f.status === 'unconfirmed'
 			? `<s-banner tone="warning" heading="What this finding does and does not mean">
 					<s-paragraph>${esc(FINDING_DISCLAIMER)}</s-paragraph>
 				</s-banner>`
