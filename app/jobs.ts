@@ -10,6 +10,8 @@ import {
 	EventSkus,
 	InventoryItems,
 	ShopLocations,
+	DigestSubscriptions,
+	DigestOutboxes,
 } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
@@ -19,13 +21,14 @@ import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
-import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
+import { RETENTION_TARGETS, OUTBOX_RETENTION_DAYS, OUTBOX_RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
 import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
 import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
 import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/stateBackfill.ts';
+import { runDigestBuild as runDigestBuildSweep, type DigestBuildDeps, type DigestBuildResult } from './src/digestBuild.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
@@ -222,6 +225,12 @@ export function runPurge(now = Date.now()): Promise<PurgeResult> {
 	return purgeExpired(RETENTION_TARGETS, now);
 }
 
+// The digest outbox keeps 30 days, not the ledger's 7: a digest is a record of
+// what the merchant was told, worth keeping after the events it described expire.
+export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
+	return purgeExpired(OUTBOX_RETENTION_TARGETS, now, OUTBOX_RETENTION_DAYS);
+}
+
 function purgeTick(): void {
 	void purgeTicker.run(async () => {
 		try {
@@ -240,6 +249,10 @@ function purgeTick(): void {
 			// via this warn line; the ops.snapshot also reflects it via backlog/age.
 			if (r.residue) log('warn', 'purge.residue', { residue: r.residue });
 			if (r.failures.length) log('warn', 'purge.failures', { count: r.failures.length, failures: r.failures });
+
+			const outbox = await runOutboxPurge();
+			if (outbox.deleted) log('trace', 'purge.outbox', { deleted: outbox.deleted });
+			if (outbox.failures.length) log('warn', 'purge.outbox.failures', { count: outbox.failures.length, failures: outbox.failures });
 		} catch (e: unknown) {
 			metrics.inc(M.purgeError);
 			log('error', 'purge.error', { message: (e as Error).message });
@@ -507,6 +520,56 @@ export function startProjectionStateBackfillLoop(): void {
 	setInterval(backfillTick, BACKFILL_INTERVAL_MS);
 }
 
+// Digest build (Plan C). Builds each subscriber's digest for the last COMPLETE
+// period and writes it to the outbox with status 'pending'. THERE IS NO
+// SENDER — delivery is a separate decision with its own compliance surface, so
+// this loop deliberately stops at a persisted, ready-to-send message.
+//
+// Idempotent by construction: the outbox id is `${shopId}:${periodStart}` and
+// the build decision keys on the subscription's lastBuiltAt, so overlapping
+// ticks across threads and cluster nodes converge on one row per period. The
+// orchestration itself is deps-injected and lives in src/digestBuild.ts (same
+// split as inventoryEnrich.ts/stateBackfill.ts) so it is unit-testable without
+// the Harper runtime. This section only wires the real tables and the tick.
+const DIGEST_INTERVAL_MS = 3_600_000; // hourly; the period check does the real gating
+const DIGEST_INITIAL_DELAY_MS = 90_000;
+const digestTicker = ticker('digest', 30 * 60_000);
+
+const digestBuildDeps: DigestBuildDeps = {
+	subscriptions: DigestSubscriptions as unknown as DigestBuildDeps['subscriptions'],
+	outboxes: DigestOutboxes,
+	projections: Projections as unknown as QueryTable,
+	findings: Findings as unknown as QueryTable,
+	events: Events as unknown as QueryTable,
+	deliveries: Deliveries as unknown as QueryTable,
+};
+
+export function runDigestBuild(now = Date.now()): Promise<DigestBuildResult> {
+	return runDigestBuildSweep(now, digestBuildDeps);
+}
+
+function digestTick(): void {
+	void digestTicker.run(async () => {
+		try {
+			const r = await runDigestBuild();
+			// Never log the address — it is the one merchant-identifying string held.
+			// notDue and quiet are logged separately (not combined into one
+			// "skipped" figure): they answer different questions when digests seem
+			// absent — were subscriptions even due, or did they build but decide not
+			// to send?
+			if (r.built || r.skippedQuiet)
+				log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue });
+		} catch (e: unknown) {
+			log('error', 'digest.error', { message: (e as Error).message });
+		}
+	});
+}
+
+export function startDigestLoop(): void {
+	setTimeout(digestTick, DIGEST_INITIAL_DELAY_MS);
+	setInterval(digestTick, DIGEST_INTERVAL_MS);
+}
+
 // Observability heartbeat (#22). Periodically derives the aggregate ops-health
 // (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
 // and emits it — with the cumulative metrics tally — as a single structured line.
@@ -549,4 +612,5 @@ startDetectorLoop();
 startReconcileLoop();
 startInventoryEnrichmentLoop();
 startProjectionStateBackfillLoop();
+startDigestLoop();
 startOpsSnapshotLoop();

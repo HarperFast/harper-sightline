@@ -62,6 +62,16 @@ test('build only for an active subscription with an address, once per period', (
 	assert.equal(shouldBuild({}, periodStart), false);
 });
 
+// Restates shouldBuild across a period boundary for the build loop's benefit
+// (src/digestBuild.ts) — already covered above by the '...once per period'
+// test, so this pins the behavior explicitly rather than adding new coverage.
+test('a period that has already been built is not rebuilt, whatever the clock says', () => {
+	const periodStart = periodStartFor('daily', NOW);
+	const subscription = { status: 'active', email: 'a@b.example', lastBuiltAt: periodStart };
+	assert.equal(shouldBuild(subscription, periodStart), false);
+	assert.equal(shouldBuild(subscription, periodStartFor('daily', NOW + DAY)), true);
+});
+
 test('a quiet, healthy period has nothing to say', () => {
 	assert.equal(hasSomethingToSay(input()), false);
 });
@@ -144,4 +154,14 @@ test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
 	assert.equal(row.createdAt, NOW);
 	assert.ok((row.bodyText ?? '').length > 0);
 	assert.ok((row.bodyHtml ?? '').length > 0);
+});
+
+// Restates the id's determinism for the build loop's benefit (src/digestBuild.ts):
+// this is what makes an overlapping tick/thread/node upsert rather than duplicate.
+// Already implied by the previous test's `row.id` assertion.
+test('an outbox id is stable for a period, so a rebuild overwrites rather than duplicating', () => {
+	const first = outboxRow(input({ unconfirmed: 1 }), 'a@b.example', NOW);
+	const second = outboxRow(input({ unconfirmed: 5 }), 'a@b.example', NOW + 1000);
+	assert.equal(first.id, second.id);
+	assert.notEqual(first.unconfirmed, second.unconfirmed);
 });
