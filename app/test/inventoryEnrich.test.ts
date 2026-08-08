@@ -1,7 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ENRICH_BATCH, inventoryItemRow, locationRow, skuRowsForInventoryEvent, unresolvedIds } from '../src/inventoryEnrich.ts';
+import {
+	ENRICH_BATCH,
+	checkpointId,
+	inventoryItemRow,
+	locationRow,
+	runInventoryEnrichment,
+	skuRowsForInventoryEvent,
+	unresolvedIds,
+	type EnrichDeps,
+} from '../src/inventoryEnrich.ts';
 import type { OperationalEvent } from '../src/model.ts';
+import { FakeTable } from './fakeTable.ts';
+import { setLogSink } from '../src/observe.ts';
 
 const NOW = 1_775_000_000_000;
 
@@ -46,4 +57,151 @@ test('an enriched inventory event gets exactly one SKU index row', () => {
 	assert.equal(rows[0].sku, 'TSHIRT');
 	assert.equal(rows[0].domain, 'inventory');
 	assert.equal(rows[0].receivedAt, NOW);
+});
+
+// ─── runInventoryEnrichment: convergence behind the durable checkpoint ─────────
+// These cover the deps-injected sweep itself (moved here from jobs.ts precisely
+// so it can be exercised with FakeTables and fake fetchers, with no Harper
+// runtime and no network — see the module comment in src/inventoryEnrich.ts).
+
+function inventoryEvent(overrides: Partial<OperationalEvent> & { eventId: string; resourceId: string }): Record<string, unknown> {
+	return {
+		shopId: 's1',
+		domain: 'inventory',
+		topic: 'inventory_levels/update',
+		quantity: 1,
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+		...overrides,
+	};
+}
+
+function harness() {
+	const shops = new FakeTable('shopId', [{ shopId: 's1', status: 'active' }]);
+	const events = new FakeTable('eventId');
+	const inventoryItems = new FakeTable('id');
+	const shopLocations = new FakeTable('id');
+	const eventSkus = new FakeTable('id');
+	const checkpoints = new FakeTable('id');
+	return { shops, events, inventoryItems, shopLocations, eventSkus, checkpoints };
+}
+
+// FakeTable's write surface is duck-typed against the model shape (Record vs.
+// the concrete row types) — cast the same way the other Fake* usages in this
+// suite do (test/eventSkus.test.ts) rather than widening the production interface
+// for a test fixture.
+function buildDeps(raw: ReturnType<typeof harness>, rest: Pick<EnrichDeps, 'getToken' | 'fetchItems' | 'fetchLocations'>): EnrichDeps {
+	return {
+		shops: raw.shops as unknown as EnrichDeps['shops'],
+		events: raw.events as unknown as EnrichDeps['events'],
+		inventoryItems: raw.inventoryItems as unknown as EnrichDeps['inventoryItems'],
+		shopLocations: raw.shopLocations as unknown as EnrichDeps['shopLocations'],
+		eventSkus: raw.eventSkus as unknown as EnrichDeps['eventSkus'],
+		checkpoints: raw.checkpoints as unknown as EnrichDeps['checkpoints'],
+		...rest,
+	};
+}
+
+test('a second tick against a converged shop makes no Admin API calls and writes no EventSku rows', async () => {
+	const raw = harness();
+	await raw.events.put(inventoryEvent({ eventId: 's1:e1', resourceId: 'i1' }));
+	let itemCalls = 0;
+	let locationCalls = 0;
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async (_shop: string, _token: string, ids: string[]) => {
+			itemCalls++;
+			return ids.map((id) => ({ inventoryItemId: id, sku: `SKU-${id}` }));
+		}) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => {
+			locationCalls++;
+			return [{ locationId: 'l1', name: 'Warehouse' }];
+		}) as EnrichDeps['fetchLocations'],
+	});
+
+	const first = await runInventoryEnrichment(NOW, deps);
+	assert.equal(first.items, 1);
+	assert.equal(first.locations, 1);
+	assert.equal(first.indexed, 1);
+	assert.equal(itemCalls, 1);
+	assert.equal(locationCalls, 1);
+
+	const second = await runInventoryEnrichment(NOW, deps);
+	assert.equal(itemCalls, 1, 'no new Admin API item calls on the second tick');
+	assert.equal(locationCalls, 1, 'no new Admin API location calls on the second tick');
+	assert.equal(second.items, 0);
+	assert.equal(second.indexed, 0, 'a converged shop writes no EventSku rows on the next tick');
+});
+
+test('a new event after a converged checkpoint is still indexed', async () => {
+	const raw = harness();
+	await raw.events.put(inventoryEvent({ eventId: 's1:e1', resourceId: 'i1' }));
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async (_shop: string, _token: string, ids: string[]) =>
+			ids.map((id) => ({ inventoryItemId: id, sku: `SKU-${id}` }))) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => [{ locationId: 'l1', name: 'Warehouse' }]) as EnrichDeps['fetchLocations'],
+	});
+
+	const first = await runInventoryEnrichment(NOW, deps);
+	assert.equal(first.indexed, 1);
+
+	// A brand-new event for the SAME (already-cached) item arrives after the
+	// checkpoint has advanced past the first one.
+	await raw.events.put(inventoryEvent({ eventId: 's1:e2', resourceId: 'i1', occurredAt: NOW + 1000, receivedAt: NOW + 1000 }));
+
+	const second = await runInventoryEnrichment(NOW + 1000, deps);
+	assert.equal(second.items, 0, 'the item is already cached — no new Admin API call');
+	assert.equal(second.indexed, 1, 'exactly the new event is indexed');
+});
+
+test('an item the Admin API cannot resolve is retried next tick, not skipped', async () => {
+	const raw = harness();
+	await raw.events.put(inventoryEvent({ eventId: 's1:e1', resourceId: 'iX' }));
+	let resolveNow = false;
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async () => (resolveNow ? [{ inventoryItemId: 'iX', sku: 'SKU-X' }] : [])) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+
+	const first = await runInventoryEnrichment(NOW, deps);
+	assert.equal(first.items, 0);
+	assert.equal(first.indexed, 0);
+	assert.equal(
+		raw.checkpoints.rows.get(checkpointId('s1'))?.cursor,
+		String(NOW),
+		'the checkpoint holds at the unresolved event rather than advancing past it',
+	);
+
+	resolveNow = true;
+	const second = await runInventoryEnrichment(NOW + 5000, deps);
+	assert.equal(second.items, 1, 'retried and resolved on the next tick');
+	assert.equal(second.indexed, 1, 'now that it resolved, the event is indexed');
+});
+
+test('a failing Admin API call for one shop does not abort the sweep for the rest', async () => {
+	const raw = harness();
+	await raw.shops.put({ shopId: 's2', status: 'active' });
+	await raw.events.put(inventoryEvent({ eventId: 's1:e1', shopId: 's1', resourceId: 'i1' }));
+	await raw.events.put(inventoryEvent({ eventId: 's2:e1', shopId: 's2', resourceId: 'i2' }));
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async (shop: string, _token: string, ids: string[]) => {
+			if (shop === 's1') throw new Error('admin api throttled');
+			return ids.map((id) => ({ inventoryItemId: id, sku: `SKU-${id}` }));
+		}) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+
+	setLogSink(() => {}); // this test deliberately triggers the warn path
+	try {
+		const result = await runInventoryEnrichment(NOW, deps);
+		assert.equal(result.items, 1, 's2 still resolves despite s1 throwing');
+		assert.equal(result.indexed, 1, 's2 is still indexed');
+		assert.equal(raw.inventoryItems.rows.has('s1:i1'), false, 's1 got no cached item after the failed call');
+	} finally {
+		setLogSink(null);
+	}
 });
