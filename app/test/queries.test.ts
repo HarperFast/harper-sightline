@@ -334,6 +334,21 @@ test('getFindingDetail joins expectation + projection, cross-tenant safe', async
 	assert.equal((d?.projection as Record<string, unknown>)?.orderId, 'o2');
 });
 
+test('findings can be filtered to one detector', async () => {
+	const { findings, expectations, projections } = fixtures();
+	await findings.put({
+		id: 'fulfillment_attempt_failed:s1:o1:1',
+		shopId: 's1',
+		orderId: 'o1',
+		detector: 'fulfillment_attempt_failed',
+		status: 'unconfirmed',
+		detectedAt: NOW - 100,
+	});
+	const page = await listFindings(findings, expectations, projections, 's1', { detector: 'fulfillment_attempt_failed' });
+	assert.equal(page.items.length, 1);
+	assert.equal(page.items[0].detector, 'fulfillment_attempt_failed');
+});
+
 test('getSummary counts reconcile to the fixtures, scoped to the tenant', async () => {
 	const f = fixtures();
 	const s = await getSummary(f, 's1', NOW);

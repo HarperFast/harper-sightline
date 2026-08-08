@@ -273,6 +273,7 @@ export class FindingsResource extends Resource {
 		const p = url.searchParams;
 		return listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
 			status: p.get('status') ?? undefined,
+			detector: p.get('detector') ?? undefined,
 			cursor: p.get('cursor') ?? undefined,
 			limit: p.get('limit') ?? undefined,
 		});

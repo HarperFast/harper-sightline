@@ -25,7 +25,16 @@ export const EVENT_FIELDS = [
 	'occurredAt',
 	'receivedAt',
 ] as const;
-export const FINDING_FIELDS = ['id', 'orderId', 'ruleVersion', 'status', 'detectedAt', 'resolvedAt', 'evidenceEventIds'] as const;
+export const FINDING_FIELDS = [
+	'id',
+	'orderId',
+	'detector',
+	'ruleVersion',
+	'status',
+	'detectedAt',
+	'resolvedAt',
+	'evidenceEventIds',
+] as const;
 // The findings LIST additionally carries the two order facts the screen spec's
 // list columns need (paid time, expected confirmation). They are joined from the
 // projection/expectation and allowlisted here so the join can never widen.
@@ -61,7 +70,7 @@ export const API_CONTRACT = {
 		},
 		eventDetail: { path: '/api/v1/events/:id', fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding'] },
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
-		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'cursor', 'limit'] },
+		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'detector', 'cursor', 'limit'] },
 		findingDetail: { path: '/api/v1/findings/:id', fields: [...FINDING_FIELDS, 'description', 'projection', 'expectation'] },
 		privacy: {
 			path: '/api/v1/privacy',

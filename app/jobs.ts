@@ -5,7 +5,7 @@ import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from '
 import { writeEventWithSkus } from './src/eventSkus.ts';
 import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { uninstallShop } from './src/lifecycle.ts';
-import { evaluateOrder, detectorKey } from './src/detector.ts';
+import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
@@ -52,14 +52,17 @@ async function updateOrderProjection(shopId: string, orderId: string): Promise<v
 	if (projection) await Projections.put(projection);
 }
 
-// Run the fulfillment-confirmation detector for one order (#14): evaluate its
-// projection against the rule and upsert the expectation + finding. Deterministic
+// Run every detector for one order (#14 + failed-attempt detector): evaluate the
+// projection against each rule and upsert its expectation/finding. Deterministic
 // keys make this idempotent; evidence is the order's normalized event ids.
+//
+// The failed-attempt detector writes NO expectation — it has no deadline, so
+// there is nothing for the periodic sweep to expire. It is therefore evaluated
+// only on order events (which is sufficient: its state changes only when a new
+// fulfillment/cancel/refund event arrives).
 async function runDetectorForOrder(shopId: string, orderId: string, now = Date.now()): Promise<void> {
 	const projection = await Projections.get(`${shopId}:${orderId}`);
 	if (!projection) return;
-	const id = detectorKey(shopId, orderId);
-	const [expectation, finding] = await Promise.all([Expectations.get(id), Findings.get(id)]);
 	const evidenceEventIds: string[] = [];
 	for await (const e of Events.search({
 		conditions: [
@@ -73,6 +76,9 @@ async function runDetectorForOrder(shopId: string, orderId: string, now = Date.n
 		if (typeof eid === 'string') evidenceEventIds.push(eid);
 	}
 	evidenceEventIds.sort();
+
+	const confirmationId = detectorKey(shopId, orderId);
+	const [expectation, finding] = await Promise.all([Expectations.get(confirmationId), Findings.get(confirmationId)]);
 	const result = evaluateOrder({
 		projection,
 		now,
@@ -81,6 +87,16 @@ async function runDetectorForOrder(shopId: string, orderId: string, now = Date.n
 	});
 	if (result.expectation) await Expectations.put(result.expectation);
 	if (result.finding) await Findings.put(result.finding);
+
+	const failedId = detectorKey(shopId, orderId, FAILED_RULE);
+	const priorFailed = (await Findings.get(failedId)) as GapFinding | undefined;
+	const failed = evaluateFailedFulfillment({
+		projection,
+		now,
+		evidenceEventIds,
+		prior: { finding: priorFailed },
+	});
+	if (failed.finding) await Findings.put(failed.finding);
 }
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload

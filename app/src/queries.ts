@@ -190,6 +190,7 @@ export async function getEventDetail(
 
 export interface FindingQueryParams {
 	status?: string;
+	detector?: string;
 	cursor?: string;
 	limit?: unknown;
 }
@@ -208,6 +209,7 @@ export async function listFindings(
 ): Promise<Page> {
 	const conditions: QuerySpec['conditions'] = [{ attribute: 'shopId', value: shopId }];
 	if (params.status) conditions.push({ attribute: 'status', value: params.status });
+	if (params.detector) conditions.push({ attribute: 'detector', value: params.detector });
 	const page = await keysetPageDesc(findings, conditions, 'detectedAt', 'id', FINDING_FIELDS, params.cursor, params.limit);
 
 	const items = await Promise.all(
