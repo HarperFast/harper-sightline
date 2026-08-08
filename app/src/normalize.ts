@@ -68,6 +68,14 @@ interface EventFields {
 	sku?: string;
 	quantity?: number;
 	fulfillableItemCount?: number;
+	orderName?: string;
+	totalPrice?: number;
+	currency?: string;
+	locationId?: string;
+	hasTracking?: boolean;
+	trackingCompany?: string;
+	shipmentStatus?: string;
+	skus?: string[];
 }
 
 // Units of an order still requiring physical fulfillment, from line_items.
@@ -87,29 +95,88 @@ function fulfillableUnits(lineItems: unknown): number | undefined {
 	return total;
 }
 
+// Cap on SKUs carried per event. An order with hundreds of line items would
+// otherwise fan out into hundreds of EventSku index rows (Task 5), which is real
+// storage against a 7-day window; twenty is enough to identify what is in an
+// order without letting one pathological order dominate the ledger.
+export const MAX_EVENT_SKUS = 20;
+
+// Distinct SKUs from a line-item array, in first-seen order, capped. `nested`
+// handles refund_line_items, where the SKU lives on an inner `line_item` object.
+export function skusFromLineItems(lineItems: unknown, skuPath: 'direct' | 'nested' = 'direct'): string[] {
+	if (!Array.isArray(lineItems)) return [];
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const line of lineItems) {
+		if (!line || typeof line !== 'object') continue;
+		const holder = skuPath === 'nested' ? (line as Payload).line_item : line;
+		if (!holder || typeof holder !== 'object') continue;
+		const sku = asString((holder as Payload).sku);
+		if (!sku || seen.has(sku)) continue;
+		seen.add(sku);
+		out.push(sku);
+		if (out.length >= MAX_EVENT_SKUS) break;
+	}
+	return out;
+}
+
+// True when the fulfillment carried any tracking number. Deliberately a
+// PRESENCE boolean: "fulfilled with no tracking" is the operational signal, and
+// storing the numbers themselves would be per-shipment data we have no use for.
+function hasAnyTracking(payload: Payload): boolean {
+	const numbers = payload.tracking_numbers;
+	if (Array.isArray(numbers)) return numbers.some((n) => asString(n) !== undefined);
+	return asString(payload.tracking_number) !== undefined;
+}
+
+// A normalized event plus its SKU list. `skus` is NOT an OperationalEvent column
+// — the events table holds a scalar sku only — so the writer strips it and fans
+// it out into EventSku index rows instead (src/eventSkus.ts).
+export type NormalizedEvent = OperationalEvent & { skus?: string[] };
+
 // One event per delivery, keyed deterministically by (shop, webhookId) so a
 // reprocessed delivery upserts the same row (idempotent — ADR-002). Only the
 // approved, non-PII fields from the contract are carried.
-function toEvent(meta: DeliveryMeta, fields: EventFields): OperationalEvent {
+function toEvent(meta: DeliveryMeta, fields: EventFields): NormalizedEvent {
 	return {
 		eventId: `${meta.shopId}:${meta.webhookId}`,
 		shopId: meta.shopId,
 		domain: fields.domain,
 		topic: meta.topic,
 		resourceId: fields.resourceId,
-		sku: fields.sku,
+		// The scalar `sku` column stays meaningful only when the event has exactly
+		// one SKU (inventory after enrichment, a single-line order); multi-SKU
+		// events are searchable through EventSku instead of by a lossy first-SKU.
+		sku: fields.skus?.length === 1 ? fields.skus[0] : undefined,
 		quantity: fields.quantity,
 		fulfillableItemCount: fields.fulfillableItemCount,
 		state: fields.state,
 		source: 'webhook',
 		occurredAt: fields.occurredAt,
 		receivedAt: meta.receivedAt,
+		orderName: fields.orderName,
+		totalPrice: fields.totalPrice,
+		currency: fields.currency,
+		locationId: fields.locationId,
+		hasTracking: fields.hasTracking,
+		trackingCompany: fields.trackingCompany,
+		shipmentStatus: fields.shipmentStatus,
+		skus: fields.skus,
 	};
 }
 
 // ─── per-domain normalizers ───────────────────────────────────────────────────
 
-function normalizeOrder(payload: Payload, meta: DeliveryMeta): OperationalEvent {
+// Shopify's merchant-facing order label. `name` is authoritative ("#1001"); when
+// a payload carries only the bare number, reconstruct the same shape.
+function orderName(payload: Payload): string | undefined {
+	const name = asString(payload.name);
+	if (name) return name;
+	const number = asNumber(payload.order_number);
+	return number === undefined ? undefined : `#${number}`;
+}
+
+function normalizeOrder(payload: Payload, meta: DeliveryMeta): NormalizedEvent {
 	const orderId = asId(payload.id);
 	if (!orderId) throw new PermanentNormalizeError(`${meta.topic}: missing order id`);
 	return toEvent(meta, {
@@ -118,10 +185,16 @@ function normalizeOrder(payload: Payload, meta: DeliveryMeta): OperationalEvent 
 		state: asString(payload.financial_status) ?? asString(payload.fulfillment_status),
 		fulfillableItemCount: fulfillableUnits(payload.line_items),
 		occurredAt: occurredAt(payload, ['updated_at', 'processed_at', 'cancelled_at', 'created_at'], meta),
+		orderName: orderName(payload),
+		// current_total_price reflects the order after edits; total_price is the
+		// original. Prefer current, fall back to original.
+		totalPrice: asNumber(payload.current_total_price) ?? asNumber(payload.total_price),
+		currency: asString(payload.currency),
+		skus: skusFromLineItems(payload.line_items),
 	});
 }
 
-function normalizeFulfillment(payload: Payload, meta: DeliveryMeta): OperationalEvent {
+function normalizeFulfillment(payload: Payload, meta: DeliveryMeta): NormalizedEvent {
 	// resourceId links the fulfillment to its order — the linkage the detector needs.
 	const orderId = asId(payload.order_id);
 	if (!orderId) throw new PermanentNormalizeError(`${meta.topic}: missing order_id`);
@@ -130,10 +203,15 @@ function normalizeFulfillment(payload: Payload, meta: DeliveryMeta): Operational
 		resourceId: orderId,
 		state: asString(payload.status), // pending | open | success | cancelled | error | failure
 		occurredAt: occurredAt(payload, ['updated_at', 'created_at'], meta),
+		locationId: asId(payload.location_id),
+		hasTracking: hasAnyTracking(payload),
+		trackingCompany: asString(payload.tracking_company),
+		shipmentStatus: asString(payload.shipment_status),
+		skus: skusFromLineItems(payload.line_items),
 	});
 }
 
-function normalizeInventory(payload: Payload, meta: DeliveryMeta): OperationalEvent {
+function normalizeInventory(payload: Payload, meta: DeliveryMeta): NormalizedEvent {
 	const inventoryItemId = asId(payload.inventory_item_id);
 	if (!inventoryItemId) throw new PermanentNormalizeError(`${meta.topic}: missing inventory_item_id`);
 	return toEvent(meta, {
@@ -141,6 +219,9 @@ function normalizeInventory(payload: Payload, meta: DeliveryMeta): OperationalEv
 		resourceId: inventoryItemId,
 		quantity: asNumber(payload.available),
 		occurredAt: occurredAt(payload, ['updated_at'], meta),
+		locationId: asId(payload.location_id),
+		// SKU is not in an inventory payload — it is resolved later from the
+		// InventoryItem cache (src/inventoryEnrich.ts).
 	});
 }
 
@@ -162,7 +243,7 @@ function sumRefundQuantity(value: unknown): number | undefined {
 	return sawAny ? total : undefined;
 }
 
-function normalizeRefund(payload: Payload, meta: DeliveryMeta): OperationalEvent {
+function normalizeRefund(payload: Payload, meta: DeliveryMeta): NormalizedEvent {
 	const orderId = asId(payload.order_id);
 	if (!orderId) throw new PermanentNormalizeError(`${meta.topic}: missing order_id`);
 	return toEvent(meta, {
@@ -171,13 +252,14 @@ function normalizeRefund(payload: Payload, meta: DeliveryMeta): OperationalEvent
 		state: 'refunded',
 		quantity: sumRefundQuantity(payload.refund_line_items),
 		occurredAt: occurredAt(payload, ['processed_at', 'created_at'], meta),
+		skus: skusFromLineItems(payload.refund_line_items, 'nested'),
 	});
 }
 
 // Topic → normalizer. Only the selected operational topics (shopify-contract §3)
 // are here; lifecycle/compliance topics (app/uninstalled, customers/*, shop/*)
 // are intentionally absent — they are accepted but produce no operational event.
-const NORMALIZERS: Record<string, (payload: Payload, meta: DeliveryMeta) => OperationalEvent> = {
+const NORMALIZERS: Record<string, (payload: Payload, meta: DeliveryMeta) => NormalizedEvent> = {
 	'orders/create': normalizeOrder,
 	'orders/paid': normalizeOrder,
 	'orders/updated': normalizeOrder,
@@ -197,7 +279,7 @@ export function isOperationalTopic(topic: string): boolean {
 // Normalize one delivery into its operational events. Returns [] for a topic we
 // accept but don't record (lifecycle/compliance). Throws PermanentNormalizeError
 // for a broken/unsupported operational payload so the worker dead-letters it.
-export function normalizeDelivery(meta: DeliveryMeta, payload: unknown): OperationalEvent[] {
+export function normalizeDelivery(meta: DeliveryMeta, payload: unknown): NormalizedEvent[] {
 	const normalize = NORMALIZERS[meta.topic];
 	if (!normalize) return [];
 	if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
