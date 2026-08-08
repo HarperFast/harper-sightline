@@ -1260,6 +1260,29 @@ export function notificationsView(settings: DigestSettings, now: number, strip: 
 	);
 }
 
+// What a failed apiSaveDigest() means for the screen. Lives here rather than in
+// main.ts (alongside eventQuery/orderQuery, the other pure request/response
+// shaping helpers a screen's click handler consumes) because the decision is pure
+// — a string in, a rendering instruction out — and a click handler is not
+// something the test suite can reach, which is exactly how this gap survived the
+// first pass: the logic lived only inside main.ts's DOM listener.
+//
+// A 401 means the short-lived session token expired while the merchant was
+// looking at the form — route() (main.ts) already handles this for every OTHER
+// screen by rendering authExpiredView(), but a button click never goes through
+// the router, so the save handler must ask this function to make the same call.
+// Anything that isn't a 400 with a usable detail (including a network failure,
+// where apiSaveDigest's fetch rejects before any status exists at all, so the
+// message carries no leading status number) gets one generic sentence — a bare
+// HTTP status code is not a message a merchant should have to decode.
+export type SaveErrorAction = { kind: 'reauthorize' } | { kind: 'banner'; text: string };
+
+export function saveErrorAction(message: string): SaveErrorAction {
+	if (/^401\b/.test(message)) return { kind: 'reauthorize' };
+	const detail = message.match(/^400\b\s*(.*)$/)?.[1]?.trim();
+	return detail ? { kind: 'banner', text: detail } : { kind: 'banner', text: 'Could not save. Please try again.' };
+}
+
 // ── privacy ──────────────────────────────────────────────────────────────────
 export function privacyView(p: Privacy, now: number, strip: string): string {
 	return page(

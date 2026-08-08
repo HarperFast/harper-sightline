@@ -41,6 +41,7 @@ import {
 	overviewView,
 	parseHash,
 	privacyView,
+	saveErrorAction,
 	setShop,
 	setSupport,
 	setupView,
@@ -1300,6 +1301,56 @@ test('a save confirmation is shown on success', () => {
 test('a hostile stored address cannot inject markup', () => {
 	const html = notificationsView(digestSettings({ email: '"><script>alert(1)</script>' }), NOW, '');
 	assert.doesNotMatch(html, /<script>alert/);
+});
+
+test('a hostile save-result message cannot inject markup', () => {
+	// message.text is server-supplied (a 400's validation reason) and reaches the
+	// view the same way settings.email does; esc() already covers it at the call
+	// site, but nothing proved that until now.
+	const html = notificationsView(digestSettings(), NOW, '', { tone: 'critical', text: '"><script>alert(1)</script>' });
+	assert.doesNotMatch(html, /<script>alert/);
+});
+
+// ── save-error handling ──────────────────────────────────────────────────────
+// saveErrorAction is what the save click handler (main.ts) asks to decide what a
+// thrown apiSaveDigest() message means. Extracted as a pure function specifically
+// so this decision — previously inline in a DOM listener the suite could not
+// reach — is testable at all; that gap is what let a 401 render as the bare
+// string "401" instead of prompting reauthorization the way route() does for
+// every other screen.
+
+test('a 401 asks the screen to reauthorize, not display the bare status', () => {
+	assert.deepEqual(saveErrorAction('401'), { kind: 'reauthorize' });
+});
+
+test('a 401 with a trailing detail still asks the screen to reauthorize', () => {
+	// The session-expiry banner replaces the whole screen, so any detail Harper's
+	// 401 body carried is irrelevant — only the status matters here.
+	assert.deepEqual(saveErrorAction('401 something'), { kind: 'reauthorize' });
+});
+
+test('a 400 with a validation reason shows that reason', () => {
+	assert.deepEqual(saveErrorAction('400 email is not a valid address'), { kind: 'banner', text: 'email is not a valid address' });
+});
+
+test('a bare 400 with no detail falls back to a sentence, not an empty banner', () => {
+	assert.deepEqual(saveErrorAction('400'), { kind: 'banner', text: 'Could not save. Please try again.' });
+});
+
+test('a 500 is never shown to the merchant as a bare status code', () => {
+	// The pre-fix handler only stripped a leading "400" — a 500 (or any other
+	// non-400/401 status) passed straight through and rendered as the string "500".
+	assert.deepEqual(saveErrorAction('500'), { kind: 'banner', text: 'Could not save. Please try again.' });
+});
+
+test('a message with no leading status at all — a network failure — gets the same generic sentence', () => {
+	// apiSaveDigest's fetch() call can reject before any HTTP response exists (the
+	// request never reached the server), in which case the caught error's message
+	// is whatever the runtime's fetch implementation throws (e.g. "fetch failed" or
+	// "Failed to fetch") — never a leading status number. This must not be treated
+	// as an unrecognized status code that happens not to match; it is the same
+	// "nothing useful to show" case as 500.
+	assert.deepEqual(saveErrorAction('fetch failed'), { kind: 'banner', text: 'Could not save. Please try again.' });
 });
 
 test('a never-checked subscription says so, in its own status line', () => {

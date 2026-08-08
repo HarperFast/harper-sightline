@@ -37,6 +37,7 @@ import {
 	overviewView,
 	parseHash,
 	privacyView,
+	saveErrorAction,
 	setShop,
 	setSupport,
 	setupView,
@@ -319,9 +320,12 @@ async function notifications(message?: { tone: string; text: string }): Promise<
 				await apiSaveDigest({ email: fieldValue('f-email'), cadence: fieldValue('f-cadence') });
 				await notifications({ tone: 'success', text: 'Saved.' });
 			} catch (err) {
-				// A 400 carries the validation reason; show it rather than a bare code.
-				const text = String((err as Error).message).replace(/^400\s*/, '') || 'Could not save.';
-				await notifications({ tone: 'critical', text });
+				const action = saveErrorAction(String((err as Error).message));
+				// A click handler never goes through route(), so it doesn't get that
+				// function's 401 → authExpiredView() handling for free — ask for the same
+				// decision explicitly rather than showing the merchant a bare "401".
+				if (action.kind === 'reauthorize') render(authExpiredView());
+				else await notifications({ tone: 'critical', text: action.text });
 			}
 		})();
 	});
