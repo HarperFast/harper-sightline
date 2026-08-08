@@ -119,6 +119,97 @@ function fixtures() {
 	return { events, projections, findings, expectations, deliveries, shops, credentials };
 }
 
+function skuFixtures() {
+	return new FakeTable('id', [
+		{
+			id: 's1:e1:TSHIRT',
+			shopId: 's1',
+			eventId: 's1:e1',
+			sku: 'TSHIRT',
+			domain: 'order',
+			topic: 'orders/paid',
+			source: 'webhook',
+			resourceId: 'o1',
+			occurredAt: NOW - 1000,
+			receivedAt: NOW - 1000,
+		},
+		{
+			id: 's1:e2:TSHIRT',
+			shopId: 's1',
+			eventId: 's1:e2',
+			sku: 'TSHIRT',
+			domain: 'fulfillment',
+			topic: 'fulfillments/create',
+			source: 'webhook',
+			resourceId: 'o1',
+			occurredAt: NOW - 500,
+			receivedAt: NOW - 500,
+		},
+		{
+			id: 's2:e1:TSHIRT',
+			shopId: 's2',
+			eventId: 's2:e1',
+			sku: 'TSHIRT',
+			domain: 'order',
+			topic: 'orders/paid',
+			source: 'webhook',
+			resourceId: 'o1',
+			occurredAt: NOW - 900,
+			receivedAt: NOW - 900,
+		},
+	]);
+}
+
+test('a SKU filter returns the shop own matching events, newest first', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT' }, skuFixtures());
+	assert.deepEqual(
+		page.items.map((i) => i.eventId),
+		['s1:e2', 's1:e1'],
+	);
+});
+
+test('a SKU filter never returns another tenant event that shares the SKU', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT' }, skuFixtures());
+	for (const item of page.items) assert.equal(String(item.eventId).startsWith('s1:'), true);
+});
+
+test('a SKU filter combines with a domain filter without post-filtering the page', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT', domain: 'fulfillment' }, skuFixtures());
+	assert.deepEqual(
+		page.items.map((i) => i.eventId),
+		['s1:e2'],
+	);
+});
+
+test('a SKU with no index rows returns an empty page, not every event', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'NOPE' }, skuFixtures());
+	assert.deepEqual(page.items, []);
+});
+
+test('an index row whose event is missing is skipped, not returned as a phantom', async () => {
+	const { events } = fixtures();
+	const orphaned = skuFixtures();
+	await orphaned.put({
+		id: 's1:gone:TSHIRT',
+		shopId: 's1',
+		eventId: 's1:gone',
+		sku: 'TSHIRT',
+		domain: 'order',
+		source: 'webhook',
+		occurredAt: NOW - 100,
+		receivedAt: NOW - 100,
+	});
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT' }, orphaned);
+	assert.equal(
+		page.items.some((i) => i.eventId === 's1:gone'),
+		false,
+	);
+});
+
 test('listEvents is tenant-scoped, windowed, and field-allowlisted', async () => {
 	const { events } = fixtures();
 	const page = await listEvents(events, 's1', NOW, {});

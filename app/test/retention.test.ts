@@ -87,3 +87,15 @@ test('a failing table is captured, others still purge', async () => {
 test('cutoffMs default window is seven days', () => {
 	assert.equal(cutoffMs(NOW), NOW - RETENTION_DAYS * DAY_MS);
 });
+
+test('EventSku rows are purged with their events', async () => {
+	const eventSkus = new FakeTable('id', [
+		{ id: 'old:A', shopId: 's1', eventId: 'old', sku: 'A', receivedAt: NOW - 8 * DAY_MS, occurredAt: NOW - 8 * DAY_MS },
+		{ id: 'new:A', shopId: 's1', eventId: 'new', sku: 'A', receivedAt: NOW - 1 * DAY_MS, occurredAt: NOW - 1 * DAY_MS },
+	]);
+	const result = await purgeExpired([{ name: 'EventSku', keyField: 'id', tsField: 'receivedAt', table: eventSkus }], NOW);
+	assert.equal(result.deleted, 1);
+	assert.equal(result.residue, 0);
+	assert.equal(await eventSkus.get('old:A'), undefined);
+	assert.notEqual(await eventSkus.get('new:A'), undefined);
+});

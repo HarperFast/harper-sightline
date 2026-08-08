@@ -1,4 +1,4 @@
-import { Shops, Credentials, AuditEvents, Deliveries, Events, Projections, Expectations, Findings, Aggregates } from './db.ts';
+import { Shops, Credentials, AuditEvents, Deliveries, Events, Projections, Expectations, Findings, Aggregates, EventSkus } from './db.ts';
 import type { RetentionTarget, PurgeableTable } from './retention.ts';
 import type { RedactTarget } from './redaction.ts';
 
@@ -14,6 +14,7 @@ function purgeable(table: unknown): PurgeableTable {
 export const RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'WebhookDelivery', keyField: 'id', tsField: 'receivedAt', table: purgeable(Deliveries) },
 	{ name: 'OperationalEvent', keyField: 'eventId', tsField: 'receivedAt', table: purgeable(Events) },
+	{ name: 'EventSku', keyField: 'id', tsField: 'receivedAt', table: purgeable(EventSkus) },
 	{ name: 'OrderProjection', keyField: 'id', tsField: 'lastEventAt', table: purgeable(Projections) },
 	{ name: 'Expectation', keyField: 'id', tsField: 'createdAt', table: purgeable(Expectations) },
 	{ name: 'GapFinding', keyField: 'id', tsField: 'detectedAt', table: purgeable(Findings) },
@@ -27,6 +28,7 @@ export const RETENTION_TARGETS: RetentionTarget[] = [
 export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'WebhookDelivery', keyField: 'id', shopField: 'shopId', table: purgeable(Deliveries) },
 	{ name: 'OperationalEvent', keyField: 'eventId', shopField: 'shopId', orderField: 'resourceId', table: purgeable(Events) },
+	{ name: 'EventSku', keyField: 'id', shopField: 'shopId', orderField: 'resourceId', table: purgeable(EventSkus) },
 	{ name: 'OrderProjection', keyField: 'id', shopField: 'shopId', orderField: 'orderId', table: purgeable(Projections) },
 	{ name: 'Expectation', keyField: 'id', shopField: 'shopId', orderField: 'orderId', table: purgeable(Expectations) },
 	{ name: 'GapFinding', keyField: 'id', shopField: 'shopId', orderField: 'orderId', table: purgeable(Findings) },

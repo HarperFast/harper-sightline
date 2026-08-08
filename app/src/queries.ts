@@ -94,7 +94,19 @@ export interface EventQueryParams {
 
 // GET /events — the searchable 7-day operational ledger, tenant-scoped, filtered,
 // cursor-paginated. The window floor is max(caller since, now − 7 days).
-export async function listEvents(events: QueryTable, shopId: string, now: number, params: EventQueryParams): Promise<Page> {
+//
+// A `sku` filter takes a different path: SKUs live in the EventSku index (one row
+// per event/SKU) because an order has many and the event row holds one scalar.
+// The index carries the other filterable fields, so the SKU path is an ordinary
+// keyset page over EventSku followed by a keyed hydrate — no post-filtering, so
+// a page is never short and `nextCursor` never lies.
+export async function listEvents(
+	events: QueryTable,
+	shopId: string,
+	now: number,
+	params: EventQueryParams,
+	eventSkus?: QueryTable,
+): Promise<Page> {
 	const windowStart = Math.max(params.since ?? 0, now - WINDOW_MS);
 	const conditions: QuerySpec['conditions'] = [
 		{ attribute: 'shopId', value: shopId },
@@ -105,13 +117,39 @@ export async function listEvents(events: QueryTable, shopId: string, now: number
 		['domain', params.domain],
 		['topic', params.topic],
 		['resourceId', params.resourceId],
-		['sku', params.sku],
 		// `source` distinguishes webhook-observed from reconciliation-recovered
 		// evidence (screen spec §3 "evidence source" filter).
 		['source', params.source],
 	] as const) {
 		if (val) conditions.push({ attribute: attr, value: val });
 	}
+
+	if (params.sku && eventSkus) {
+		const indexPage = await keysetPageDesc(
+			eventSkus,
+			[...conditions, { attribute: 'sku', value: params.sku }],
+			'occurredAt',
+			'id',
+			['eventId'],
+			params.cursor,
+			params.limit,
+		);
+		const hydrated: Array<Record<string, unknown>> = [];
+		for (const row of indexPage.items) {
+			const event = await events.get(String(row.eventId));
+			// An index row whose event is gone (purged mid-page, or written before its
+			// event landed) is skipped rather than surfaced as a phantom result.
+			if (event && event.shopId === shopId) hydrated.push(pick(event, EVENT_FIELDS));
+		}
+		return { items: hydrated, nextCursor: indexPage.nextCursor };
+	}
+
+	// No EventSku table wired (or no sku filter requested): fall back to the
+	// scalar `sku` column directly. That column is only ever populated for a
+	// single-SKU event, so this path still answers a single-SKU query correctly
+	// when a caller hasn't (or can't) supply the index table.
+	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
+
 	return keysetPageDesc(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
 }
 

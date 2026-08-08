@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { eventSkuRows, stripSkus, writeEventWithSkus } from '../src/eventSkus.ts';
+import { eventSkuRows, stripSkus, writeEventWithSkus, type WritableTable } from '../src/eventSkus.ts';
 import type { NormalizedEvent } from '../src/normalize.ts';
+import type { EventSku, OperationalEvent } from '../src/model.ts';
 
 const NOW = 1_775_000_000_000;
 
@@ -53,8 +54,12 @@ test('stripSkus removes the transport-only field so it is never stored', () => {
 test('writing the same event twice is idempotent — deterministic keys upsert', async () => {
 	const events = new FakeTable('eventId');
 	const eventSkus = new FakeTable('id');
-	await writeEventWithSkus({ events, eventSkus }, event());
-	await writeEventWithSkus({ events, eventSkus }, event());
+	// FakeTable's write surface is duck-typed against WritableTable<T> (Record vs.
+	// the concrete model shape); cast the same way the other Fake* usages in this
+	// suite do rather than widening the production interface for a test fixture.
+	const deps = { events: events as unknown as WritableTable<OperationalEvent>, eventSkus: eventSkus as unknown as WritableTable<EventSku> };
+	await writeEventWithSkus(deps, event());
+	await writeEventWithSkus(deps, event());
 	assert.equal(events.rows.size, 1);
 	assert.equal(eventSkus.rows.size, 2);
 	assert.equal('skus' in (await events.get('s1:w1'))!, false);

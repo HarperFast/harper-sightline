@@ -1,7 +1,8 @@
-import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops, Credentials } from './src/db.ts';
+import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops, Credentials, EventSkus } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
+import { writeEventWithSkus } from './src/eventSkus.ts';
 import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey } from './src/detector.ts';
@@ -137,7 +138,7 @@ const deps: ProcessDeps = {
 		const meta = { shopId: row.shopId, topic: row.topic, webhookId: row.webhookId, receivedAt: row.receivedAt };
 		// Deterministic eventId → idempotent upsert on reprocessing (ADR-002).
 		for (const event of normalizeDelivery(meta, payload)) {
-			await Events.put(event);
+			await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
 			// Maintain the order projection (#12), then evaluate the detector (#14)
 			// so paid/fulfilled/cancelled transitions are reflected immediately.
 			if (isOrderLinked(event)) {
@@ -322,7 +323,9 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 	do {
 		const page = await fetchOrdersUpdatedSince(shopId, token, sinceMs, cursor);
 		for (const order of page.orders) {
-			for (const event of synthesizeEvents(shopId, order)) await Events.put(event);
+			for (const event of synthesizeEvents(shopId, order)) {
+				await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
+			}
 			await updateOrderProjection(shopId, order.orderId);
 			await runDetectorForOrder(shopId, order.orderId, now);
 			if (order.updatedAt && order.updatedAt > latest) latest = order.updatedAt;
