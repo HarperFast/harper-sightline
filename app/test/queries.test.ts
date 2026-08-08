@@ -100,10 +100,12 @@ function fixtures() {
 			id: 's1:o2',
 			shopId: 's1',
 			orderId: 'o2',
-			// o2 is paid seconds ago — the most recent order in this fixture set — so its
-			// number must sit ABOVE the worklist set's highest (#1004, oD), never below
-			// it: order names increase over time, and a lower number on the newer order
-			// would make the fixtures tell two contradictory stories about ordering.
+			// The whole s1 set below is numbered by paidAt, oldest to newest: oC (80h)
+			// #1001, oB (30h) #1002, oD (5h) #1003, oA (2h) #1004, and o2 (2s — the
+			// most recent order in the fixture set) #1005. Order names increase over
+			// time in Shopify, so a fixture whose numbers don't track paidAt tells two
+			// contradictory stories about ordering — keep them in this order when
+			// adding or editing rows here, not in whatever order is convenient to type.
 			orderName: '#1005',
 			paidAt: NOW - 2000,
 			requiresFulfillment: true,
@@ -116,7 +118,7 @@ function fixtures() {
 			id: 's1:oA',
 			shopId: 's1',
 			orderId: 'oA',
-			orderName: '#1001',
+			orderName: '#1004',
 			paidAt: NOW - 2 * HOUR,
 			requiresFulfillment: true,
 			state: 'awaiting',
@@ -141,7 +143,7 @@ function fixtures() {
 			id: 's1:oC',
 			shopId: 's1',
 			orderId: 'oC',
-			orderName: '#1003',
+			orderName: '#1001',
 			paidAt: NOW - 80 * HOUR,
 			requiresFulfillment: true,
 			state: 'awaiting',
@@ -151,7 +153,7 @@ function fixtures() {
 			id: 's1:oD',
 			shopId: 's1',
 			orderId: 'oD',
-			orderName: '#1004',
+			orderName: '#1003',
 			paidAt: NOW - 5 * HOUR,
 			requiresFulfillment: true,
 			state: 'fulfilled',
@@ -450,6 +452,7 @@ test('listFindings join never crosses tenants', async () => {
 	const [item] = (await listFindings(findings, expectations, projections, 's2', {})).items;
 	assert.equal(item.paidAt, undefined, 'no s1 projection leaked into an s2 row');
 	assert.equal(item.deadline, undefined, 'no s1 expectation leaked into an s2 row');
+	assert.equal(item.orderName, undefined, 'no s1 order name leaked into an s2 row');
 });
 
 test('the findings list carries the merchant-facing order name', async () => {
@@ -460,9 +463,14 @@ test('the findings list carries the merchant-facing order name', async () => {
 });
 
 test('the findings join never takes another tenant order name', async () => {
+	// A smoke check, not the guard's real coverage: s1's only finding is joined to
+	// order o2, and s2's differently-named order is oA — those never collide at the
+	// `${shopId}:${orderId}` lookup key, so this passes whether or not the
+	// `projection.shopId === shopId` guard actually works. The genuine shared-key
+	// case — an s2 finding whose orderId is also an s1 order id — is exercised by
+	// 'listFindings join never crosses tenants' above, which is where the guard is
+	// actually proven.
 	const { findings, expectations, projections } = fixtures();
-	// s2 has an order with the same id and a different name; s1's finding must not
-	// inherit it.
 	const page = await listFindings(findings, expectations, projections, 's1', {});
 	for (const item of page.items) assert.notEqual(item.orderName, '#9999');
 });
@@ -761,7 +769,7 @@ test('orders default to newest-paid first and carry the worklist columns', async
 		['o1', 'o2', 'oA', 'oD', 'oB', 'oC'],
 	);
 	const first = page.items.find((i) => i.orderId === 'oA')!;
-	assert.equal(first.orderName, '#1001');
+	assert.equal(first.orderName, '#1004');
 	assert.equal(first.state, 'awaiting');
 	assert.equal(first.orderTotal, 50);
 	assert.equal(first.currency, 'USD');

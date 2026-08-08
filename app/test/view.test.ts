@@ -739,14 +739,35 @@ test('findings and needs-attention rows show the order name when known', () => {
 		paidAt: NOW - 73 * HOUR,
 		deadline: NOW - HOUR,
 	};
-	assert.match(findingsListView({}, [item], NOW, ''), /#1001/);
-	assert.match(needsAttention([item], NOW), /#1001/);
+	const list = findingsListView({}, [item], NOW, '');
+	const attention = needsAttention([item], NOW);
+	assert.match(list, /#1001/);
+	assert.match(attention, /#1001/);
+	// The task's core promise: a way into Shopify Admin from the row, not just the
+	// merchant-facing name. Regression-proofs findingsListView and needsAttention
+	// each still call adminOrderLink for their order cell.
+	assert.match(list, /admin\.shopify\.com\/store\/acme-store\/orders\/7518851989809/);
+	assert.match(attention, /admin\.shopify\.com\/store\/acme-store\/orders\/7518851989809/);
 });
 
 test('findings fall back to the raw order id when no name was captured', () => {
 	setShop(undefined);
 	const item: FindingItem = { id: 'f1', orderId: '7518851989809', status: 'unconfirmed', detectedAt: NOW - HOUR };
 	assert.match(findingsListView({}, [item], NOW, ''), /7518851989809/);
+});
+
+test('the admin link also appears on the finding detail, orders worklist, and order detail screens', () => {
+	// Rounds out call-site coverage for the task's core promise: every screen that
+	// names an order also offers a way into it in Shopify Admin. A regression that
+	// silently dropped the adminOrderLink(...) call from any one of these five
+	// sites (findingsListView and needsAttention are covered above) would still
+	// pass every other test in this file, since adminOrderUrl/adminOrderLink are
+	// otherwise only exercised standalone.
+	setShop('acme-store.myshopify.com');
+	const orderUrl = 'admin.shopify.com/store/acme-store/orders/7518851989809';
+	assert.match(findingDetailView(finding({ orderId: '7518851989809' }), NOW, ''), new RegExp(orderUrl.replace(/\./g, '\\.')));
+	assert.match(ordersView({}, [order()], false, ''), new RegExp(orderUrl.replace(/\./g, '\\.')));
+	assert.match(orderDetailView(orderDetail(), ''), new RegExp(orderUrl.replace(/\./g, '\\.')));
 });
 
 // ── orders ───────────────────────────────────────────────────────────────────
