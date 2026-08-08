@@ -100,7 +100,11 @@ function fixtures() {
 			id: 's1:o2',
 			shopId: 's1',
 			orderId: 'o2',
-			orderName: '#1000',
+			// o2 is paid seconds ago — the most recent order in this fixture set — so its
+			// number must sit ABOVE the worklist set's highest (#1004, oD), never below
+			// it: order names increase over time, and a lower number on the newer order
+			// would make the fixtures tell two contradictory stories about ordering.
+			orderName: '#1005',
 			paidAt: NOW - 2000,
 			requiresFulfillment: true,
 			lastEventAt: NOW - 2000,
