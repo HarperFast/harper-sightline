@@ -71,6 +71,7 @@
 				"resourceId",
 				"sku",
 				"source",
+				"state",
 				"since",
 				"until",
 				"cursor",

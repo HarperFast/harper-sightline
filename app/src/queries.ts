@@ -15,7 +15,7 @@ import {
 	ORDER_FIELDS,
 	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
-import { describeFinding, detectorKey } from './detector.ts';
+import { describeFinding, detectorKey, DETECTOR_FAILED } from './detector.ts';
 import { AGE_BUCKETS, ageBucketKey, ageHours, isAwaitingConfirmation } from './orders.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
@@ -110,6 +110,10 @@ export interface EventQueryParams {
 	resourceId?: string;
 	sku?: string;
 	source?: string;
+	// Fulfillment state ('error' | 'failure' | 'success' | …), so a failed attempt
+	// recorded by Shopify can be found directly among the raw events, not just via
+	// the finding it produced.
+	state?: string;
 	since?: number;
 	until?: number;
 	cursor?: string;
@@ -144,6 +148,7 @@ export async function listEvents(
 		// `source` distinguishes webhook-observed from reconciliation-recovered
 		// evidence (screen spec §3 "evidence source" filter).
 		['source', params.source],
+		['state', params.state],
 	] as const) {
 		if (val) conditions.push({ attribute: attr, value: val });
 	}
@@ -512,9 +517,16 @@ export async function getSummary(
 	}
 
 	const findingCounts: Record<string, number> = { unconfirmed: 0, resolved: 0, suppressed: 0 };
+	// Failed attempts are counted separately as well as inside `unconfirmed`: they
+	// are DIRECT evidence (Shopify recorded an attempt that did not succeed) rather
+	// than an inference from absence, so they deserve their own headline — but they
+	// are still unconfirmed findings, so removing them from that count would make
+	// the two numbers contradict each other.
+	let failedAttempts = 0;
 	for await (const f of tables.findings.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
-		const status = (f as unknown as GapFinding).status;
-		if (status in findingCounts) findingCounts[status]++;
+		const finding = f as unknown as GapFinding;
+		if (finding.status in findingCounts) findingCounts[finding.status]++;
+		if (finding.detector === DETECTOR_FAILED && finding.status === 'unconfirmed') failedAttempts++;
 	}
 
 	return {
@@ -523,7 +535,7 @@ export async function getSummary(
 		events: { total: eventsTotal },
 		orders: { tracked: ordersTracked, paid, fulfilled, awaitingConfirmation },
 		aging: { buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: agingCounts[b.key] })) },
-		findings: findingCounts,
+		findings: { ...findingCounts, failedAttempts },
 		recorder: { healthy: deadLettered === 0, deadLetteredDeliveries: deadLettered },
 		reconciliation: reconciliationView(shop, now),
 		activity: { days: WINDOW_DAYS, domains: [...ACTIVITY_DOMAINS], buckets },

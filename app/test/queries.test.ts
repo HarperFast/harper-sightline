@@ -344,6 +344,17 @@ test('listEvents filters by evidence source', async () => {
 	);
 });
 
+test('listEvents filters by fulfillment state, so a failed attempt can be found directly', async () => {
+	const events = new FakeTable('eventId', [
+		{ eventId: 's1:ok', shopId: 's1', domain: 'fulfillment', state: 'success', occurredAt: NOW - 100, receivedAt: NOW - 100 },
+		{ eventId: 's1:err', shopId: 's1', domain: 'fulfillment', state: 'error', occurredAt: NOW - 200, receivedAt: NOW - 200 },
+	]);
+	assert.deepEqual(
+		(await listEvents(events, 's1', NOW, { state: 'error' })).items.map((i) => i.eventId),
+		['s1:err'],
+	);
+});
+
 test('listEvents paginates by cursor without dupes or gaps', async () => {
 	const rows = Array.from({ length: 5 }, (_, i) => ({
 		eventId: `s1:p${i}`,
@@ -511,7 +522,7 @@ test('getSummary counts reconcile to the fixtures, scoped to the tenant', async 
 	// Includes the worklist fixture orders (oA-oD): 6 tracked, 6 paid, 2 fulfilled
 	// (o1, oD), 4 awaiting (o2, oA, oB, oC).
 	assert.deepEqual(s.orders, { tracked: 6, paid: 6, fulfilled: 2, awaitingConfirmation: 4 });
-	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0 });
+	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0, failedAttempts: 0 });
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 });
 });
 
@@ -757,6 +768,23 @@ test('integrity counts are scoped to the shop', async () => {
 	});
 	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
 	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 0);
+});
+
+test('the summary counts unconfirmed failed-attempt findings separately from absence findings', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	await findings.put({
+		id: 'fulfillment_attempt_failed:s1:oB:1',
+		shopId: 's1',
+		orderId: 'oB',
+		detector: 'fulfillment_attempt_failed',
+		status: 'unconfirmed',
+		detectedAt: NOW - 20 * HOUR,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	const f = summary.findings as { unconfirmed: number; failedAttempts: number };
+	assert.equal(f.failedAttempts, 1);
+	// It is still an unconfirmed finding, so the headline count includes it.
+	assert.ok(f.unconfirmed >= 1);
 });
 
 test('orders default to newest-paid first and carry the worklist columns', async () => {

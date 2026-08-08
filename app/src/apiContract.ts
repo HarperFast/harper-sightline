@@ -98,7 +98,7 @@ export const API_CONTRACT = {
 			path: '/api/v1/events',
 			item: EVENT_FIELDS,
 			paginated: true,
-			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'since', 'until', 'cursor', 'limit'],
+			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'state', 'since', 'until', 'cursor', 'limit'],
 		},
 		eventDetail: {
 			path: '/api/v1/events/:id',

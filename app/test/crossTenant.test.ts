@@ -271,7 +271,7 @@ test('getSummary: every count is victim-only despite the attacker holding more',
 	const s = await getSummary(w, V, NOW);
 	assert.equal((s.events as Record<string, number>).total, 2, 'victim in-window events only (attacker has 4)');
 	assert.deepEqual(s.orders, { tracked: 2, paid: 2, fulfilled: 1, awaitingConfirmation: 1 }, 'victim projections only');
-	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0 }, 'victim findings only');
+	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0, failedAttempts: 0 }, 'victim findings only');
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 }, 'victim dead letters only (attacker has 3)');
 });
 

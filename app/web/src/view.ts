@@ -600,6 +600,7 @@ export function overviewView(d: OverviewData): string {
 		<s-section heading="Findings">
 			${statGridLinked([
 				['Unconfirmed', s.findings.unconfirmed, '#/findings?status=unconfirmed'],
+				['Failed attempts', s.findings.failedAttempts ?? 0, '#/findings?detector=fulfillment_attempt_failed'],
 				['Resolved', s.findings.resolved, '#/findings?status=resolved'],
 				['Suppressed', s.findings.suppressed, '#/findings?status=suppressed'],
 			])}
@@ -625,12 +626,12 @@ export const RANGES: Array<[string, string, number]> = [
 	['24h', 'Last 24 hours', 86_400_000],
 	['7d', 'Last 7 days', 604_800_000],
 ];
-export const EVENT_FILTER_KEYS = ['range', 'domain', 'topic', 'resourceId', 'sku', 'source'];
+export const EVENT_FILTER_KEYS = ['range', 'domain', 'topic', 'resourceId', 'sku', 'source', 'state'];
 
 // Translate the UI filter params into API query params (range → since).
 export function eventQuery(params: Record<string, string>, now: number): Record<string, string> {
 	const q: Record<string, string> = {};
-	for (const key of ['domain', 'topic', 'resourceId', 'sku', 'source']) {
+	for (const key of ['domain', 'topic', 'resourceId', 'sku', 'source', 'state']) {
 		if (params[key]) q[key] = params[key];
 	}
 	const range = RANGES.find(([value]) => value && value === params.range);
@@ -670,6 +671,7 @@ export function eventsView(params: Record<string, string>, items: EventItem[], h
 				<s-text-field id="f-resourceId" label="Order / resource ID" value="${esc(params.resourceId ?? '')}"></s-text-field>
 				<s-text-field id="f-sku" label="SKU" value="${esc(params.sku ?? '')}"></s-text-field>
 				<s-select id="f-source" label="Evidence source">${selectOptions(SOURCES, params.source ?? '', 'Any source')}</s-select>
+				<s-text-field id="f-state" label="State" placeholder="error" value="${esc(params.state ?? '')}"></s-text-field>
 				<s-button variant="primary" data-submit>Search</s-button>
 				${exportButton('events')}
 			</s-stack>
@@ -926,6 +928,20 @@ export const FINDING_DISCLAIMER =
 
 export const STATUSES = ['', 'unconfirmed', 'resolved', 'suppressed'];
 
+// Detector names are internal ids; these are the merchant-facing labels. The
+// absence detector's label must never say "failed"; the presence detector's may,
+// because Shopify recorded the unsuccessful attempt itself.
+export const DETECTOR_LABELS: Record<string, string> = {
+	fulfillment_confirmation: 'No confirmation observed',
+	fulfillment_attempt_failed: 'Attempt did not succeed',
+};
+export const DETECTORS = ['', 'fulfillment_confirmation', 'fulfillment_attempt_failed'];
+
+export function detectorLabel(detector: string | undefined): string {
+	if (detector === undefined) return DETECTOR_LABELS.fulfillment_confirmation;
+	return DETECTOR_LABELS[detector] ?? detector;
+}
+
 // Which finding-detail copy applies is a single fact, not three independently
 // -drifting checks: the ABSENCE detector ('fulfillment_confirmation', or no
 // `detector` at all on rows written before that column existed) is the only one
@@ -942,6 +958,7 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 		.map(
 			(x) => `<s-table-row>
 			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(findingLabel(x))}</s-link></s-table-cell>
+			<s-table-cell>${esc(detectorLabel(x.detector))}</s-table-cell>
 			<s-table-cell>${ts(x.paidAt)}</s-table-cell>
 			<s-table-cell>${ts(x.deadline)}</s-table-cell>
 			<s-table-cell>${x.status === 'unconfirmed' ? esc(elapsed(x.detectedAt, now)) : '—'}</s-table-cell>
@@ -957,6 +974,7 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 			<s-paragraph><s-text color="subdued">${esc(FINDINGS_BOUNDARY)}</s-text></s-paragraph>
 			<s-stack id="findingFilters" direction="inline" gap="base" alignItems="end">
 				<s-select id="f-status" label="Status">${selectOptions(STATUSES, params.status ?? '', 'Any status')}</s-select>
+				<s-select id="f-detector" label="Type">${selectOptions(DETECTORS, params.detector ?? '', 'Any type')}</s-select>
 				<s-button variant="primary" data-submit>Filter</s-button>
 				${exportButton('findings')}
 			</s-stack>
@@ -965,6 +983,7 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 			${table(
 				[
 					{ label: 'Order' },
+					{ label: 'Type' },
 					{ label: 'Paid' },
 					{ label: 'Confirmation expected by' },
 					{ label: 'Open for' },
@@ -972,7 +991,7 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 					{ label: '' },
 				],
 				rows,
-				'No findings — nothing is missing confirmation.',
+				'No findings — nothing is missing confirmation and no attempt has failed.',
 			)}
 		</s-section>`,
 	);
@@ -1062,6 +1081,7 @@ export function findingDetailView(f: FindingDetail, lastReconciledAt: number | u
 		${why}
 		<s-section heading="Evidence">
 			${fields([
+				['Type', esc(detectorLabel(f.detector))],
 				['Paid', ts(f.projection?.paidAt)],
 				['Expected confirmation by', ts(f.expectation?.deadline)],
 				['Detected', ts(f.detectedAt)],

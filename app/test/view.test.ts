@@ -20,6 +20,7 @@ import {
 	contextStrip,
 	errorViewMarkup,
 	authExpiredView,
+	detectorLabel,
 	eventDetailView,
 	eventQuery,
 	eventsView,
@@ -62,7 +63,7 @@ function summary(over: Partial<Summary> = {}): Summary {
 		windowDays: 7,
 		events: { total: 12 },
 		orders: { tracked: 4, paid: 3, fulfilled: 2, awaitingConfirmation: 1 },
-		findings: { unconfirmed: 1, resolved: 2, suppressed: 0 },
+		findings: { unconfirmed: 1, resolved: 2, suppressed: 0, failedAttempts: 0 },
 		aging: { buckets: [] },
 		recorder: { healthy: true, deadLetteredDeliveries: 0 },
 		reconciliation: { lastReconciledAt: NOW - 4 * MIN, ageMs: 4 * MIN, stale: false, state: 'ready' },
@@ -161,10 +162,60 @@ test('a finding with no detector field still gets absence-detector copy (rows wr
 	assert.ok(html.includes(FINDING_DISCLAIMER));
 });
 
+test('an unlabelled detector degrades to a readable fallback rather than a blank cell', () => {
+	assert.equal(detectorLabel(undefined), 'No confirmation observed');
+	assert.equal(detectorLabel('something_new'), 'something_new');
+});
+
+test('findings show which detector produced them', () => {
+	const absence: FindingItem = {
+		id: 'f1',
+		orderId: 'o1',
+		orderName: '#1001',
+		detector: 'fulfillment_confirmation',
+		status: 'unconfirmed',
+		detectedAt: NOW - HOUR,
+	};
+	const failed: FindingItem = {
+		id: 'f2',
+		orderId: 'o2',
+		orderName: '#1002',
+		detector: 'fulfillment_attempt_failed',
+		status: 'unconfirmed',
+		detectedAt: NOW - HOUR,
+	};
+	const html = findingsListView({}, [absence, failed], NOW, '');
+	assert.match(html, /No confirmation observed/);
+	assert.match(html, /Attempt did not succeed/);
+});
+
+test('the findings list offers a detector filter', () => {
+	const html = findingsListView({ detector: 'fulfillment_attempt_failed' }, [], NOW, '');
+	assert.match(html, /id="f-detector"/);
+	assert.match(html, /value="fulfillment_attempt_failed" selected/);
+});
+
+test('the finding detail evidence table names which detector produced it', () => {
+	const html = findingDetailView(
+		finding({
+			detector: 'fulfillment_attempt_failed',
+			description: 'Shopify recorded a fulfillment attempt for this order that did not succeed.',
+		}),
+		undefined,
+		'',
+	);
+	assert.match(html, /<s-table-row><s-table-cell>Type<\/s-table-cell><s-table-cell>Attempt did not succeed<\/s-table-cell><\/s-table-row>/);
+});
+
 test('the findings list states the claim boundary', () => {
 	const html = findingsListView({}, [], NOW, '');
 	assert.ok(html.includes(FINDINGS_BOUNDARY));
 	assert.match(FINDINGS_BOUNDARY, /do not prove/);
+});
+
+test('an empty findings list mentions both the absence and the failed-attempt detector', () => {
+	const html = findingsListView({}, [], NOW, '');
+	assert.match(html, /No findings — nothing is missing confirmation and no attempt has failed\./);
 });
 
 test('no screen accuses a downstream party of failing', () => {
@@ -186,9 +237,17 @@ test('no screen accuses a downstream party of failing', () => {
 	];
 	for (const html of screens) {
 		// Both constants legitimately contain the words — they are the sentences that
-		// DENY the claim. Strip them, then nothing else may make it.
-		const rest = html.replace(FINDING_DISCLAIMER, '').replace(FINDINGS_BOUNDARY, '');
-		assert.ok(!/failed/i.test(rest), 'no failure language outside the sentences that disclaim it');
+		// DENY the claim. The "Failed attempts" tile label and the
+		// fulfillment_attempt_failed detector id (in filter hrefs) are also legitimate:
+		// that detector fires on a fulfillment Shopify itself recorded as failed, so
+		// stating that is direct evidence, not an inference or an accusation against a
+		// downstream party — strip them too, then nothing else may make the claim.
+		const rest = html
+			.replace(FINDING_DISCLAIMER, '')
+			.replace(FINDINGS_BOUNDARY, '')
+			.replace(/Failed attempts/g, '')
+			.replace(/fulfillment_attempt_failed/g, '');
+		assert.ok(!/failed/i.test(rest), 'no failure language outside the sentences/labels that are approved to use it');
 		assert.ok(!/warehouse|carrier|3PL|vendor/i.test(rest), 'no downstream party is named as a cause');
 	}
 });
@@ -241,7 +300,10 @@ test('an incomplete setup says history is still being built', () => {
 test('an unhealthy recorder never renders as "no gaps"', () => {
 	const html = overviewView({
 		...OVERVIEW_BASE,
-		summary: summary({ recorder: { healthy: false, deadLetteredDeliveries: 3 }, findings: { unconfirmed: 0, resolved: 0, suppressed: 0 } }),
+		summary: summary({
+			recorder: { healthy: false, deadLetteredDeliveries: 3 },
+			findings: { unconfirmed: 0, resolved: 0, suppressed: 0, failedAttempts: 0 },
+		}),
 	});
 	assert.ok(html.includes('Recorder needs attention'), 'health is stated separately from the finding count');
 	assert.ok(html.includes('3 deliver(ies) could not be processed'));
@@ -326,6 +388,16 @@ test('the Paid stat tile and the Paid flow lane are never links — no worklist 
 	assert.doesNotMatch(gridItem(html, 'Paid'), /<s-link/, 'the Paid stat tile has no href');
 	assert.match(html, /<s-table-cell>Paid<\/s-table-cell>/, 'the Paid flow lane renders as a plain cell');
 	assert.doesNotMatch(html, /<s-link[^>]*>Paid<\/s-link>/, 'no href wraps the Paid flow-lane label');
+});
+
+test('the overview surfaces failed attempts as their own count', () => {
+	const s = summary({ findings: { unconfirmed: 3, resolved: 1, suppressed: 0, failedAttempts: 2 } });
+	const html = overviewView({ summary: s, flows: null, unconfirmed: [], setup: null, now: NOW });
+	assert.match(html, /Failed attempts/);
+	assert.match(html, /href="#\/findings\?detector=fulfillment_attempt_failed"/);
+	// Scoped to the tile itself: the earlier "Paid tile links to a different count"
+	// defect would have passed a loose match like the two assertions above.
+	assert.match(gridItem(html, 'Failed attempts'), /href="#\/findings\?detector=fulfillment_attempt_failed"[\s\S]*>2</);
 });
 
 test('bucketMinHours agrees with AGE_BUCKETS for every key, so a renamed bucket fails a test instead of silently mapping to 72', () => {
@@ -443,7 +515,7 @@ test('with no store zone the label does not claim store time', () => {
 
 test('the events screen offers the full screen-spec filter set', () => {
 	const html = eventsView({}, [], false, '');
-	for (const id of ['f-range', 'f-domain', 'f-topic', 'f-resourceId', 'f-sku', 'f-source']) {
+	for (const id of ['f-range', 'f-domain', 'f-topic', 'f-resourceId', 'f-sku', 'f-source', 'f-state']) {
 		assert.ok(html.includes(`id="${id}"`), `missing the ${id} filter`);
 	}
 	assert.ok(html.includes('Evidence source'));
@@ -460,7 +532,7 @@ test('the events screen offers the full screen-spec filter set', () => {
 
 test('active filters are reflected back into the controls', () => {
 	const html = eventsView(
-		{ range: '24h', domain: 'fulfillment', topic: 'fulfillments/create', sku: 'SKU-1', source: 'reconciliation' },
+		{ range: '24h', domain: 'fulfillment', topic: 'fulfillments/create', sku: 'SKU-1', source: 'reconciliation', state: 'error' },
 		[],
 		false,
 		'',
@@ -470,6 +542,10 @@ test('active filters are reflected back into the controls', () => {
 	assert.ok(html.includes('<option value="reconciliation" selected>'));
 	assert.ok(html.includes('value="fulfillments/create"'));
 	assert.ok(html.includes('value="SKU-1"'));
+	assert.ok(
+		html.includes('id="f-state" label="State" placeholder="error" value="error"'),
+		'a failed attempt can be found directly by state',
+	);
 });
 
 test('eventQuery turns a symbolic range into a window floor', () => {
@@ -477,6 +553,7 @@ test('eventQuery turns a symbolic range into a window floor', () => {
 	assert.deepEqual(eventQuery({ range: '1h', domain: 'order' }, NOW), { domain: 'order', since: String(NOW - HOUR) });
 	assert.deepEqual(eventQuery({}, NOW), {}, 'no range means the full retention window');
 	assert.deepEqual(eventQuery({ range: 'bogus' }, NOW), {}, 'an unknown range is ignored, not passed through');
+	assert.deepEqual(eventQuery({ state: 'error' }, NOW), { state: 'error' }, 'the state filter passes through to the API query');
 });
 
 test('an empty ledger says so instead of rendering an empty table', () => {

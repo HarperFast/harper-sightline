@@ -58,7 +58,7 @@ export interface Summary {
 	events: { total: number };
 	orders: { tracked: number; paid: number; fulfilled: number; awaitingConfirmation: number };
 	aging: { buckets: Array<{ key: string; label: string; count: number }> };
-	findings: { unconfirmed: number; resolved: number; suppressed: number };
+	findings: { unconfirmed: number; resolved: number; suppressed: number; failedAttempts: number };
 	recorder: { healthy: boolean; deadLetteredDeliveries: number };
 	reconciliation: Reconciliation;
 	activity: { days: number; domains: string[]; buckets: ActivityBucket[] };

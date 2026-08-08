@@ -274,8 +274,12 @@ async function findingsList(params: Record<string, string>): Promise<void> {
 	const listPage = await apiFindings(params);
 	render(findingsListView(params, listPage.items, Date.now(), contextHtml));
 	bindFilters('findingFilters', () => {
-		const v = fieldValue('f-status');
-		location.hash = `#/findings${v ? `?status=${encodeURIComponent(v)}` : ''}`;
+		const q = new URLSearchParams();
+		for (const key of ['status', 'detector']) {
+			const v = fieldValue(`f-${key}`);
+			if (v) q.set(key, v);
+		}
+		location.hash = `#/findings${q.toString() ? `?${q}` : ''}`;
 	});
 	bindExport(params);
 }
