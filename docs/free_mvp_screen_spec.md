@@ -95,17 +95,19 @@ Purpose: turn the Overview's order counts and aging breakdown into an actionable
 ```text
 Orders Sightline is tracking                              Last 7 days
 
-Lane [Any lane ▾]   Age [Any age ▾]   Sort [Newest first ▾]   [Filter]   [Export CSV]
+Lane [Any lane ▾]   Age [Any age ▾]   Sort [Latest activity first ▾]   [Filter]   [Export CSV]
 
-Order   Lane                          Paid    Waiting  Value  Tracking   
-#1004   Awaiting                      10:04   2h       $50    —          [Open in Shopify]
-#1002   Awaiting ⚠ attempt did not succeed   09:04   30h      $90    —          [Open in Shopify]
-#1003   Fulfilled                     05:04   —        $40    FedEx      [Open in Shopify]
+Order   Lane                          Paid    Waiting  Last activity  Value  Tracking   
+#1004   Awaiting                      10:04   2h       10:04          $50    —          [Open in Shopify]
+#1002   Awaiting ⚠ attempt did not succeed   09:04   30h      13:04          $90    —          [Open in Shopify]
+#1003   Fulfilled                     05:04   —        08:04          $40    FedEx      [Open in Shopify]
 ```
 
-Columns: order (merchant-facing name, falling back to the raw id — never a blank cell), lane, paid time, time waiting since payment, order value, tracking presence/carrier, and an **Open in Shopify** deep link.
+Columns: order (merchant-facing name, falling back to the raw id — never a blank cell), lane, paid time, time waiting since payment (`—` unless the order is awaiting confirmation: a fulfilled order is not waiting for anything), last observed activity, order value, tracking presence/carrier, and an **Open in Shopify** deep link.
 
-Filters: lane (awaiting / fulfilled / cancelled / refunded / unpaid), minimum age since payment (over 12h / 24h / 48h / 72h — the same thresholds the aging breakdown buckets on), sort (newest first, or oldest first so the most overdue order sorts to the top).
+Filters: lane (awaiting / fulfilled / no fulfillment expected / cancelled / refunded / unpaid), age since payment (minimum, and a maximum when the link comes from an aging bucket — see below), sort (latest or earliest observed activity first).
+
+The list is **sorted and paginated on `lastEventAt`**, never on `paidAt`. `paidAt` is null for every order Sightline has seen but not seen paid (pending, authorized-not-captured, COD, draft), and a keyset pager on a nullable column emits a cursor it cannot decode, so the next page runs unbounded and returns the same page forever. `paidAt` stays a filter (age) and the derived `ageHours`; the sort key is the column the "Last activity" header names. Earliest-activity-first remains the triage order, because a quiet awaiting order's last observed activity is its payment.
 
 States: loading, empty ("No orders match"), error (retry), authorization-expired, and stale/reconciliation-delayed via the shared context strip — the same states every other screen supports (see Global behavior).
 

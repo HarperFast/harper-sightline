@@ -752,9 +752,15 @@ export function eventDetailView(e: EventDetail, strip: string): string {
 // the only order list was the findings list, which shows only orders that have
 // ALREADY blown the deadline.
 export const ORDER_STATES = ['', 'awaiting', 'fulfilled', 'cancelled', 'refunded', 'unpaid'];
+// The worklist sorts on LAST OBSERVED ACTIVITY (`lastEventAt`), not on payment:
+// `paidAt` is null for every unpaid order, and keysetting a pager on a nullable
+// column made the list repeat its first page forever (C3). These labels name the
+// column the table actually sorts on, so the control and the "Last activity"
+// header agree. Earliest-activity-first is still the triage order — a quiet
+// awaiting order's last activity is its payment.
 export const ORDER_SORTS: Array<[string, string]> = [
-	['newest', 'Newest first'],
-	['oldest', 'Oldest first (most overdue)'],
+	['newest', 'Latest activity first'],
+	['oldest', 'Earliest activity first'],
 ];
 // Sub-deadline aging: the confirmation detector waits 72h, so these let a
 // merchant see what is heading that way while it can still be acted on.
@@ -806,6 +812,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 			<s-table-cell>${badge(o.state)}${attemptFlag(o)}</s-table-cell>
 			<s-table-cell>${ts(o.paidAt)}</s-table-cell>
 			<s-table-cell>${esc(ageCell(o))}</s-table-cell>
+			<s-table-cell>${ts(o.lastEventAt)}</s-table-cell>
 			<s-table-cell>${money(o.orderTotal, o.currency)}</s-table-cell>
 			<s-table-cell>${o.hasTracking ? esc(o.trackingCompany ?? 'yes') : '—'}</s-table-cell>
 			<s-table-cell>${adminOrderLink(o.orderId)}</s-table-cell>
@@ -842,6 +849,9 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 					{ label: 'Lane' },
 					{ label: 'Paid' },
 					{ label: 'Waiting' },
+					// The column the list is sorted on — named, so the Sort control's
+					// "Latest/Earliest activity first" refers to something visible.
+					{ label: 'Last activity' },
 					{ label: 'Value', numeric: true },
 					{ label: 'Tracking' },
 					{ label: '' },

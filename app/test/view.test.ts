@@ -968,6 +968,18 @@ test('a failed fulfillment attempt is flagged on the row without accusing anyone
 	assert.doesNotMatch(html, /warehouse|carrier|vendor|3PL/i);
 });
 
+test('the worklist names the column it is sorted on, and the sort control agrees', () => {
+	// The list keysets on lastEventAt (paidAt is nullable and cannot be paged on —
+	// C3), so the sort control must not promise an ordering by payment. A "Newest
+	// first" label over a list sorted by last activity is a lie the merchant cannot
+	// see; naming the column makes the ordering checkable on screen.
+	const html = ordersView({}, [order({ lastEventAt: NOW - 2 * HOUR })], false, '');
+	assert.ok(html.includes('<s-table-header format="base">Last activity</s-table-header>'), 'the sort key has a column');
+	assert.match(html, /<option value="newest"[^>]*>Latest activity first<\/option>/);
+	assert.match(html, /<option value="oldest"[^>]*>Earliest activity first<\/option>/);
+	assert.doesNotMatch(html, /Newest first|Oldest first/, 'no label claims an ordering by payment');
+});
+
 test('the orders screen offers lane, age and sort filters reflected in the URL', () => {
 	const html = ordersView({ state: 'awaiting', minAgeHours: '24', sort: 'oldest' }, [order()], false, '');
 	assert.match(html, /id="f-state"/);

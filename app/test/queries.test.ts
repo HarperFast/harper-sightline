@@ -941,11 +941,13 @@ test('the summary counts unconfirmed failed-attempt findings separately from abs
 	assert.ok(f.unconfirmed >= 1);
 });
 
-test('orders default to newest-paid first and carry the worklist columns', async () => {
+test('orders default to latest-activity first and carry the worklist columns', async () => {
 	const { projections } = fixtures();
 	const page = await listOrders(projections, 's1', NOW, {});
-	// Unfiltered, so the pre-existing o1/o2 fixture rows (paid seconds ago) sort
-	// ahead of the worklist rows (paid hours ago) — newest paidAt first.
+	// Unfiltered, so the pre-existing o1/o2 fixture rows (last active seconds ago)
+	// sort ahead of the worklist rows (hours ago) — newest lastEventAt first. The
+	// sort key is lastEventAt, not paidAt: paidAt is nullable and a keyset pager on
+	// a nullable column cannot page (C3).
 	assert.deepEqual(
 		page.items.map((i) => i.orderId),
 		['o1', 'o2', 'oA', 'oD', 'oE', 'oB', 'oC'],
@@ -1000,7 +1002,7 @@ test('orders page with a stable cursor and no duplicates across pages', async ()
 	assert.equal(ids.length, 4);
 });
 
-test('the ascending (oldest-first) worklist pages correctly across a tied paidAt boundary', async () => {
+test('the ascending (oldest-first) worklist pages correctly across a tied lastEventAt boundary', async () => {
 	// A separate, purpose-built fixture — not the shared fixtures() universe — so
 	// a tie can be placed exactly where a naive comparator or an off-by-one
 	// boundary actually breaks: split across two pages. This is the case the
@@ -1027,6 +1029,84 @@ test('the ascending (oldest-first) worklist pages correctly across a tied paidAt
 	// d, then e. The tie falls exactly on the page-1/page-2 boundary at limit 2.
 	assert.deepEqual(seen, ['c', 'a', 'b', 'd', 'e'], 'every row exactly once, in order, across the tie boundary');
 	assert.equal(new Set(seen).size, seen.length, 'no duplicates across the page boundary');
+});
+
+test('the unpaid lane pages to the end instead of repeating its first page forever', async () => {
+	// The 'unpaid' lane is an option in the worklist's Lane select, and an unpaid
+	// projection has NO paidAt — `orders/create` is subscribed and paidAt is only
+	// latched on payment, so every pending, authorized-not-captured, COD or draft
+	// order sits here indefinitely. When the pager keyset on paidAt, Number(undefined)
+	// encoded a "NaN|<id>" cursor that decodeCursor then rejected, so the next page
+	// ran with no boundary condition and returned the same page again: 12 rows
+	// fetched, 2 unique, and a five-order store exported 5000 duplicate rows.
+	const projections = new FakeTable(
+		'id',
+		Array.from({ length: 5 }, (_unused, i) => ({
+			id: `s1:u${i}`,
+			shopId: 's1',
+			orderId: `u${i}`,
+			state: 'unpaid',
+			lastEventAt: NOW - 1000 * i,
+		})),
+	);
+	let cursor: string | undefined;
+	const seen: string[] = [];
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listOrders(projections, 's1', NOW, { state: 'unpaid', limit: 2, cursor });
+		seen.push(...page.items.map((i) => String(i.orderId)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	assert.deepEqual(seen, ['u0', 'u1', 'u2', 'u3', 'u4'], 'every unpaid order exactly once, newest activity first');
+	assert.equal(new Set(seen).size, seen.length, 'no row repeats across pages');
+});
+
+test('the default worklist pages to the end even with an unpaid row mixed into it', async () => {
+	// The "Tracked" tile's link is the UNFILTERED worklist, which mixes paid and
+	// unpaid rows — so the nullable-sort-key defect was reachable without touching
+	// the lane filter at all.
+	const projections = new FakeTable('id', [
+		{
+			id: 's1:p1',
+			shopId: 's1',
+			orderId: 'p1',
+			paidAt: NOW - 1 * HOUR,
+			state: 'awaiting',
+			requiresFulfillment: true,
+			lastEventAt: NOW - 1 * HOUR,
+		},
+		{ id: 's1:u1', shopId: 's1', orderId: 'u1', state: 'unpaid', lastEventAt: NOW - 2 * HOUR },
+		{
+			id: 's1:p2',
+			shopId: 's1',
+			orderId: 'p2',
+			paidAt: NOW - 3 * HOUR,
+			state: 'awaiting',
+			requiresFulfillment: true,
+			lastEventAt: NOW - 3 * HOUR,
+		},
+		{
+			id: 's1:p3',
+			shopId: 's1',
+			orderId: 'p3',
+			paidAt: NOW - 4 * HOUR,
+			state: 'awaiting',
+			requiresFulfillment: true,
+			lastEventAt: NOW - 4 * HOUR,
+		},
+	]);
+	let cursor: string | undefined;
+	const seen: string[] = [];
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listOrders(projections, 's1', NOW, { limit: 2, cursor });
+		seen.push(...page.items.map((i) => String(i.orderId)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	assert.deepEqual(seen, ['p1', 'u1', 'p2', 'p3']);
+	// The unpaid row has no age to report, and reports none rather than 0.
+	const unpaid = (await listOrders(projections, 's1', NOW, {})).items.find((i) => i.orderId === 'u1');
+	assert.ok(unpaid && !Object.prototype.hasOwnProperty.call(unpaid, 'ageHours'), 'an unpaid row carries no ageHours');
 });
 
 test('order detail returns the projection, its events, and its findings', async () => {

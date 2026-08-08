@@ -99,7 +99,16 @@ async function keysetPage(
 	let nextCursor: string | undefined;
 	if (page.length === limit && page.length > 0) {
 		const last = page[page.length - 1];
-		nextCursor = encodeCursor(Number(last[sortField]), String(last[idField]));
+		const sortValue = Number(last[sortField]);
+		// NEVER emit a cursor this module cannot decode. decodeCursor rejects a
+		// non-finite sort value, so a row whose sort field is absent encodes to
+		// "NaN|<id>" and decodes back to `undefined` — the next page then runs with
+		// NO boundary condition, returns this same page again, and pages forever
+		// (an export of such a list accumulated 5000 duplicate rows). Ending the
+		// list is the only safe answer: a cursor that cannot be honoured is worse
+		// than no cursor. Callers keep the sort field non-nullable so this is
+		// insurance, not the normal path.
+		if (Number.isFinite(sortValue)) nextCursor = encodeCursor(sortValue, String(last[idField]));
 	}
 	return { items, nextCursor };
 }
@@ -359,12 +368,23 @@ export interface OrderQueryParams {
 
 // GET /orders — the operational worklist the Overview's counts drill into.
 //
-// Sorted and filtered in the DATABASE on the indexed `paidAt` and `state`
-// columns. Post-filtering in code was the alternative and is wrong here: it
-// returns short pages and a `nextCursor` that implies more matches than exist.
+// Sorted and filtered in the DATABASE on the indexed `lastEventAt`, `paidAt` and
+// `state` columns. Post-filtering in code was the alternative and is wrong here:
+// it returns short pages and a `nextCursor` that implies more matches than exist.
 //
-// `ageHours` is computed per row rather than stored, because it changes every
-// hour and a stored copy would be stale the moment it was written.
+// The SORT KEY is `lastEventAt`, which the projection reducer always writes —
+// never `paidAt`, which is nullable. `orders/create` is subscribed and `paidAt`
+// is only latched on payment, so every pending, authorized-not-captured, COD or
+// draft order sits in this table with no `paidAt` at all; keysetting on it made
+// the cursor for such a row undecodable and the worklist paged the same rows
+// forever (C3). `sort` therefore means order of LAST OBSERVED ACTIVITY —
+// 'newest' = most recent activity first, 'oldest' = least recent first, which is
+// still what triage wants, because a quiet awaiting order's last activity IS its
+// payment. The UI names the column it sorts on.
+//
+// `paidAt` remains a pure FILTER (minAgeHours), and `ageHours` stays derived from
+// it per row rather than stored, because it changes every hour and a stored copy
+// would be stale the moment it was written.
 export async function listOrders(projections: QueryTable, shopId: string, now: number, params: OrderQueryParams): Promise<Page> {
 	const windowStart = now - WINDOW_MS;
 	const conditions: QuerySpec['conditions'] = [
@@ -382,7 +402,7 @@ export async function listOrders(projections: QueryTable, shopId: string, now: n
 	const page = await keysetPage(
 		projections,
 		conditions,
-		'paidAt',
+		'lastEventAt',
 		'id',
 		ORDER_LIST_FIELDS,
 		params.cursor,

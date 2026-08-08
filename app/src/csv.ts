@@ -112,6 +112,12 @@ export async function collectExportRows<T>(
 	do {
 		const page = await fetchPage(cursor);
 		rows.push(...page.items);
+		// A pager that hands back the cursor it was just given is not advancing;
+		// following it would re-fetch the same page until the cap and report a
+		// truncation that is really a loop. Cheap insurance, independent of any one
+		// pager's correctness: stop, and let `truncated` below say "there may be
+		// more", which is the honest answer when the source stopped making progress.
+		if (page.nextCursor !== undefined && page.nextCursor === cursor) break;
 		cursor = page.nextCursor;
 	} while (cursor && rows.length < cap);
 	const truncated = Boolean(cursor);

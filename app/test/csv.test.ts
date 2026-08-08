@@ -85,6 +85,26 @@ test('collectExportRows: landing exactly on the cap with more data available IS 
 	assert.equal(truncated, true);
 });
 
+test('collectExportRows: a pager that stops advancing is not followed to the cap', async () => {
+	// Insurance against any pager that hands back the cursor it was just given. A
+	// real one did: listOrders keyset on the nullable `paidAt`, so an unpaid row
+	// produced an undecodable cursor and every page came back identical — a
+	// five-order store exported 5000 duplicate rows with a "narrow your filters"
+	// alert. That specific cause is fixed at the source (queries.ts keysets on
+	// lastEventAt, and keysetPage never emits a cursor it cannot decode); this keeps
+	// the export loop safe regardless.
+	let calls = 0;
+	const stuck = async (_cursor: string | undefined) => {
+		calls++;
+		return { items: [1, 2], nextCursor: 'same' };
+	};
+	const { rows, truncated } = await collectExportRows(stuck, 5000);
+	assert.deepEqual(rows, [1, 2, 1, 2], 'one advance, then the repeat is detected and the loop stops');
+	assert.equal(calls, 2);
+	// The source stopped making progress, so "there may be more" is the honest answer.
+	assert.equal(truncated, true);
+});
+
 test('collectExportRows: exhausted exactly at the cap, with no more data, is not truncated', async () => {
 	// Pins the fix at the right moment: reading `cursor` after the loop must see
 	// the falsy value from the FINAL page, not a stale truthy value from an
