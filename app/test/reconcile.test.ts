@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { synthesizeEvents } from '../src/reconcile.ts';
-import { toReconcileOrder, numericId, fetchOrdersUpdatedSince, fetchShopTimezone, type ReconcileOrder } from '../src/adminApi.ts';
+import {
+	toReconcileOrder,
+	numericId,
+	fetchOrdersUpdatedSince,
+	fetchShopTimezone,
+	fetchInventoryItems,
+	fetchLocations,
+	type ReconcileOrder,
+} from '../src/adminApi.ts';
 import { rebuildProjection } from '../src/projection.ts';
 
 test('numericId extracts the numeric order id from a gid', () => {
@@ -120,4 +128,24 @@ test('fetchShopTimezone returns undefined for a missing or blank zone rather tha
 		const fakeFetch = (async () => new Response(JSON.stringify({ data: { shop } }), { status: 200 })) as unknown as typeof fetch;
 		assert.equal(await fetchShopTimezone('s', 'tok', fakeFetch), undefined);
 	}
+});
+
+test('fetchInventoryItems maps GraphQL nodes to inventory item facts', async () => {
+	const body = {
+		data: {
+			nodes: [
+				{ id: 'gid://shopify/InventoryItem/111', sku: 'TSHIRT', variant: { title: 'M / Black', product: { title: 'T-Shirt' } } },
+				null,
+			],
+		},
+	};
+	const fetchImpl = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+	const facts = await fetchInventoryItems('s.myshopify.com', 't', ['111', '222'], fetchImpl);
+	assert.deepEqual(facts, [{ inventoryItemId: '111', sku: 'TSHIRT', productTitle: 'T-Shirt', variantTitle: 'M / Black' }]);
+});
+
+test('fetchLocations maps GraphQL nodes to location facts', async () => {
+	const body = { data: { locations: { nodes: [{ id: 'gid://shopify/Location/987', name: 'Brooklyn' }] } } };
+	const fetchImpl = (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+	assert.deepEqual(await fetchLocations('s.myshopify.com', 't', fetchImpl), [{ locationId: '987', name: 'Brooklyn' }]);
 });

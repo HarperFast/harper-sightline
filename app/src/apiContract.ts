@@ -20,12 +20,28 @@ export const EVENT_FIELDS = [
 	'sku',
 	'quantity',
 	'fulfillableItemCount',
+	'orderName',
+	'totalPrice',
+	'currency',
+	'locationId',
+	'hasTracking',
+	'trackingCompany',
+	'shipmentStatus',
 	'state',
 	'source',
 	'occurredAt',
 	'receivedAt',
 ] as const;
-export const FINDING_FIELDS = ['id', 'orderId', 'ruleVersion', 'status', 'detectedAt', 'resolvedAt', 'evidenceEventIds'] as const;
+export const FINDING_FIELDS = [
+	'id',
+	'orderId',
+	'detector',
+	'ruleVersion',
+	'status',
+	'detectedAt',
+	'resolvedAt',
+	'evidenceEventIds',
+] as const;
 // The findings LIST additionally carries the two order facts the screen spec's
 // list columns need (paid time, expected confirmation). They are joined from the
 // projection/expectation and allowlisted here so the join can never widen.
@@ -38,6 +54,12 @@ export const PROJECTION_FIELDS = [
 	'cancelledAt',
 	'fullyRefundedAt',
 	'lastEventAt',
+	'orderName',
+	'orderTotal',
+	'currency',
+	'fulfillmentFailedAt',
+	'hasTracking',
+	'trackingCompany',
 ] as const;
 export const EXPECTATION_FIELDS = ['state', 'deadline', 'createdAt', 'resolvedAt'] as const;
 
@@ -59,9 +81,12 @@ export const API_CONTRACT = {
 			paginated: true,
 			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'since', 'until', 'cursor', 'limit'],
 		},
-		eventDetail: { path: '/api/v1/events/:id', fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding'] },
+		eventDetail: {
+			path: '/api/v1/events/:id',
+			fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding', 'inventorySku', 'productTitle', 'locationName'],
+		},
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
-		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'cursor', 'limit'] },
+		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'detector', 'cursor', 'limit'] },
 		findingDetail: { path: '/api/v1/findings/:id', fields: [...FINDING_FIELDS, 'description', 'projection', 'expectation'] },
 		privacy: {
 			path: '/api/v1/privacy',

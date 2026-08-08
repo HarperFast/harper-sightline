@@ -94,7 +94,19 @@ export interface EventQueryParams {
 
 // GET /events — the searchable 7-day operational ledger, tenant-scoped, filtered,
 // cursor-paginated. The window floor is max(caller since, now − 7 days).
-export async function listEvents(events: QueryTable, shopId: string, now: number, params: EventQueryParams): Promise<Page> {
+//
+// A `sku` filter takes a different path: SKUs live in the EventSku index (one row
+// per event/SKU) because an order has many and the event row holds one scalar.
+// The index carries the other filterable fields, so the SKU path is an ordinary
+// keyset page over EventSku followed by a keyed hydrate — no post-filtering, so
+// a page is never short and `nextCursor` never lies.
+export async function listEvents(
+	events: QueryTable,
+	shopId: string,
+	now: number,
+	params: EventQueryParams,
+	eventSkus?: QueryTable,
+): Promise<Page> {
 	const windowStart = Math.max(params.since ?? 0, now - WINDOW_MS);
 	const conditions: QuerySpec['conditions'] = [
 		{ attribute: 'shopId', value: shopId },
@@ -105,13 +117,39 @@ export async function listEvents(events: QueryTable, shopId: string, now: number
 		['domain', params.domain],
 		['topic', params.topic],
 		['resourceId', params.resourceId],
-		['sku', params.sku],
 		// `source` distinguishes webhook-observed from reconciliation-recovered
 		// evidence (screen spec §3 "evidence source" filter).
 		['source', params.source],
 	] as const) {
 		if (val) conditions.push({ attribute: attr, value: val });
 	}
+
+	if (params.sku && eventSkus) {
+		const indexPage = await keysetPageDesc(
+			eventSkus,
+			[...conditions, { attribute: 'sku', value: params.sku }],
+			'occurredAt',
+			'id',
+			['eventId'],
+			params.cursor,
+			params.limit,
+		);
+		const hydrated: Array<Record<string, unknown>> = [];
+		for (const row of indexPage.items) {
+			const event = await events.get(String(row.eventId));
+			// An index row whose event is gone (purged mid-page, or written before its
+			// event landed) is skipped rather than surfaced as a phantom result.
+			if (event && event.shopId === shopId) hydrated.push(pick(event, EVENT_FIELDS));
+		}
+		return { items: hydrated, nextCursor: indexPage.nextCursor };
+	}
+
+	// No EventSku table wired (or no sku filter requested): fall back to the
+	// scalar `sku` column directly. That column is only ever populated for a
+	// single-SKU event, so this path still answers a single-SKU query correctly
+	// when a caller hasn't (or can't) supply the index table.
+	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
+
 	return keysetPageDesc(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
 }
 
@@ -124,6 +162,8 @@ export async function getEventDetail(
 	findings: QueryTable,
 	shopId: string,
 	eventId: string,
+	inventoryItems?: QueryTable,
+	locations?: QueryTable,
 ): Promise<Record<string, unknown> | null> {
 	const row = (await events.get(eventId)) as OperationalEvent | undefined;
 	if (!row || row.shopId !== shopId) return null;
@@ -147,11 +187,40 @@ export async function getEventDetail(
 	const affectedProjection = orderId ? Boolean(await projections.get(`${shopId}:${orderId}`)) : false;
 	const affectedFinding = orderId ? Boolean(await findings.get(detectorKey(shopId, orderId))) : false;
 
-	return { ...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS), relatedEventIds, affectedProjection, affectedFinding };
+	// Human-readable context for the opaque ids on an inventory event. Both are
+	// keyed gets against this shop's own cache rows; a cache miss simply omits the
+	// field rather than blocking the detail view.
+	let inventorySku: string | undefined;
+	let productTitle: string | undefined;
+	if (row.domain === 'inventory' && row.resourceId && inventoryItems) {
+		const item = await inventoryItems.get(`${shopId}:${row.resourceId}`);
+		if (item && item.shopId === shopId) {
+			inventorySku = typeof item.sku === 'string' ? item.sku : undefined;
+			productTitle = typeof item.productTitle === 'string' ? item.productTitle : undefined;
+		}
+	}
+	let locationName: string | undefined;
+	if (row.locationId && locations) {
+		const location = await locations.get(`${shopId}:${row.locationId}`);
+		if (location && location.shopId === shopId) {
+			locationName = typeof location.name === 'string' ? location.name : undefined;
+		}
+	}
+
+	return {
+		...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS),
+		relatedEventIds,
+		affectedProjection,
+		affectedFinding,
+		...(inventorySku ? { inventorySku } : {}),
+		...(productTitle ? { productTitle } : {}),
+		...(locationName ? { locationName } : {}),
+	};
 }
 
 export interface FindingQueryParams {
 	status?: string;
+	detector?: string;
 	cursor?: string;
 	limit?: unknown;
 }
@@ -170,6 +239,7 @@ export async function listFindings(
 ): Promise<Page> {
 	const conditions: QuerySpec['conditions'] = [{ attribute: 'shopId', value: shopId }];
 	if (params.status) conditions.push({ attribute: 'status', value: params.status });
+	if (params.detector) conditions.push({ attribute: 'detector', value: params.detector });
 	const page = await keysetPageDesc(findings, conditions, 'detectedAt', 'id', FINDING_FIELDS, params.cursor, params.limit);
 
 	const items = await Promise.all(
@@ -392,12 +462,17 @@ export async function getPrivacy(
 			.split(',')
 			.map((s) => s.trim())
 			.filter(Boolean),
+		// Exactly what the pipeline stores, in merchant language. Every entry here
+		// must be true of the current schema — this list is read by merchants and by
+		// App Store reviewers, so a stale entry is a compliance defect, not cosmetics.
 		dataCategories: [
 			'order status & timestamps',
-			'fulfillment status & tracking presence',
+			'order name (e.g. #1001)',
+			'order value & currency',
+			'fulfillment status, location, tracking presence & carrier',
 			'inventory levels',
 			'refund status',
-			'SKUs & quantities',
+			'SKUs, product & variant titles & quantities',
 		],
 		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
 		deletion: {

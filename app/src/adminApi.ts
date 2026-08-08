@@ -15,6 +15,30 @@ interface GraphqlBody<T> {
 	errors?: Array<{ message: string }>;
 }
 
+// A GraphQL error whose message says the token's scopes don't cover the field
+// requested (Shopify's Admin GraphQL wording: "Access denied for <field> field.
+// Required access: `<scope>` access scope or higher.") means no retry can ever
+// succeed until the app requests the scope AND the merchant re-authorizes —
+// unlike a rate limit or a transient upstream error, which are worth retrying.
+// Narrow and comment-only: this is not a general error taxonomy, just the one
+// failure mode (missing scope) that must be distinguishable from a blip.
+const ACCESS_DENIED_RE = /access denied/i;
+
+// Mirrors PermanentNormalizeError's duck-typed `permanent` flag (src/normalize.ts)
+// so a scope failure is visible to a caller without adminApi.ts and normalize.ts
+// needing to share a class hierarchy.
+export class PermanentAdminApiError extends Error {
+	readonly permanent = true;
+	constructor(message: string) {
+		super(message);
+		this.name = 'PermanentAdminApiError';
+	}
+}
+
+export function isPermanentAdminError(err: unknown): boolean {
+	return typeof err === 'object' && err !== null && (err as { permanent?: unknown }).permanent === true;
+}
+
 // Low-level transport. Injectable `fetchImpl` for tests.
 export async function adminGraphql<T>(
 	shop: string,
@@ -38,7 +62,11 @@ export async function adminGraphql<T>(
 		throw e;
 	}
 	const body = (await res.json()) as GraphqlBody<T>;
-	if (body.errors?.length) throw new Error(`admin graphql errors: ${body.errors.map((x) => x.message).join('; ')}`);
+	if (body.errors?.length) {
+		const message = body.errors.map((x) => x.message).join('; ');
+		if (ACCESS_DENIED_RE.test(message)) throw new PermanentAdminApiError(`admin graphql errors: ${message}`);
+		throw new Error(`admin graphql errors: ${message}`);
+	}
 	if (!body.data) throw new Error('admin graphql: empty data');
 	return body.data;
 }
@@ -144,4 +172,59 @@ export async function fetchShopTimezone(shop: string, token: string, fetchImpl: 
 	const data = await adminGraphql<{ shop: { ianaTimezone?: unknown } }>(shop, token, `{shop{ianaTimezone}}`, {}, fetchImpl);
 	const tz = data.shop?.ianaTimezone;
 	return typeof tz === 'string' && tz.length > 0 ? tz : undefined;
+}
+
+const INVENTORY_ITEMS_QUERY = `query($ids:[ID!]!){nodes(ids:$ids){... on InventoryItem{id sku variant{title product{title}}}}}`;
+
+// Resolve inventory item ids to their SKU/product facts. Ids arrive as numeric
+// strings (matching the webhook's inventory_item_id) and are widened to gids for
+// the API. Nodes that no longer exist come back null and are skipped.
+export async function fetchInventoryItems(
+	shop: string,
+	token: string,
+	ids: string[],
+	fetchImpl: typeof fetch = fetch,
+): Promise<Array<{ inventoryItemId: string; sku?: string; productTitle?: string; variantTitle?: string }>> {
+	if (ids.length === 0) return [];
+	const data = await adminGraphql<{
+		nodes: Array<{ id?: unknown; sku?: unknown; variant?: { title?: unknown; product?: { title?: unknown } } } | null>;
+	}>(shop, token, INVENTORY_ITEMS_QUERY, { ids: ids.map((id) => `gid://shopify/InventoryItem/${id}`) }, fetchImpl);
+	const out: Array<{ inventoryItemId: string; sku?: string; productTitle?: string; variantTitle?: string }> = [];
+	for (const node of data.nodes ?? []) {
+		if (!node) continue;
+		const inventoryItemId = numericId(node.id);
+		if (!inventoryItemId) continue;
+		out.push({
+			inventoryItemId,
+			sku: typeof node.sku === 'string' && node.sku.length > 0 ? node.sku : undefined,
+			productTitle: typeof node.variant?.product?.title === 'string' ? node.variant.product.title : undefined,
+			variantTitle: typeof node.variant?.title === 'string' ? node.variant.title : undefined,
+		});
+	}
+	return out;
+}
+
+const LOCATIONS_QUERY = `{locations(first:100){nodes{id name}}}`;
+
+// A shop's locations. Small and slow-changing, so the whole set is cached in one
+// call rather than resolved per event.
+export async function fetchLocations(
+	shop: string,
+	token: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<Array<{ locationId: string; name?: string }>> {
+	const data = await adminGraphql<{ locations: { nodes: Array<{ id?: unknown; name?: unknown }> } }>(
+		shop,
+		token,
+		LOCATIONS_QUERY,
+		{},
+		fetchImpl,
+	);
+	const out: Array<{ locationId: string; name?: string }> = [];
+	for (const node of data.locations?.nodes ?? []) {
+		const locationId = numericId(node.id);
+		if (!locationId) continue;
+		out.push({ locationId, name: typeof node.name === 'string' ? node.name : undefined });
+	}
+	return out;
 }

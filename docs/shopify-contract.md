@@ -20,10 +20,12 @@ Request only:
 | `read_orders` | orders (paid/updated/cancelled) and refunds topics; also grants Fulfillment + Refund object reads (60-day window) |
 | `read_fulfillments` | required to subscribe to the `fulfillments/*` topics |
 | `read_inventory` | inventory level updates |
+| `read_products` | Admin API read to resolve an inventory item's product/variant title for display (`InventoryItem.variant.product.title`, `InventoryItem.variant.title`) — inventory webhooks carry only an id and a quantity |
+| `read_locations` | Admin API read to resolve a location's name for display (`locations { nodes { name } }`) — fulfillment/inventory events carry only a `location_id` |
 
 **No write scopes.** **Do NOT request `read_all_orders`** — the MVP needs only a rolling 7-day window, which sits well inside Shopify's default **60-day** order-access window; `read_all_orders` adds a Shopify approval gate and access risk for no benefit.
 
-Deferred domains (products, customers, returns) and their scopes are intentionally **not** requested (per the plan's domain selection).
+`read_products` and `read_locations` are **read-only Admin API reads, not webhook subscriptions** — no product or location webhook topic is subscribed, and neither scope adds a customer identifier (both stay PCD Level 1 — see §5). Customers and returns remain out of scope entirely; nothing about them is requested or read.
 
 ## 3. Webhook topics → scopes → payload minimization
 
@@ -31,10 +33,15 @@ App-specific subscriptions (declared in `shopify.app.toml`). `include_fields` is
 
 | Domain | Topic(s) | Scope | `include_fields` (non-PII whitelist — re-verify names against 2026-07 payloads) |
 |---|---|---|---|
-| Orders | `orders/create`, `orders/paid`, `orders/updated`, `orders/cancelled` | `read_orders` | `id`, `admin_graphql_api_id`, `name`, `order_number`, `created_at`, `updated_at`, `processed_at`, `cancelled_at`, `closed_at`, `confirmed`, `financial_status`, `fulfillment_status`, `currency`, `line_items` |
-| Fulfillment | `fulfillments/create`, `fulfillments/update` | `read_fulfillments` | `id`, `admin_graphql_api_id`, `order_id`, `status`, `shipment_status`, `created_at`, `updated_at`, `tracking_company`, `tracking_numbers`, `line_items` — **exclude `destination`** (address) |
+| Orders | `orders/create`, `orders/paid`, `orders/updated`, `orders/cancelled` | `read_orders` | `id`, `admin_graphql_api_id`, `name`, `order_number`, `created_at`, `updated_at`, `processed_at`, `cancelled_at`, `closed_at`, `confirmed`, `financial_status`, `fulfillment_status`, `currency`, `total_price`, `current_total_price`, `line_items` |
+| Fulfillment | `fulfillments/create`, `fulfillments/update` | `read_fulfillments` | `id`, `admin_graphql_api_id`, `order_id`, `status`, `shipment_status`, `location_id`, `created_at`, `updated_at`, `tracking_company`, `tracking_numbers`, `line_items` — **exclude `destination`** (address) |
 | Inventory | `inventory_levels/update` | `read_inventory` | `inventory_item_id`, `location_id`, `available`, `updated_at` |
 | Refunds | `refunds/create` | `read_orders` | `id`, `admin_graphql_api_id`, `order_id`, `created_at`, `processed_at`, `refund_line_items`, `transactions` — **exclude `note`** (free text) |
+
+| Topic | Added fields | Why | PCD level |
+|---|---|---|---|
+| `orders/*` | `total_price`, `current_total_price` | Order value, so a merchant can triage unconfirmed orders by exposure rather than by row order. Money amounts carry no customer identifier. | Level 1 |
+| `fulfillments/*` | `location_id` | Which location shipped, so a multi-location merchant can see whether one location is the source of missing confirmations. | Level 1 |
 
 Notes:
 - `line_items` carries `sku`, `quantity`, `fulfillable_quantity`, `requires_shipping`, `fulfillment_status`, and product `title` — all Level 1 (not customer PII), and exactly the detector/evidence facts we store.
@@ -67,7 +74,9 @@ These pair with the ADR-003 purge/redaction mechanism (targeted `DELETE` by shop
 
 **Everything Sightline stores is Level 1:** ids, statuses (`financial_status`, `fulfillment_status`), timestamps, SKU/quantity, and fulfillment tracking evidence. We explicitly do **not** store customer name, email, phone, or address.
 
-**Double protection against PII:** (a) without Level 2 approval, Shopify redacts PII from webhook payloads anyway; (b) our `include_fields` whitelists exclude PII fields so they are never sent. Webhooks are treated as signals only — we never call the Admin API for sensitive fields.
+**Double protection against PII:** (a) without Level 2 approval, Shopify redacts PII from webhook payloads anyway; (b) our `include_fields` whitelists exclude PII fields so they are never sent. Webhooks carry no PII to begin with; the two Admin API reads we do make (§6, `read_products`/`read_locations`) resolve product/variant/location **names**, never a customer field.
+
+Money amounts (`total_price`, `current_total_price`, `currency`) and operational identifiers (`location_id`, `tracking_company`, `tracking_numbers`) are order facts, not customer identifiers, and remain inside Level 1. Product and variant titles (`read_products`) and location names (`read_locations`) are likewise order/catalog facts, not customer identifiers, and remain inside Level 1. No Level 2 identifier is requested.
 
 ### Level 1 approval checklist (Partner Dashboard → API Access → Protected Customer Data Access)
 
@@ -90,13 +99,15 @@ Declare in the PCDA form: which protected data we use + reasons; Data-protection
 - **Confirmation evidence:** `fulfillments/create|update` `status` + tracking.
 - **Inventory lane / refund context:** `inventory_levels/update`, `refunds/create`.
 
-### Admin API reads (reconciliation only)
+### Admin API reads
 
 | Query | Fields | Why | Scope |
 |---|---|---|---|
 | `orders(query: "updated_at:>=…", sortKey: UPDATED_AT)` | `id createdAt updatedAt cancelledAt displayFinancialStatus displayFulfillmentStatus lineItems{quantity requiresShipping} fulfillments{status createdAt}` | Gap-fill for missed webhooks + install backfill (#13) | `read_orders`, `read_fulfillments` |
 | `shop { ianaTimezone }` | `ianaTimezone` | Render merchant-facing timestamps in the store's configured timezone (screen spec). Cached once per install; **display only** — a failure never blocks reconciliation. Shop-level setting, **not** protected customer data. | none beyond the above |
 | `shop { name }` | `name` | Liveness probe that the offline token works | none beyond the above |
+| `nodes(ids: […]) { … on InventoryItem { id sku variant { title product { title } } } }` | `id`, `sku`, `variant.title`, `variant.product.title` | An `inventory_levels/update` webhook carries only `inventory_item_id` and a quantity, which is unreadable to a merchant and unsearchable by SKU. Periodic background sweep (not reconciliation) resolves unseen item ids into the SKU/product/variant title shown in the UI. Product/variant title is order-fact product data, not a customer identifier — Level 1. | `read_products` |
+| `locations(first: 100) { nodes { id name } }` | `id`, `name` | Resolves a `location_id` (from `fulfillments/*`/`inventory_levels/update`) to a human-readable location name for the UI. Small, slow-changing set cached once per shop. | `read_locations` |
 
 ## 7. `shopify.app.toml` sketch (illustrative — not the final config)
 

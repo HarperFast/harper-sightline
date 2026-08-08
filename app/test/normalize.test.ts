@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripPii } from '../src/pii.ts';
-import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError, type DeliveryMeta } from '../src/normalize.ts';
+import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError, MAX_EVENT_SKUS, type DeliveryMeta } from '../src/normalize.ts';
 
 // The single API version we pin (shopify-contract §1). Fixtures live under this
 // directory; add a sibling directory to cover a future version.
@@ -137,9 +137,9 @@ for (const c of CASES) {
 }
 
 test('order events carry fulfillment eligibility from line_items (#12)', () => {
-	// orders_paid: one shippable line, fulfillable_quantity 2.
+	// orders_paid: two shippable lines, fulfillable_quantity 2 + 1.
 	const paid = normalizeDelivery(meta('orders/paid'), stripPii(fixture('orders_paid')))[0];
-	assert.equal(paid.fulfillableItemCount, 2);
+	assert.equal(paid.fulfillableItemCount, 3);
 	// A digital order (no line requires shipping) yields 0, not undefined.
 	const digital = normalizeDelivery(meta('orders/paid'), {
 		id: 42,
@@ -202,4 +202,79 @@ test('numeric-string ids normalize to strings', () => {
 	});
 	assert.equal(events[0].resourceId, '5100000000009');
 	assert.equal(typeof events[0].resourceId, 'string');
+});
+
+test('order events carry the merchant-facing name, value, and currency', () => {
+	const [event] = normalizeDelivery(meta('orders/paid'), fixture('orders_paid'));
+	assert.equal(event.orderName, '#1001');
+	assert.equal(event.totalPrice, 129.95);
+	assert.equal(event.currency, 'USD');
+});
+
+test('order name falls back to order_number when name is absent', () => {
+	const payload = { ...(fixture('orders_paid') as Record<string, unknown>), name: undefined, order_number: 1042 };
+	const [event] = normalizeDelivery(meta('orders/paid'), payload);
+	assert.equal(event.orderName, '#1042');
+});
+
+test('order events carry every distinct line-item SKU, capped', () => {
+	const [event] = normalizeDelivery(meta('orders/paid'), fixture('orders_paid'));
+	// orders_paid.json line items: TSHIRT-BLK-M (id 111), STICKER-PK (id 112).
+	assert.deepEqual(event.skus, ['TSHIRT-BLK-M', 'STICKER-PK']);
+
+	const many = {
+		...(fixture('orders_paid') as Record<string, unknown>),
+		line_items: Array.from({ length: 30 }, (_u, i) => ({ sku: `SKU-${i}`, quantity: 1 })),
+	};
+	const [big] = normalizeDelivery(meta('orders/paid'), many);
+	assert.equal(big.skus?.length, MAX_EVENT_SKUS);
+});
+
+test('duplicate SKUs across line items collapse to one entry', () => {
+	const payload = {
+		...(fixture('orders_paid') as Record<string, unknown>),
+		line_items: [
+			{ sku: 'A', quantity: 1 },
+			{ sku: 'A', quantity: 2 },
+		],
+	};
+	const [event] = normalizeDelivery(meta('orders/paid'), payload);
+	assert.deepEqual(event.skus, ['A']);
+});
+
+test('fulfillment events carry location, tracking presence, carrier, and shipment status', () => {
+	const [event] = normalizeDelivery(meta('fulfillments/create'), fixture('fulfillments_create'));
+	assert.equal(event.locationId, '987654321');
+	assert.equal(event.hasTracking, true);
+	assert.equal(event.trackingCompany, 'UPS');
+	assert.equal(event.shipmentStatus, 'in_transit');
+});
+
+test('a fulfillment with no tracking numbers reports hasTracking false, not undefined', () => {
+	const payload = { ...(fixture('fulfillments_create') as Record<string, unknown>), tracking_numbers: [], tracking_company: undefined };
+	const [event] = normalizeDelivery(meta('fulfillments/create'), payload);
+	assert.equal(event.hasTracking, false);
+	assert.equal(event.trackingCompany, undefined);
+});
+
+test('inventory events carry their location', () => {
+	const [event] = normalizeDelivery(meta('inventory_levels/update'), fixture('inventory_levels_update'));
+	// inventory_levels_update.json: location_id 8400000000001 (not 987654321 —
+	// that id belongs to fulfillments_create.json's location).
+	assert.equal(event.locationId, '8400000000001');
+});
+
+test('refund events carry the refunded line items SKUs', () => {
+	const [event] = normalizeDelivery(meta('refunds/create'), fixture('refunds_create'));
+	// refunds_create.json refunds the nested line_item with sku HAT-01, matching
+	// orders_cancelled.json's line item.
+	assert.deepEqual(event.skus, ['HAT-01']);
+});
+
+test('no normalizer ever emits a customer-identifying field', () => {
+	const hostile = { ...(fixture('orders_paid') as Record<string, unknown>), email: 'a@b.com', customer: { first_name: 'X' }, phone: '+1' };
+	const [event] = normalizeDelivery(meta('orders/paid'), hostile);
+	for (const key of ['email', 'customer', 'phone', 'billing_address', 'shipping_address']) {
+		assert.equal(key in event, false, `${key} must never reach a normalized event`);
+	}
 });

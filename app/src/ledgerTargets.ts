@@ -1,4 +1,17 @@
-import { Shops, Credentials, AuditEvents, Deliveries, Events, Projections, Expectations, Findings, Aggregates } from './db.ts';
+import {
+	Shops,
+	Credentials,
+	AuditEvents,
+	Deliveries,
+	Events,
+	Projections,
+	Expectations,
+	Findings,
+	Aggregates,
+	EventSkus,
+	InventoryItems,
+	ShopLocations,
+} from './db.ts';
 import type { RetentionTarget, PurgeableTable } from './retention.ts';
 import type { RedactTarget } from './redaction.ts';
 
@@ -14,6 +27,7 @@ function purgeable(table: unknown): PurgeableTable {
 export const RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'WebhookDelivery', keyField: 'id', tsField: 'receivedAt', table: purgeable(Deliveries) },
 	{ name: 'OperationalEvent', keyField: 'eventId', tsField: 'receivedAt', table: purgeable(Events) },
+	{ name: 'EventSku', keyField: 'id', tsField: 'receivedAt', table: purgeable(EventSkus) },
 	{ name: 'OrderProjection', keyField: 'id', tsField: 'lastEventAt', table: purgeable(Projections) },
 	{ name: 'Expectation', keyField: 'id', tsField: 'createdAt', table: purgeable(Expectations) },
 	{ name: 'GapFinding', keyField: 'id', tsField: 'detectedAt', table: purgeable(Findings) },
@@ -27,6 +41,7 @@ export const RETENTION_TARGETS: RetentionTarget[] = [
 export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'WebhookDelivery', keyField: 'id', shopField: 'shopId', table: purgeable(Deliveries) },
 	{ name: 'OperationalEvent', keyField: 'eventId', shopField: 'shopId', orderField: 'resourceId', table: purgeable(Events) },
+	{ name: 'EventSku', keyField: 'id', shopField: 'shopId', orderField: 'resourceId', table: purgeable(EventSkus) },
 	{ name: 'OrderProjection', keyField: 'id', shopField: 'shopId', orderField: 'orderId', table: purgeable(Projections) },
 	{ name: 'Expectation', keyField: 'id', shopField: 'shopId', orderField: 'orderId', table: purgeable(Expectations) },
 	{ name: 'GapFinding', keyField: 'id', shopField: 'shopId', orderField: 'orderId', table: purgeable(Findings) },
@@ -34,4 +49,10 @@ export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'Shop', keyField: 'shopId', shopField: 'shopId', table: purgeable(Shops) },
 	{ name: 'ShopCredential', keyField: 'shopId', shopField: 'shopId', table: purgeable(Credentials) },
 	{ name: 'AppAuditEvent', keyField: 'id', shopField: 'shopId', table: purgeable(AuditEvents) },
+	// Reference caches, NOT ledger records: they carry no order or customer linkage
+	// and are useless once the shop is gone, so they are erased by shop redaction
+	// but deliberately not aged out by the seven-day purge (re-fetching them every
+	// week would be pointless Admin API traffic).
+	{ name: 'InventoryItem', keyField: 'id', shopField: 'shopId', table: purgeable(InventoryItems) },
+	{ name: 'ShopLocation', keyField: 'id', shopField: 'shopId', table: purgeable(ShopLocations) },
 ];

@@ -1,16 +1,30 @@
-import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops, Credentials } from './src/db.ts';
+import {
+	Deliveries,
+	Events,
+	Projections,
+	Expectations,
+	Findings,
+	Checkpoints,
+	Shops,
+	Credentials,
+	EventSkus,
+	InventoryItems,
+	ShopLocations,
+} from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
+import { writeEventWithSkus } from './src/eventSkus.ts';
 import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { uninstallShop } from './src/lifecycle.ts';
-import { evaluateOrder, detectorKey } from './src/detector.ts';
+import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
-import { fetchOrdersUpdatedSince, fetchShopTimezone } from './src/adminApi.ts';
+import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
+import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
@@ -51,14 +65,17 @@ async function updateOrderProjection(shopId: string, orderId: string): Promise<v
 	if (projection) await Projections.put(projection);
 }
 
-// Run the fulfillment-confirmation detector for one order (#14): evaluate its
-// projection against the rule and upsert the expectation + finding. Deterministic
+// Run every detector for one order (#14 + failed-attempt detector): evaluate the
+// projection against each rule and upsert its expectation/finding. Deterministic
 // keys make this idempotent; evidence is the order's normalized event ids.
+//
+// The failed-attempt detector writes NO expectation — it has no deadline, so
+// there is nothing for the periodic sweep to expire. It is therefore evaluated
+// only on order events (which is sufficient: its state changes only when a new
+// fulfillment/cancel/refund event arrives).
 async function runDetectorForOrder(shopId: string, orderId: string, now = Date.now()): Promise<void> {
 	const projection = await Projections.get(`${shopId}:${orderId}`);
 	if (!projection) return;
-	const id = detectorKey(shopId, orderId);
-	const [expectation, finding] = await Promise.all([Expectations.get(id), Findings.get(id)]);
 	const evidenceEventIds: string[] = [];
 	for await (const e of Events.search({
 		conditions: [
@@ -72,6 +89,9 @@ async function runDetectorForOrder(shopId: string, orderId: string, now = Date.n
 		if (typeof eid === 'string') evidenceEventIds.push(eid);
 	}
 	evidenceEventIds.sort();
+
+	const confirmationId = detectorKey(shopId, orderId);
+	const [expectation, finding] = await Promise.all([Expectations.get(confirmationId), Findings.get(confirmationId)]);
 	const result = evaluateOrder({
 		projection,
 		now,
@@ -80,6 +100,16 @@ async function runDetectorForOrder(shopId: string, orderId: string, now = Date.n
 	});
 	if (result.expectation) await Expectations.put(result.expectation);
 	if (result.finding) await Findings.put(result.finding);
+
+	const failedId = detectorKey(shopId, orderId, FAILED_RULE);
+	const priorFailed = (await Findings.get(failedId)) as GapFinding | undefined;
+	const failed = evaluateFailedFulfillment({
+		projection,
+		now,
+		evidenceEventIds,
+		prior: { finding: priorFailed },
+	});
+	if (failed.finding) await Findings.put(failed.finding);
 }
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
@@ -137,7 +167,7 @@ const deps: ProcessDeps = {
 		const meta = { shopId: row.shopId, topic: row.topic, webhookId: row.webhookId, receivedAt: row.receivedAt };
 		// Deterministic eventId → idempotent upsert on reprocessing (ADR-002).
 		for (const event of normalizeDelivery(meta, payload)) {
-			await Events.put(event);
+			await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
 			// Maintain the order projection (#12), then evaluate the detector (#14)
 			// so paid/fulfilled/cancelled transitions are reflected immediately.
 			if (isOrderLinked(event)) {
@@ -322,7 +352,9 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 	do {
 		const page = await fetchOrdersUpdatedSince(shopId, token, sinceMs, cursor);
 		for (const order of page.orders) {
-			for (const event of synthesizeEvents(shopId, order)) await Events.put(event);
+			for (const event of synthesizeEvents(shopId, order)) {
+				await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
+			}
 			await updateOrderProjection(shopId, order.orderId);
 			await runDetectorForOrder(shopId, order.orderId, now);
 			if (order.updatedAt && order.updatedAt > latest) latest = order.updatedAt;
@@ -377,6 +409,56 @@ export function startReconcileLoop(): void {
 	setInterval(reconcileTick, RECONCILE_INTERVAL_MS);
 }
 
+// Inventory enrichment. An inventory webhook carries only inventory_item_id and
+// a quantity, which is unreadable to a merchant and unsearchable by SKU. This
+// sweep resolves unseen item ids (and the shop's locations) through the Admin API,
+// caches them, and backfills EventSku rows so inventory events become
+// SKU-searchable like every other domain. The orchestration itself (including the
+// checkpoint that makes it converge — see src/inventoryEnrich.ts) is deps-injected
+// and lives there, unit-testable without the Harper runtime, matching the
+// accessToken.ts/tokenDeps.ts and processor.ts/jobs.ts split already in this
+// codebase. This section only wires the real tables/Admin API/token resolution
+// and schedules the tick.
+const ENRICH_INTERVAL_MS = 900_000; // 15 minutes
+const ENRICH_INITIAL_DELAY_MS = 60_000;
+const enrichTicker = ticker('inventory.enrich', 30 * 60_000);
+
+const enrichDeps: EnrichDeps = {
+	shops: Shops as unknown as EnrichReadTable,
+	events: Events as unknown as EnrichReadTable,
+	inventoryItems: InventoryItems as unknown as EnrichDeps['inventoryItems'],
+	shopLocations: ShopLocations as unknown as EnrichDeps['shopLocations'],
+	eventSkus: EventSkus,
+	checkpoints: Checkpoints as unknown as EnrichDeps['checkpoints'],
+	getToken: (shopId, now) => getUsableAccessToken(tokenDeps, shopId, now),
+	fetchItems: fetchInventoryItems,
+	fetchLocations: fetchLocations,
+};
+
+export function runInventoryEnrichment(now = Date.now()): Promise<{ items: number; locations: number; indexed: number }> {
+	return runEnrichmentSweep(now, enrichDeps);
+}
+
+function enrichTick(): void {
+	void enrichTicker.run(async () => {
+		try {
+			const r = await runInventoryEnrichment();
+			metrics.inc(M.enrichItems, r.items);
+			metrics.inc(M.enrichLocations, r.locations);
+			metrics.inc(M.enrichIndexed, r.indexed);
+			if (r.items || r.locations || r.indexed) log('trace', 'enrich.tick', r);
+		} catch (e: unknown) {
+			metrics.inc(M.enrichError);
+			log('error', 'enrich.error', { message: (e as Error).message });
+		}
+	});
+}
+
+export function startInventoryEnrichmentLoop(): void {
+	setTimeout(enrichTick, ENRICH_INITIAL_DELAY_MS);
+	setInterval(enrichTick, ENRICH_INTERVAL_MS);
+}
+
 // Observability heartbeat (#22). Periodically derives the aggregate ops-health
 // (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
 // and emits it — with the cumulative metrics tally — as a single structured line.
@@ -417,4 +499,5 @@ startProcessingLoop();
 startPurgeLoop();
 startDetectorLoop();
 startReconcileLoop();
+startInventoryEnrichmentLoop();
 startOpsSnapshotLoop();

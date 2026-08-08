@@ -61,6 +61,19 @@ export class FakeTable implements PurgeableTable {
 		return row ? { ...row } : undefined;
 	}
 
+	// Upsert by the configured key field. Stores a copy so a caller mutating its
+	// input afterwards cannot change persisted state (Harper serializes on write).
+	async put(record: Record<string, unknown>): Promise<void> {
+		this.rows.set(String(record[this.keyField]), { ...record });
+	}
+
+	// Shallow merge into an existing row. A missing row is a no-op, matching how
+	// the production call sites treat patch (they only patch rows they just read).
+	async patch(id: string, partial: Record<string, unknown>): Promise<void> {
+		const row = this.rows.get(id);
+		if (row) this.rows.set(id, { ...row, ...partial });
+	}
+
 	async delete(id: string): Promise<void> {
 		this.rows.delete(id);
 	}

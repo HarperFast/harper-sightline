@@ -9,6 +9,8 @@
 	"financial_status": "paid",
 	"fulfillment_status": "partial",
 	"currency": "USD",
+	"total_price": "129.95",
+	"current_total_price": "129.95",
 	"line_items": [{ "id": 111, "sku": "TSHIRT-BLK-M", "title": "T-Shirt", "quantity": 2, "fulfillable_quantity": 1 }],
 	"email": "buyer@example.com",
 	"customer": { "id": 999, "first_name": "Jane", "last_name": "Doe" }

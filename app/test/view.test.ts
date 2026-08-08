@@ -115,6 +115,28 @@ test('resolved and suppressed findings omit the disclaimer, whose wording would 
 	}
 });
 
+test('a failed-attempt finding never carries the absence detector’s disclaimer — it would be false and self-contradictory', () => {
+	const html = findingDetailView(
+		finding({
+			detector: 'fulfillment_attempt_failed',
+			description: 'Shopify recorded a fulfillment attempt for this order that did not succeed.',
+		}),
+		NOW,
+		'',
+	);
+	assert.ok(!html.includes(FINDING_DISCLAIMER), '"has not shown … yet" is false when Shopify already recorded the failed attempt');
+	assert.ok(!html.includes('Why this qualified'), 'this detector has no confirmation window to explain');
+	assert.ok(
+		html.includes('Shopify recorded a fulfillment attempt for this order that did not succeed'),
+		'the timeline states what was actually observed instead of an absence',
+	);
+});
+
+test('a finding with no detector field still gets absence-detector copy (rows written before the column existed)', () => {
+	const html = findingDetailView(finding({ detector: undefined }), NOW, '');
+	assert.ok(html.includes(FINDING_DISCLAIMER));
+});
+
 test('the findings list states the claim boundary', () => {
 	const html = findingsListView({}, [], NOW, '');
 	assert.ok(html.includes(FINDINGS_BOUNDARY));

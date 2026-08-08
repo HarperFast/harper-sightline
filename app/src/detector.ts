@@ -39,6 +39,68 @@ export const DEFAULT_RULE: DetectorRule = {
 	deadlineMs: FULFILLMENT_DEADLINE_MS,
 };
 
+// ── Failed-fulfillment-attempt detector (ruleVersion 1) ──────────────────────
+//
+// A PRESENCE detector: it fires on evidence Shopify itself recorded — a
+// fulfillment whose status is `error` or `failure` — so unlike the confirmation
+// detector it needs no deadline and infers nothing from absence. That makes its
+// copy different in kind: it may state that an attempt failed, because Shopify
+// says so. It still never names or blames a downstream party.
+//
+//   fulfillmentFailedAt | fulfilledAt (later) | cancelled/refunded | finding
+//   ────────────────────┼─────────────────────┼────────────────────┼──────────────
+//   unset               |          –          |         –          | (none)
+//   set                 |        unset        |       unset        | unconfirmed
+//   set                 |         set         |         –          | resolved
+//   set                 |        unset        |        set         | suppressed
+export const DETECTOR_FAILED = 'fulfillment_attempt_failed';
+
+// deadlineMs is 0: this detector has no waiting period. It is in the rule only
+// because DetectorRule is the shared shape that keys and versions a detector.
+export const FAILED_RULE: DetectorRule = {
+	detector: DETECTOR_FAILED,
+	ruleVersion: 1,
+	deadlineMs: 0,
+};
+
+export interface FailedEvaluateInput {
+	projection: OrderProjection;
+	now: number;
+	evidenceEventIds?: string[];
+	prior?: { finding?: GapFinding };
+	rule?: DetectorRule;
+}
+
+export function evaluateFailedFulfillment(input: FailedEvaluateInput): { finding: GapFinding | null } {
+	const rule = input.rule ?? FAILED_RULE;
+	const p = input.projection;
+	const prior = input.prior ?? {};
+	if (p.fulfillmentFailedAt === undefined) return { finding: prior.finding ?? null };
+
+	// detectedAt is the failure's own timestamp, not when the sweep noticed — the
+	// merchant's question is "when did this break", and it makes the record stable
+	// across re-evaluation.
+	const detectedAt = prior.finding?.detectedAt ?? p.fulfillmentFailedAt;
+	let status: GapFinding['status'] = 'unconfirmed';
+	if (p.fulfilledAt !== undefined) status = 'resolved';
+	else if (p.cancelledAt !== undefined || p.fullyRefundedAt !== undefined) status = 'suppressed';
+
+	const terminal = status !== 'unconfirmed';
+	return {
+		finding: {
+			id: detectorKey(p.shopId, p.orderId, rule),
+			shopId: p.shopId,
+			orderId: p.orderId,
+			detector: rule.detector,
+			ruleVersion: rule.ruleVersion,
+			status,
+			detectedAt,
+			resolvedAt: terminal ? (prior.finding?.resolvedAt ?? input.now) : undefined,
+			evidenceEventIds: prior.finding?.evidenceEventIds ?? input.evidenceEventIds ?? [],
+		},
+	};
+}
+
 // Deterministic key shared by an order's expectation and its finding. Namespaced
 // by shopId (like every other table key: WebhookDelivery, OrderProjection) so two
 // tenants that ever share an order id cannot collide on one finding/expectation
@@ -103,6 +165,7 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 			id,
 			shopId: p.shopId,
 			orderId: p.orderId,
+			detector: rule.detector,
 			ruleVersion: rule.ruleVersion,
 			status: 'unconfirmed',
 			detectedAt: prior.finding?.detectedAt ?? input.now,
@@ -119,9 +182,26 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 	return { expectation, finding };
 }
 
-// Approved, non-accusatory finding copy. Absence of a confirmation signal is not
-// proof of a downstream failure, so the wording never claims a vendor failed.
+// Approved, non-accusatory finding copy, per detector.
+//
+// The absence detector must hedge: absence of a confirmation is not proof that
+// anything failed. The presence detector must NOT hedge in the same words — a
+// fulfillment Shopify recorded as `error` did fail, and saying "Shopify has not
+// shown confirmation yet" would understate it. Neither ever names a warehouse,
+// carrier, or vendor.
 export function describeFinding(finding: GapFinding): string {
+	if (finding.detector === DETECTOR_FAILED) {
+		switch (finding.status) {
+			case 'unconfirmed':
+				return 'Shopify recorded a fulfillment attempt for this order that did not succeed.';
+			case 'resolved':
+				return 'A later fulfillment succeeded; this order is now fulfilled in Shopify.';
+			case 'suppressed':
+				return 'This order was cancelled or fully refunded, so the failed attempt no longer needs action.';
+			default:
+				return 'This order is awaiting evaluation.';
+		}
+	}
 	switch (finding.status) {
 		case 'unconfirmed':
 			return 'No Shopify fulfillment confirmation was observed for this paid, fulfillment-eligible order by the expected time.';

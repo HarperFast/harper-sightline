@@ -74,10 +74,11 @@ store's operation continues normally.</p>
 <h2>What we store</h2>
 <ul>
 	<li>Order status and timestamps (paid, cancelled, closed), and order identifiers</li>
-	<li>Fulfillment status, and whether tracking information is present</li>
+	<li>Order value and currency</li>
+	<li>Fulfillment status, the location it shipped from, whether tracking information is present, and which carrier</li>
 	<li>Inventory levels by inventory item and location</li>
 	<li>Refund status</li>
-	<li>SKUs and quantities</li>
+	<li>SKUs, product and variant titles, and quantities</li>
 	<li>Your shop domain, the access scopes you granted, and install/uninstall timestamps</li>
 	<li>Your store's configured timezone, so timestamps display in your local time</li>
 	<li>An encrypted Shopify access token, used only to read the order data described above</li>
@@ -131,8 +132,8 @@ availability. We do not transfer your data to any other processor.</p>
 <h2>Shopify's role</h2>
 <p>Shopify is the source of the data described above and its own privacy terms govern your store.
 Sightline receives data from Shopify only under the read scopes you granted at install
-(<code>read_orders</code>, <code>read_fulfillments</code>, <code>read_inventory</code>) and requests
-no write access of any kind.</p>
+(<code>read_orders</code>, <code>read_fulfillments</code>, <code>read_inventory</code>,
+<code>read_products</code>, <code>read_locations</code>) and requests no write access of any kind.</p>
 
 <h2>Changes to this policy</h2>
 <p>Material changes will be reflected in the "last updated" date above, and the policy is versioned

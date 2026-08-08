@@ -100,6 +100,10 @@ export interface EventDetail extends EventItem {
 export interface FindingItem {
 	id: string;
 	orderId: string;
+	// Which detector wrote this finding ('fulfillment_confirmation' | 'fulfillment_attempt_failed').
+	// Absent on rows written before this column existed — those must still be
+	// treated as the absence detector (src/detector.ts DETECTOR), never as unknown.
+	detector?: string;
 	ruleVersion?: number;
 	status: string;
 	detectedAt?: number;

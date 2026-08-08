@@ -16,6 +16,9 @@ import {
 	Deliveries as DeliveriesTable,
 	Shops as ShopsTable,
 	Credentials as CredentialsTable,
+	EventSkus as EventSkusTable,
+	InventoryItems as InventoryItemsTable,
+	ShopLocations as ShopLocationsTable,
 } from './src/db.ts';
 import {
 	listEvents,
@@ -45,6 +48,9 @@ const ShopsQ = ShopsTable as unknown as QueryTable;
 // Read ONLY for the credential's `status` (reauthorization state) in /setup —
 // never for token material, which stays inside credentialStore.ts.
 const CredentialsQ = CredentialsTable as unknown as QueryTable;
+const EventSkusQ = EventSkusTable as unknown as QueryTable;
+const InventoryItemsQ = InventoryItemsTable as unknown as QueryTable;
+const ShopLocationsQ = ShopLocationsTable as unknown as QueryTable;
 import { readShopifySecret, SHOPIFY_API_KEY } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 import { log, metrics, M } from './src/observe.ts';
@@ -217,22 +223,28 @@ export class EventsResource extends Resource {
 		const url = parseUrl(ctx.url);
 		const id = trailingId(url.pathname, '/api/v1/events');
 		if (id) {
-			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id);
+			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id, InventoryItemsQ, ShopLocationsQ);
 			if (!detail) throw httpError('event not found', 404);
 			return detail;
 		}
 		const p = url.searchParams;
-		return listEvents(EventsQ, shopId, Date.now(), {
-			domain: p.get('domain') ?? undefined,
-			topic: p.get('topic') ?? undefined,
-			resourceId: p.get('resourceId') ?? undefined,
-			sku: p.get('sku') ?? undefined,
-			source: p.get('source') ?? undefined,
-			since: numParam(p, 'since'),
-			until: numParam(p, 'until'),
-			cursor: p.get('cursor') ?? undefined,
-			limit: p.get('limit') ?? undefined,
-		});
+		return listEvents(
+			EventsQ,
+			shopId,
+			Date.now(),
+			{
+				domain: p.get('domain') ?? undefined,
+				topic: p.get('topic') ?? undefined,
+				resourceId: p.get('resourceId') ?? undefined,
+				sku: p.get('sku') ?? undefined,
+				source: p.get('source') ?? undefined,
+				since: numParam(p, 'since'),
+				until: numParam(p, 'until'),
+				cursor: p.get('cursor') ?? undefined,
+				limit: p.get('limit') ?? undefined,
+			},
+			EventSkusQ,
+		);
 	}
 }
 
@@ -265,6 +277,7 @@ export class FindingsResource extends Resource {
 		const p = url.searchParams;
 		return listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
 			status: p.get('status') ?? undefined,
+			detector: p.get('detector') ?? undefined,
 			cursor: p.get('cursor') ?? undefined,
 			limit: p.get('limit') ?? undefined,
 		});

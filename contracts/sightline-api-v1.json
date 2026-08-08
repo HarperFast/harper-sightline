@@ -50,6 +50,13 @@
 				"sku",
 				"quantity",
 				"fulfillableItemCount",
+				"orderName",
+				"totalPrice",
+				"currency",
+				"locationId",
+				"hasTracking",
+				"trackingCompany",
+				"shipmentStatus",
 				"state",
 				"source",
 				"occurredAt",
@@ -78,13 +85,23 @@
 				"sku",
 				"quantity",
 				"fulfillableItemCount",
+				"orderName",
+				"totalPrice",
+				"currency",
+				"locationId",
+				"hasTracking",
+				"trackingCompany",
+				"shipmentStatus",
 				"state",
 				"source",
 				"occurredAt",
 				"receivedAt",
 				"relatedEventIds",
 				"affectedProjection",
-				"affectedFinding"
+				"affectedFinding",
+				"inventorySku",
+				"productTitle",
+				"locationName"
 			]
 		},
 		"flows": {
@@ -100,6 +117,7 @@
 			"item": [
 				"id",
 				"orderId",
+				"detector",
 				"ruleVersion",
 				"status",
 				"detectedAt",
@@ -111,6 +129,7 @@
 			"paginated": true,
 			"filters": [
 				"status",
+				"detector",
 				"cursor",
 				"limit"
 			]
@@ -120,6 +139,7 @@
 			"fields": [
 				"id",
 				"orderId",
+				"detector",
 				"ruleVersion",
 				"status",
 				"detectedAt",

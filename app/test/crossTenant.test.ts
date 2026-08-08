@@ -203,6 +203,27 @@ test('getEventDetail: victim cannot read an attacker event by its real id', asyn
 	assert.deepEqual(ok?.relatedEventIds, ['v:e2']);
 });
 
+test('getEventDetail: an attacker inventory-item cache row can never name the victim event', async () => {
+	const { events, projections, findings } = world();
+	// Attacker's cache row for the SAME inventory item id the victim's event uses.
+	const items = new FakeTable('id', [
+		{ id: `${A}:invX`, shopId: A, inventoryItemId: 'invX', sku: 'LEAKED', productTitle: 'Leaked Product' },
+	]);
+	const locations = new FakeTable('id', []);
+	await events.put({
+		eventId: 'v:inv',
+		shopId: V,
+		domain: 'inventory',
+		resourceId: 'invX',
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+	});
+	const detail = await getEventDetail(events, projections, findings, V, 'v:inv', items, locations);
+	assert.equal(detail?.inventorySku, undefined, "the attacker's cache row must not name the victim's item");
+	assert.equal(detail?.productTitle, undefined);
+});
+
 test('listFindings: only the victim findings, never attacker findings on shared order ids', async () => {
 	const { findings, expectations, projections } = world();
 	const page = await listFindings(findings, expectations, projections, V, {});

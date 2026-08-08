@@ -10,6 +10,9 @@ import type {
 	GapFinding,
 	FlowAggregate,
 	WorkerCheckpoint,
+	EventSku,
+	InventoryItem,
+	ShopLocation,
 } from './model.ts';
 
 // Table handles, resolved from the named sightline_* databases. Centralized so
@@ -28,3 +31,7 @@ export const Expectations = ledger.Expectation as unknown as Table<Expectation>;
 export const Findings = ledger.GapFinding as unknown as Table<GapFinding>;
 export const Aggregates = ledger.FlowAggregate as unknown as Table<FlowAggregate>;
 export const Checkpoints = ledger.WorkerCheckpoint as unknown as Table<WorkerCheckpoint>;
+
+export const EventSkus = ledger.EventSku as unknown as Table<EventSku>;
+export const InventoryItems = ledger.InventoryItem as unknown as Table<InventoryItem>;
+export const ShopLocations = ledger.ShopLocation as unknown as Table<ShopLocation>;

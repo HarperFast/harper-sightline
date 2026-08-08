@@ -119,6 +119,97 @@ function fixtures() {
 	return { events, projections, findings, expectations, deliveries, shops, credentials };
 }
 
+function skuFixtures() {
+	return new FakeTable('id', [
+		{
+			id: 's1:e1:TSHIRT',
+			shopId: 's1',
+			eventId: 's1:e1',
+			sku: 'TSHIRT',
+			domain: 'order',
+			topic: 'orders/paid',
+			source: 'webhook',
+			resourceId: 'o1',
+			occurredAt: NOW - 1000,
+			receivedAt: NOW - 1000,
+		},
+		{
+			id: 's1:e2:TSHIRT',
+			shopId: 's1',
+			eventId: 's1:e2',
+			sku: 'TSHIRT',
+			domain: 'fulfillment',
+			topic: 'fulfillments/create',
+			source: 'webhook',
+			resourceId: 'o1',
+			occurredAt: NOW - 500,
+			receivedAt: NOW - 500,
+		},
+		{
+			id: 's2:e1:TSHIRT',
+			shopId: 's2',
+			eventId: 's2:e1',
+			sku: 'TSHIRT',
+			domain: 'order',
+			topic: 'orders/paid',
+			source: 'webhook',
+			resourceId: 'o1',
+			occurredAt: NOW - 900,
+			receivedAt: NOW - 900,
+		},
+	]);
+}
+
+test('a SKU filter returns the shop own matching events, newest first', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT' }, skuFixtures());
+	assert.deepEqual(
+		page.items.map((i) => i.eventId),
+		['s1:e2', 's1:e1'],
+	);
+});
+
+test('a SKU filter never returns another tenant event that shares the SKU', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT' }, skuFixtures());
+	for (const item of page.items) assert.equal(String(item.eventId).startsWith('s1:'), true);
+});
+
+test('a SKU filter combines with a domain filter without post-filtering the page', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT', domain: 'fulfillment' }, skuFixtures());
+	assert.deepEqual(
+		page.items.map((i) => i.eventId),
+		['s1:e2'],
+	);
+});
+
+test('a SKU with no index rows returns an empty page, not every event', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { sku: 'NOPE' }, skuFixtures());
+	assert.deepEqual(page.items, []);
+});
+
+test('an index row whose event is missing is skipped, not returned as a phantom', async () => {
+	const { events } = fixtures();
+	const orphaned = skuFixtures();
+	await orphaned.put({
+		id: 's1:gone:TSHIRT',
+		shopId: 's1',
+		eventId: 's1:gone',
+		sku: 'TSHIRT',
+		domain: 'order',
+		source: 'webhook',
+		occurredAt: NOW - 100,
+		receivedAt: NOW - 100,
+	});
+	const page = await listEvents(events, 's1', NOW, { sku: 'TSHIRT' }, orphaned);
+	assert.equal(
+		page.items.some((i) => i.eventId === 's1:gone'),
+		false,
+	);
+});
+
 test('listEvents is tenant-scoped, windowed, and field-allowlisted', async () => {
 	const { events } = fixtures();
 	const page = await listEvents(events, 's1', NOW, {});
@@ -200,6 +291,44 @@ test('getEventDetail refuses cross-tenant access even with the correct id', asyn
 	assert.equal(ok?.affectedProjection, true);
 });
 
+test('an inventory event detail names its SKU, product, and location', async () => {
+	const { events, projections, findings } = fixtures();
+	const items = new FakeTable('id', [{ id: 's1:inv9', shopId: 's1', inventoryItemId: 'inv9', sku: 'TSHIRT', productTitle: 'T-Shirt' }]);
+	const locations = new FakeTable('id', [{ id: 's1:987', shopId: 's1', locationId: '987', name: 'Brooklyn' }]);
+	await events.put({
+		eventId: 's1:inv',
+		shopId: 's1',
+		domain: 'inventory',
+		resourceId: 'inv9',
+		locationId: '987',
+		quantity: 4,
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+	});
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:inv', items, locations);
+	assert.equal(detail?.inventorySku, 'TSHIRT');
+	assert.equal(detail?.productTitle, 'T-Shirt');
+	assert.equal(detail?.locationName, 'Brooklyn');
+});
+
+test('another tenant cache row can never name this shop event', async () => {
+	const { events, projections, findings } = fixtures();
+	const items = new FakeTable('id', [{ id: 's2:inv9', shopId: 's2', inventoryItemId: 'inv9', sku: 'LEAKED' }]);
+	const locations = new FakeTable('id', []);
+	await events.put({
+		eventId: 's1:inv',
+		shopId: 's1',
+		domain: 'inventory',
+		resourceId: 'inv9',
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+	});
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:inv', items, locations);
+	assert.equal(detail?.inventorySku, undefined);
+});
+
 test('listFindings is tenant-scoped and filterable by status', async () => {
 	const { findings, expectations, projections } = fixtures();
 	const page = await listFindings(findings, expectations, projections, 's1', {});
@@ -241,6 +370,21 @@ test('getFindingDetail joins expectation + projection, cross-tenant safe', async
 	assert.match(String(d?.description), /no shopify fulfillment confirmation/i);
 	assert.equal((d?.expectation as Record<string, unknown>)?.deadline, NOW - 200);
 	assert.equal((d?.projection as Record<string, unknown>)?.orderId, 'o2');
+});
+
+test('findings can be filtered to one detector', async () => {
+	const { findings, expectations, projections } = fixtures();
+	await findings.put({
+		id: 'fulfillment_attempt_failed:s1:o1:1',
+		shopId: 's1',
+		orderId: 'o1',
+		detector: 'fulfillment_attempt_failed',
+		status: 'unconfirmed',
+		detectedAt: NOW - 100,
+	});
+	const page = await listFindings(findings, expectations, projections, 's1', { detector: 'fulfillment_attempt_failed' });
+	assert.equal(page.items.length, 1);
+	assert.equal(page.items[0].detector, 'fulfillment_attempt_failed');
 });
 
 test('getSummary counts reconcile to the fixtures, scoped to the tenant', async () => {
@@ -326,6 +470,26 @@ test('getPrivacy never returns token material or cross-tenant metrics', async ()
 	const serialized = JSON.stringify(await getPrivacy(f, 's1', NOW));
 	assert.ok(!serialized.includes('SECRET'), 'no token material in the privacy payload');
 	assert.ok(!serialized.includes('s2'), 'no other tenant referenced');
+});
+
+test('the privacy disclosure lists every category actually stored, and no more', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
+	// Exact array, in order: this is what makes "and no more" real. A spot-check
+	// via .includes() would still pass if a category were added, duplicated, or
+	// silently dropped.
+	assert.deepEqual(privacy.dataCategories, [
+		'order status & timestamps',
+		'order name (e.g. #1001)',
+		'order value & currency',
+		'fulfillment status, location, tracking presence & carrier',
+		'inventory levels',
+		'refund status',
+		'SKUs, product & variant titles & quantities',
+	]);
+	// The exclusion list is the load-bearing promise and must not have widened.
+	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);
+	assert.equal(privacy.storesCustomerPii, false);
 });
 
 test('getSetup derives each step from durable state, never a timer', async () => {

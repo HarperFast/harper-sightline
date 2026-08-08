@@ -10,6 +10,8 @@
 	"financial_status": "refunded",
 	"fulfillment_status": null,
 	"currency": "USD",
+	"total_price": "19.99",
+	"current_total_price": "0.00",
 	"line_items": [{ "id": 333, "sku": "HAT-01", "title": "Hat", "quantity": 1, "fulfillable_quantity": 0 }],
 	"email": "buyer3@example.com",
 	"customer": { "id": 1001, "first_name": "Sam", "last_name": "Poe" },
