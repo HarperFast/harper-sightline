@@ -73,13 +73,13 @@ function fixtures() {
 	//   paidAt is joined into the findings-list assertions and their orderId is
 	//   reused as an event resourceId elsewhere in this file, so retiming would
 	//   ripple into unrelated tests.
-	// - oA-oD are the WORKLIST set, hour-scale ages, purpose-built for the order
-	//   list/aging tests.
+	// - oA-oE are the WORKLIST set, hour-scale ages, purpose-built for the order
+	//   list/aging/lane tests.
 	//
 	// All of these functions read from this SAME table — one shared universe, not
 	// two. getSummary and computeFlows now share one window predicate (`inWindow`
 	// in src/queries.ts): both filter on `lastEventAt >= windowStart`, so o1/o2 and
-	// oA-oD all count toward both, since every row here, even oC's 80-hour-old
+	// oA-oE all count toward both, since every row here, even oC's 80-hour-old
 	// lastEventAt, sits inside the 7-day window. getPrivacy's footprint
 	// (countWhere) is intentionally different — it reports the tenant's whole
 	// stored footprint, not a "last 7 days" claim, so it has no window filter and
@@ -110,7 +110,7 @@ function fixtures() {
 			lastEventAt: NOW - 2000,
 		}, // awaiting confirmation
 		{ id: 's2:o1', shopId: 's2', orderId: 'o1', paidAt: NOW, requiresFulfillment: true, lastEventAt: NOW },
-		// Worklist fixtures: four s1 orders across lanes/ages plus an s2 order that
+		// Worklist fixtures: five s1 orders across lanes/ages plus an s2 order that
 		// shares an order id, so tenant bleed is testable.
 		{
 			id: 's1:oA',
@@ -157,6 +157,23 @@ function fixtures() {
 			state: 'fulfilled',
 			lastEventAt: NOW - 4 * HOUR,
 			fulfilledAt: NOW - 4 * HOUR,
+		},
+		// Fulfilled, then cancelled. deriveOrderLane's finality ordering (cancelled
+		// beats fulfilled) must resolve this to exactly one lane — cancelled — and
+		// every surface that counts lanes (getSummary.orders.fulfilled,
+		// computeFlows.lanes, listOrders' state filter) must agree it is NOT
+		// fulfilled. No orderName: it is not part of the numbered oA-oD/o2 sequence
+		// above, so it carries none rather than disturbing that ordering.
+		{
+			id: 's1:oE',
+			shopId: 's1',
+			orderId: 'oE',
+			paidAt: NOW - 10 * HOUR,
+			requiresFulfillment: true,
+			state: 'cancelled',
+			fulfilledAt: NOW - 8 * HOUR,
+			cancelledAt: NOW - 6 * HOUR,
+			lastEventAt: NOW - 6 * HOUR,
 		},
 		{
 			id: 's2:oA',
@@ -596,9 +613,10 @@ test('getSummary counts reconcile to the fixtures, scoped to the tenant', async 
 	const f = fixtures();
 	const s = await getSummary(f, 's1', NOW);
 	assert.equal((s.events as Record<string, number>).total, 2, 's1 in-window events');
-	// Includes the worklist fixture orders (oA-oD): 6 tracked, 6 paid, 2 fulfilled
-	// (o1, oD), 4 awaiting (o2, oA, oB, oC).
-	assert.deepEqual(s.orders, { tracked: 6, paid: 6, fulfilled: 2, awaitingConfirmation: 4 });
+	// Includes the worklist fixture orders (oA-oE): 7 tracked, 7 paid, 2 fulfilled
+	// (o1, oD — oE is fulfilled-then-cancelled, so it lands in cancelled, not
+	// here), 4 awaiting (o2, oA, oB, oC).
+	assert.deepEqual(s.orders, { tracked: 7, paid: 7, fulfilled: 2, awaitingConfirmation: 4 });
 	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0, failedAttempts: 0 });
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 });
 });
@@ -644,8 +662,9 @@ test('getSummary activity buckets the window by day and reconciles to the total'
 test('computeFlows lane counts reconcile and are rebuildable from projections', async () => {
 	const { projections } = fixtures();
 	const flows = await computeFlows(projections, 's1', NOW);
-	// Includes the worklist fixture orders (oA-oD), all within the window.
-	assert.deepEqual(flows.lanes, { paid: 6, fulfilled: 2, awaitingConfirmation: 4, cancelled: 0, refunded: 0 });
+	// Includes the worklist fixture orders (oA-oE), all within the window. oE is
+	// fulfilled-then-cancelled, so it counts once, in cancelled.
+	assert.deepEqual(flows.lanes, { paid: 7, fulfilled: 2, awaitingConfirmation: 4, cancelled: 1, refunded: 0 });
 	// Rebuild = same function over the same data → identical (idempotent).
 	assert.deepEqual((await computeFlows(projections, 's1', NOW)).lanes, flows.lanes);
 });
@@ -668,9 +687,44 @@ test('the summary order counts and the flow lanes describe the same window', asy
 	const orders = summary.orders as { tracked: number; awaitingConfirmation: number };
 	const lanes = flows.lanes as Record<string, number>;
 	assert.equal(orders.awaitingConfirmation, lanes.awaitingConfirmation);
-	// The fixture universe already has six in-window s1 orders (o1, o2, oA-oD)
-	// before oStale is added; oStale must not become a seventh.
-	assert.equal(orders.tracked, 6, 'the out-of-window order must not be counted');
+	// The fixture universe already has seven in-window s1 orders (o1, o2, oA-oE)
+	// before oStale is added; oStale must not become an eighth.
+	assert.equal(orders.tracked, 7, 'the out-of-window order must not be counted');
+});
+
+test('the fulfilled count is lane-consistent: a fulfilled-then-cancelled order counts once, as cancelled', async () => {
+	const { projections } = fixtures();
+	const summary = await getSummary(
+		{
+			events: new FakeTable('eventId', []),
+			projections,
+			findings: new FakeTable('id', []),
+			deliveries: new FakeTable('id', []),
+			shops: new FakeTable('shopId', []),
+		},
+		's1',
+		NOW,
+	);
+	const flows = await computeFlows(projections, 's1', NOW);
+	const orders = summary.orders as { fulfilled: number };
+	const lanes = flows.lanes as Record<string, number>;
+	// oE (paid, then fulfilled, then cancelled) must land in exactly one lane —
+	// cancelled — on every surface that counts lanes. Before this fix, getSummary
+	// counted "has a fulfilledAt" (3: o1, oD, oE) while computeFlows already
+	// counted "is in the fulfilled lane" (2: o1, oD) — the same order rendering as
+	// two different "Fulfilled" tile numbers, both linking to the same worklist
+	// filter.
+	assert.equal(orders.fulfilled, lanes.fulfilled, 'the Overview tile and the flow lane must agree');
+	assert.equal(lanes.fulfilled, 2, 'o1 and oD only — oE is cancelled, not fulfilled');
+	assert.equal(lanes.cancelled, 1, 'oE counts once, in cancelled');
+
+	const cancelledPage = await listOrders(projections, 's1', NOW, { state: 'cancelled' });
+	assert.ok(
+		cancelledPage.items.some((i) => i.orderId === 'oE'),
+		'the worklist finds oE under the cancelled lane',
+	);
+	const fulfilledPage = await listOrders(projections, 's1', NOW, { state: 'fulfilled' });
+	assert.ok(!fulfilledPage.items.some((i) => i.orderId === 'oE'), 'the worklist must not also show oE under fulfilled');
 });
 
 test('getPrivacy reports no PII and the tenant footprint', async () => {
@@ -678,8 +732,8 @@ test('getPrivacy reports no PII and the tenant footprint', async () => {
 	const p = await getPrivacy(f, 's1', NOW);
 	assert.equal(p.storesCustomerPii, false);
 	assert.equal(p.retentionDays, 7);
-	// Includes the worklist fixture orders (oA-oD) alongside o1/o2.
-	assert.deepEqual(p.footprint, { events: 3, orders: 6, findings: 1 });
+	// Includes the worklist fixture orders (oA-oE) alongside o1/o2.
+	assert.deepEqual(p.footprint, { events: 3, orders: 7, findings: 1 });
 });
 
 test('getPrivacy discloses scopes, exclusions, and capture/reconciliation health', async () => {
@@ -894,7 +948,7 @@ test('orders default to newest-paid first and carry the worklist columns', async
 	// ahead of the worklist rows (paid hours ago) — newest paidAt first.
 	assert.deepEqual(
 		page.items.map((i) => i.orderId),
-		['o1', 'o2', 'oA', 'oD', 'oB', 'oC'],
+		['o1', 'o2', 'oA', 'oD', 'oE', 'oB', 'oC'],
 	);
 	const first = page.items.find((i) => i.orderId === 'oA')!;
 	assert.equal(first.orderName, '#1004');
@@ -909,7 +963,7 @@ test('the worklist can be sorted oldest-first, which is what triage needs', asyn
 	const page = await listOrders(projections, 's1', NOW, { sort: 'oldest' });
 	assert.deepEqual(
 		page.items.map((i) => i.orderId),
-		['oC', 'oB', 'oD', 'oA', 'o2', 'o1'],
+		['oC', 'oB', 'oE', 'oD', 'oA', 'o2', 'o1'],
 	);
 });
 

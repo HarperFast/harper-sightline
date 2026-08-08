@@ -561,7 +561,12 @@ export async function getSummary(
 		if (!inWindow(proj, windowStart)) continue;
 		ordersTracked++;
 		if (proj.paidAt !== undefined) paid++;
-		if (proj.fulfilledAt !== undefined) fulfilled++;
+		// "Fulfilled" here means the lane, not just "has a fulfilledAt" — an order
+		// fulfilled and then cancelled or fully refunded must not count as both.
+		// deriveOrderLane is the same finality-ordered definition computeFlows and
+		// listOrders' state column use, so this tile and those two can never
+		// disagree about the same order.
+		if (deriveOrderLane(proj) === 'fulfilled') fulfilled++;
 		if (isAwaitingConfirmation(proj)) {
 			awaitingConfirmation++;
 			const key = ageBucketKey(proj.paidAt, now);
