@@ -96,7 +96,15 @@ function fixtures() {
 			fulfilledAt: NOW - 500,
 			lastEventAt: NOW - 500,
 		},
-		{ id: 's1:o2', shopId: 's1', orderId: 'o2', paidAt: NOW - 2000, requiresFulfillment: true, lastEventAt: NOW - 2000 }, // awaiting confirmation
+		{
+			id: 's1:o2',
+			shopId: 's1',
+			orderId: 'o2',
+			orderName: '#1000',
+			paidAt: NOW - 2000,
+			requiresFulfillment: true,
+			lastEventAt: NOW - 2000,
+		}, // awaiting confirmation
 		{ id: 's2:o1', shopId: 's2', orderId: 'o1', paidAt: NOW, requiresFulfillment: true, lastEventAt: NOW },
 		// Worklist fixtures: four s1 orders across lanes/ages plus an s2 order that
 		// shares an order id, so tenant bleed is testable.
@@ -438,6 +446,21 @@ test('listFindings join never crosses tenants', async () => {
 	const [item] = (await listFindings(findings, expectations, projections, 's2', {})).items;
 	assert.equal(item.paidAt, undefined, 'no s1 projection leaked into an s2 row');
 	assert.equal(item.deadline, undefined, 'no s1 expectation leaked into an s2 row');
+});
+
+test('the findings list carries the merchant-facing order name', async () => {
+	const { findings, expectations, projections } = fixtures();
+	const page = await listFindings(findings, expectations, projections, 's1', {});
+	const withName = page.items.find((i) => i.orderName !== undefined);
+	assert.ok(withName, 'at least one finding should join an order name');
+});
+
+test('the findings join never takes another tenant order name', async () => {
+	const { findings, expectations, projections } = fixtures();
+	// s2 has an order with the same id and a different name; s1's finding must not
+	// inherit it.
+	const page = await listFindings(findings, expectations, projections, 's1', {});
+	for (const item of page.items) assert.notEqual(item.orderName, '#9999');
 });
 
 test('getFindingDetail joins expectation + projection, cross-tenant safe', async () => {

@@ -272,8 +272,9 @@ export async function listFindings(
 			const orderId = String(item.orderId);
 			const [expectation, projection] = await Promise.all([expectations.get(id), projections.get(`${shopId}:${orderId}`)]);
 			const paidAt = projection && projection.shopId === shopId ? (projection as unknown as OrderProjection).paidAt : undefined;
+			const orderName = projection && projection.shopId === shopId ? (projection as unknown as OrderProjection).orderName : undefined;
 			const deadline = expectation && expectation.shopId === shopId ? (expectation as unknown as Expectation).deadline : undefined;
-			return pick({ ...item, paidAt, deadline }, FINDING_LIST_FIELDS);
+			return pick({ ...item, paidAt, deadline, orderName }, FINDING_LIST_FIELDS);
 		}),
 	);
 	return { items, nextCursor: page.nextCursor };

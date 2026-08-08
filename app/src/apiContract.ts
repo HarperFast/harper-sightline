@@ -45,7 +45,7 @@ export const FINDING_FIELDS = [
 // The findings LIST additionally carries the two order facts the screen spec's
 // list columns need (paid time, expected confirmation). They are joined from the
 // projection/expectation and allowlisted here so the join can never widen.
-export const FINDING_LIST_FIELDS = [...FINDING_FIELDS, 'paidAt', 'deadline'] as const;
+export const FINDING_LIST_FIELDS = [...FINDING_FIELDS, 'paidAt', 'deadline', 'orderName'] as const;
 export const PROJECTION_FIELDS = [
 	'orderId',
 	'paidAt',

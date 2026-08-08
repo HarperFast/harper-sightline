@@ -33,6 +33,7 @@ import {
 	overviewView,
 	parseHash,
 	privacyView,
+	setShop,
 	setSupport,
 	setupView,
 	spinnerView,
@@ -301,6 +302,7 @@ async function boot(): Promise<void> {
 		// paints timestamps in one zone and then re-paints them in another.
 		useShopTimeZone(session.timezone);
 		setSupport(session.support);
+		setShop(session.shop);
 	} catch {
 		// Not connected — the screens surface their own auth/error state.
 	}

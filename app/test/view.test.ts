@@ -13,6 +13,8 @@ import type {
 } from '../web/src/api.ts';
 import {
 	activityView,
+	adminOrderLink,
+	adminOrderUrl,
 	agingView,
 	bucketMinHours,
 	contextStrip,
@@ -35,8 +37,10 @@ import {
 	overviewView,
 	parseHash,
 	privacyView,
+	setShop,
 	setSupport,
 	setupView,
+	storeHandle,
 	useShopTimeZone,
 	zoneText,
 } from '../web/src/view.ts';
@@ -699,6 +703,50 @@ test('parseHash resolves every route and its filters', () => {
 	assert.deepEqual(parseHash('#/events?domain=order&sku=A'), { path: '/events', params: { domain: 'order', sku: 'A' } });
 	assert.deepEqual(parseHash('#/findings?status=unconfirmed'), { path: '/findings', params: { status: 'unconfirmed' } });
 	assert.deepEqual(parseHash('#/events/s%3Ae1'), { path: '/events/s%3Ae1', params: {} });
+});
+
+// ── admin deep links ─────────────────────────────────────────────────────────
+
+test('an admin deep link is built from the store handle and opens the top frame', () => {
+	setShop('acme-store.myshopify.com');
+	assert.equal(storeHandle(), 'acme-store');
+	assert.equal(adminOrderUrl('7518851989809'), 'https://admin.shopify.com/store/acme-store/orders/7518851989809');
+	const link = adminOrderLink('7518851989809');
+	assert.match(link, /target="_top"/);
+	assert.match(link, /admin\.shopify\.com\/store\/acme-store\/orders\/7518851989809/);
+});
+
+test('with no known shop there is no fabricated admin link', () => {
+	setShop(undefined);
+	assert.equal(adminOrderUrl('1'), undefined);
+	assert.equal(adminOrderLink('1'), '');
+});
+
+test('a hostile order id cannot escape the admin link attribute', () => {
+	setShop('acme-store.myshopify.com');
+	const link = adminOrderLink('1"><script>alert(1)</script>');
+	assert.doesNotMatch(link, /<script>alert/);
+});
+
+test('findings and needs-attention rows show the order name when known', () => {
+	setShop('acme-store.myshopify.com');
+	const item: FindingItem = {
+		id: 'f1',
+		orderId: '7518851989809',
+		orderName: '#1001',
+		status: 'unconfirmed',
+		detectedAt: NOW - HOUR,
+		paidAt: NOW - 73 * HOUR,
+		deadline: NOW - HOUR,
+	};
+	assert.match(findingsListView({}, [item], NOW, ''), /#1001/);
+	assert.match(needsAttention([item], NOW), /#1001/);
+});
+
+test('findings fall back to the raw order id when no name was captured', () => {
+	setShop(undefined);
+	const item: FindingItem = { id: 'f1', orderId: '7518851989809', status: 'unconfirmed', detectedAt: NOW - HOUR };
+	assert.match(findingsListView({}, [item], NOW, ''), /7518851989809/);
 });
 
 // ── orders ───────────────────────────────────────────────────────────────────

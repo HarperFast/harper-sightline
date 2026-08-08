@@ -248,6 +248,36 @@ function supportLine(): string {
 	return supportKnown() ? `<s-paragraph>Need help? ${supportLinks()}</s-paragraph>` : '';
 }
 
+// ── Shopify Admin deep links ─────────────────────────────────────────────────
+// The merchant's next action after seeing an order here is to open it in Admin.
+// The link is built from the session's shop domain: `acme.myshopify.com` →
+// `https://admin.shopify.com/store/acme/orders/<id>`, opened with target="_top"
+// so it replaces the whole Admin page rather than nesting Admin inside our
+// iframe. (App Bridge also understands `shopify://admin/...`, but the explicit
+// https form works with or without App Bridge having loaded.)
+let shopDomain: string | undefined;
+export function setShop(shop: string | undefined): void {
+	shopDomain = shop;
+}
+
+export function storeHandle(): string | undefined {
+	if (!shopDomain) return undefined;
+	const handle = shopDomain.replace(/\.myshopify\.com$/, '');
+	return handle.length > 0 && handle !== shopDomain ? handle : undefined;
+}
+
+export function adminOrderUrl(orderId: string): string | undefined {
+	const handle = storeHandle();
+	if (!handle) return undefined;
+	return `https://admin.shopify.com/store/${encodeURIComponent(handle)}/orders/${encodeURIComponent(orderId)}`;
+}
+
+// Nothing at all when the shop is unknown — a broken link is worse than none.
+export function adminOrderLink(orderId: string): string {
+	const url = adminOrderUrl(orderId);
+	return url ? `<s-link href="${esc(url)}" target="_top">Open in Shopify</s-link>` : '';
+}
+
 export function spinnerView(): string {
 	return `<s-page heading="Sightline"><s-section><s-stack direction="inline" gap="base" alignItems="center">
 		<s-spinner accessibilityLabel="Loading"></s-spinner><s-text>Loading…</s-text>
@@ -458,14 +488,15 @@ export function needsAttention(items: FindingItem[], now: number): string {
 		.slice(0, 5)
 		.map(
 			(x) => `<s-table-row>
-			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(x.orderId)}</s-link></s-table-cell>
+			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(findingLabel(x))}</s-link></s-table-cell>
 			<s-table-cell>No Shopify fulfillment confirmation observed</s-table-cell>
 			<s-table-cell>${esc(elapsed(x.detectedAt, now))}</s-table-cell>
+			<s-table-cell>${adminOrderLink(x.orderId)}</s-table-cell>
 		</s-table-row>`,
 		)
 		.join('');
 	return `<s-section heading="Needs attention">
-		${table([{ label: 'Order' }, { label: 'Observation' }, { label: 'Open for' }], rows, 'Nothing is awaiting confirmation.')}
+		${table([{ label: 'Order' }, { label: 'Observation' }, { label: 'Open for' }, { label: '' }], rows, 'Nothing is awaiting confirmation.')}
 	</s-section>`;
 }
 
@@ -723,6 +754,11 @@ export function orderLabel(o: { orderName?: string; orderId: string }): string {
 	return o.orderName ?? o.orderId;
 }
 
+// Findings identify their order the same way the worklist does.
+export function findingLabel(f: { orderName?: string; orderId: string }): string {
+	return f.orderName ?? f.orderId;
+}
+
 function ageCell(o: OrderItem): string {
 	if (o.ageHours === undefined) return '—';
 	return o.ageHours < 24 ? `${o.ageHours}h` : `${Math.floor(o.ageHours / 24)}d ${o.ageHours % 24}h`;
@@ -745,6 +781,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 			<s-table-cell>${esc(ageCell(o))}</s-table-cell>
 			<s-table-cell>${money(o.orderTotal, o.currency)}</s-table-cell>
 			<s-table-cell>${o.hasTracking ? esc(o.trackingCompany ?? 'yes') : '—'}</s-table-cell>
+			<s-table-cell>${adminOrderLink(o.orderId)}</s-table-cell>
 		</s-table-row>`,
 		)
 		.join('');
@@ -779,6 +816,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 					{ label: 'Waiting' },
 					{ label: 'Value', numeric: true },
 					{ label: 'Tracking' },
+					{ label: '' },
 				],
 				rows,
 				'No orders match.',
@@ -807,11 +845,6 @@ export function orderTimeline(o: OrderDetail): Array<{ at: number; text: string 
 	if (o.fullyRefundedAt !== undefined)
 		entries.push({ at: o.fullyRefundedAt, text: 'Order fully refunded — confirmation no longer expected' });
 	return entries.sort((a, b) => a.at - b.at);
-}
-
-// Replaced with a real Admin deep link in the deep-links task.
-function adminOrderLink(_orderId: string): string {
-	return '';
 }
 
 export function orderDetailView(o: OrderDetail, strip: string): string {
@@ -899,11 +932,12 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 	const rows = items
 		.map(
 			(x) => `<s-table-row>
-			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(x.orderId)}</s-link></s-table-cell>
+			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(findingLabel(x))}</s-link></s-table-cell>
 			<s-table-cell>${ts(x.paidAt)}</s-table-cell>
 			<s-table-cell>${ts(x.deadline)}</s-table-cell>
 			<s-table-cell>${x.status === 'unconfirmed' ? esc(elapsed(x.detectedAt, now)) : '—'}</s-table-cell>
 			<s-table-cell>${badge(x.status)}</s-table-cell>
+			<s-table-cell>${adminOrderLink(x.orderId)}</s-table-cell>
 		</s-table-row>`,
 		)
 		.join('');
@@ -919,7 +953,14 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 		</s-section>
 		<s-section>
 			${table(
-				[{ label: 'Order' }, { label: 'Paid' }, { label: 'Confirmation expected by' }, { label: 'Open for' }, { label: 'Status' }],
+				[
+					{ label: 'Order' },
+					{ label: 'Paid' },
+					{ label: 'Confirmation expected by' },
+					{ label: 'Open for' },
+					{ label: 'Status' },
+					{ label: '' },
+				],
 				rows,
 				'No findings — nothing is missing confirmation.',
 			)}
@@ -1000,10 +1041,10 @@ export function findingDetailView(f: FindingDetail, lastReconciledAt: number | u
 			: '';
 
 	return page(
-		`Order ${f.orderId}`,
+		`Order ${findingLabel({ orderName: f.projection?.orderName, orderId: f.orderId })}`,
 		`${strip}
 		<s-section>
-			<s-stack direction="inline" gap="small-200" alignItems="center">${badge(f.status)}</s-stack>
+			<s-stack direction="inline" gap="small-200" alignItems="center">${badge(f.status)}${adminOrderLink(f.orderId)}</s-stack>
 			<s-paragraph>${esc(f.description)}</s-paragraph>
 			${disclaimer}
 		</s-section>

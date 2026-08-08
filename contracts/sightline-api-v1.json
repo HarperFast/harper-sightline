@@ -126,7 +126,8 @@
 				"resolvedAt",
 				"evidenceEventIds",
 				"paidAt",
-				"deadline"
+				"deadline",
+				"orderName"
 			],
 			"paginated": true,
 			"filters": [
