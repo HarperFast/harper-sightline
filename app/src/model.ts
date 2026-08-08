@@ -64,6 +64,13 @@ export interface OperationalEvent {
 	sku?: string;
 	quantity?: number;
 	fulfillableItemCount?: number; // order events: units still requiring fulfillment (#12)
+	orderName?: string;
+	totalPrice?: number;
+	currency?: string;
+	locationId?: string;
+	hasTracking?: boolean;
+	trackingCompany?: string;
+	shipmentStatus?: string;
 	state?: string;
 	source: EventSource;
 	occurredAt: number;
@@ -81,6 +88,12 @@ export interface OrderProjection {
 	fullyRefundedAt?: number;
 	fulfilledAt?: number;
 	requiresFulfillment?: boolean;
+	orderName?: string;
+	orderTotal?: number;
+	currency?: string;
+	fulfillmentFailedAt?: number;
+	hasTracking?: boolean;
+	trackingCompany?: string;
 	fulfillableItemCount?: number;
 	state?: ProjectionState;
 	deadline?: number;
@@ -104,6 +117,7 @@ export interface GapFinding {
 	id: string;
 	shopId: string;
 	orderId: string;
+	detector?: string;
 	ruleVersion?: number;
 	status: FindingStatus;
 	detectedAt?: number;
@@ -125,5 +139,37 @@ export interface WorkerCheckpoint {
 	leaseHolder?: string;
 	leaseExpiresAt?: number;
 	retryCount?: number;
+	updatedAt?: number;
+}
+
+export interface EventSku {
+	id: string; // `${eventId}:${sku}`
+	shopId: string;
+	eventId: string;
+	sku: string;
+	quantity?: number;
+	domain: EventDomain;
+	topic?: string;
+	source: EventSource;
+	resourceId?: string;
+	occurredAt: number;
+	receivedAt: number;
+}
+
+export interface InventoryItem {
+	id: string; // `${shopId}:${inventoryItemId}`
+	shopId: string;
+	inventoryItemId: string;
+	sku?: string;
+	productTitle?: string;
+	variantTitle?: string;
+	updatedAt?: number;
+}
+
+export interface ShopLocation {
+	id: string; // `${shopId}:${locationId}`
+	shopId: string;
+	locationId: string;
+	name?: string;
 	updatedAt?: number;
 }

@@ -72,6 +72,21 @@ type OperationalEvent @table(database: "sightline_ledger") @sealed {
 	sku: String
 	quantity: Int
 	fulfillableItemCount: Int # order events: units still requiring fulfillment (from line_items) — drives projection eligibility
+	# Merchant-facing order identifier ("#1001"). Level 1 order data, not PII — a
+	# merchant cannot act on a bare numeric order id.
+	orderName: String
+	# Order value at the time payment was observed, and its currency. Money amounts
+	# carry no customer identifier.
+	totalPrice: Float
+	currency: String
+	# Fulfillment/inventory location this event happened at (Shopify location id).
+	locationId: String
+	# Tracking PRESENCE and carrier, never a per-customer shipment lookup: whether
+	# the fulfillment carried any tracking number, and which carrier.
+	hasTracking: Boolean
+	trackingCompany: String
+	# Shopify's own shipment progress string (in_transit, label_printed, …).
+	shipmentStatus: String
 	state: String
 	source: String! # webhook | reconciliation
 	occurredAt: Float! @indexed
@@ -90,6 +105,12 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	fullyRefundedAt: Float # earliest full-refund (latch)
 	fulfilledAt: Float # earliest successful fulfillment (latch)
 	requiresFulfillment: Boolean # any line item required shipping (latch) — detector eligibility
+	orderName: String # immutable in Shopify, so safe as a first-seen latch
+	orderTotal: Float # value latched from the EARLIEST paid event
+	currency: String
+	fulfillmentFailedAt: Float # earliest fulfillment event with status error|failure (latch)
+	hasTracking: Boolean # any fulfillment carried a tracking number (latch, monotonic true)
+	trackingCompany: String
 	fulfillableItemCount: Int
 	state: String @indexed # pending | awaiting_window | confirmed | unconfirmed
 	deadline: Float @indexed
@@ -115,6 +136,7 @@ type GapFinding @table(database: "sightline_ledger") @sealed {
 	id: ID! @primaryKey
 	shopId: String! @indexed
 	orderId: String!
+	detector: String @indexed # fulfillment_confirmation | fulfillment_attempt_failed
 	ruleVersion: Int
 	status: String! @indexed # pending | unconfirmed | resolved | suppressed
 	detectedAt: Float @indexed
@@ -139,5 +161,49 @@ type WorkerCheckpoint @table(database: "sightline_ledger") @sealed {
 	leaseHolder: String
 	leaseExpiresAt: Float @indexed
 	retryCount: Int
+	updatedAt: Float
+}
+
+type EventSku @table(database: "sightline_ledger") @sealed {
+	# One row per (event, SKU) — the index that makes the SKU filter real. The
+	# events table can only hold a scalar sku, and an order has many; filtering by
+	# SKU therefore has to page over this table and hydrate events by id.
+	#
+	# The common event filters are DENORMALIZED here on purpose so a SKU-filtered
+	# query is an ordinary keyset page with no post-filtering (which would return
+	# short pages and break the "more results" signal). Drift is not a risk: both
+	# rows are written from the same event in one place and purged/redacted together.
+	id: ID! @primaryKey # `${eventId}:${sku}`
+	shopId: String! @indexed
+	eventId: String! @indexed
+	sku: String! @indexed
+	quantity: Int
+	domain: String!
+	topic: String
+	source: String!
+	resourceId: String
+	occurredAt: Float! @indexed
+	receivedAt: Float! @indexed # retention key — matches OperationalEvent's
+}
+
+type InventoryItem @table(database: "sightline_ledger") @sealed {
+	# Admin API cache: inventory_item_id → SKU/product, so an inventory event is
+	# readable instead of an opaque number. Reference data, NOT part of the 7-day
+	# ledger — it is erased by shop redaction, not by the retention purge.
+	id: ID! @primaryKey # `${shopId}:${inventoryItemId}`
+	shopId: String! @indexed
+	inventoryItemId: String!
+	sku: String
+	productTitle: String
+	variantTitle: String
+	updatedAt: Float
+}
+
+type ShopLocation @table(database: "sightline_ledger") @sealed {
+	# Admin API cache: location_id → location name. Same lifecycle as InventoryItem.
+	id: ID! @primaryKey # `${shopId}:${locationId}`
+	shopId: String! @indexed
+	locationId: String!
+	name: String
 	updatedAt: Float
 }
