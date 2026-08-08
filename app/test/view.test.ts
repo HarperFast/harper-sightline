@@ -1261,7 +1261,7 @@ test('an active subscription never shows a paused badge, and a paused one never 
 	assert.doesNotMatch(paused, /<s-badge tone="success">active<\/s-badge>/);
 });
 
-test('the screen states plainly, in its own banner, that digests are stored and not yet sent', () => {
+test('the screen states plainly, in its own banner, that digests are stored (for 30 days) and not yet sent', () => {
 	// Promising email that does not go out would be the worst possible copy here —
 	// this is the single highest-value test on the screen.
 	//
@@ -1276,6 +1276,14 @@ test('the screen states plainly, in its own banner, that digests are stored and 
 	const banner = html.match(/<s-banner tone="info" heading="Digests are being prepared[^"]*">[\s\S]*?<\/s-banner>/);
 	assert.ok(banner, 'the delivery-status banner must be present');
 	assert.match(banner![0], /not yet|will not be sent/i);
+	// The outbox's 30-day retention (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts)
+	// purges a pending, unsent row exactly like a sent one — there is no sender, so
+	// every digest built today is deleted, unsent, in 30 days. The banner must say
+	// so, or a merchant is left assuming a stored digest is kept indefinitely and
+	// will eventually arrive once delivery ships. That promise was here once (see
+	// the fix-round report) and must not quietly come back as a softer rewrite.
+	assert.match(banner![0], /30 days/);
+	assert.doesNotMatch(banner![0], /ready when delivery ships|waiting for you/i);
 });
 
 test('the screen discloses that the address is stored and how to remove it', () => {
