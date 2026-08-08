@@ -20,6 +20,13 @@ export const EVENT_FIELDS = [
 	'sku',
 	'quantity',
 	'fulfillableItemCount',
+	'orderName',
+	'totalPrice',
+	'currency',
+	'locationId',
+	'hasTracking',
+	'trackingCompany',
+	'shipmentStatus',
 	'state',
 	'source',
 	'occurredAt',
@@ -47,6 +54,12 @@ export const PROJECTION_FIELDS = [
 	'cancelledAt',
 	'fullyRefundedAt',
 	'lastEventAt',
+	'orderName',
+	'orderTotal',
+	'currency',
+	'fulfillmentFailedAt',
+	'hasTracking',
+	'trackingCompany',
 ] as const;
 export const EXPECTATION_FIELDS = ['state', 'deadline', 'createdAt', 'resolvedAt'] as const;
 
@@ -68,7 +81,10 @@ export const API_CONTRACT = {
 			paginated: true,
 			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'since', 'until', 'cursor', 'limit'],
 		},
-		eventDetail: { path: '/api/v1/events/:id', fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding'] },
+		eventDetail: {
+			path: '/api/v1/events/:id',
+			fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding', 'inventorySku', 'productTitle', 'locationName'],
+		},
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
 		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'detector', 'cursor', 'limit'] },
 		findingDetail: { path: '/api/v1/findings/:id', fields: [...FINDING_FIELDS, 'description', 'projection', 'expectation'] },

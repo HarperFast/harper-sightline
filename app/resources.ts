@@ -17,6 +17,8 @@ import {
 	Shops as ShopsTable,
 	Credentials as CredentialsTable,
 	EventSkus as EventSkusTable,
+	InventoryItems as InventoryItemsTable,
+	ShopLocations as ShopLocationsTable,
 } from './src/db.ts';
 import {
 	listEvents,
@@ -47,6 +49,8 @@ const ShopsQ = ShopsTable as unknown as QueryTable;
 // never for token material, which stays inside credentialStore.ts.
 const CredentialsQ = CredentialsTable as unknown as QueryTable;
 const EventSkusQ = EventSkusTable as unknown as QueryTable;
+const InventoryItemsQ = InventoryItemsTable as unknown as QueryTable;
+const ShopLocationsQ = ShopLocationsTable as unknown as QueryTable;
 import { readShopifySecret, SHOPIFY_API_KEY } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 import { log, metrics, M } from './src/observe.ts';
@@ -219,7 +223,7 @@ export class EventsResource extends Resource {
 		const url = parseUrl(ctx.url);
 		const id = trailingId(url.pathname, '/api/v1/events');
 		if (id) {
-			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id);
+			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id, InventoryItemsQ, ShopLocationsQ);
 			if (!detail) throw httpError('event not found', 404);
 			return detail;
 		}

@@ -162,6 +162,8 @@ export async function getEventDetail(
 	findings: QueryTable,
 	shopId: string,
 	eventId: string,
+	inventoryItems?: QueryTable,
+	locations?: QueryTable,
 ): Promise<Record<string, unknown> | null> {
 	const row = (await events.get(eventId)) as OperationalEvent | undefined;
 	if (!row || row.shopId !== shopId) return null;
@@ -185,7 +187,35 @@ export async function getEventDetail(
 	const affectedProjection = orderId ? Boolean(await projections.get(`${shopId}:${orderId}`)) : false;
 	const affectedFinding = orderId ? Boolean(await findings.get(detectorKey(shopId, orderId))) : false;
 
-	return { ...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS), relatedEventIds, affectedProjection, affectedFinding };
+	// Human-readable context for the opaque ids on an inventory event. Both are
+	// keyed gets against this shop's own cache rows; a cache miss simply omits the
+	// field rather than blocking the detail view.
+	let inventorySku: string | undefined;
+	let productTitle: string | undefined;
+	if (row.domain === 'inventory' && row.resourceId && inventoryItems) {
+		const item = await inventoryItems.get(`${shopId}:${row.resourceId}`);
+		if (item && item.shopId === shopId) {
+			inventorySku = typeof item.sku === 'string' ? item.sku : undefined;
+			productTitle = typeof item.productTitle === 'string' ? item.productTitle : undefined;
+		}
+	}
+	let locationName: string | undefined;
+	if (row.locationId && locations) {
+		const location = await locations.get(`${shopId}:${row.locationId}`);
+		if (location && location.shopId === shopId) {
+			locationName = typeof location.name === 'string' ? location.name : undefined;
+		}
+	}
+
+	return {
+		...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS),
+		relatedEventIds,
+		affectedProjection,
+		affectedFinding,
+		...(inventorySku ? { inventorySku } : {}),
+		...(productTitle ? { productTitle } : {}),
+		...(locationName ? { locationName } : {}),
+	};
 }
 
 export interface FindingQueryParams {

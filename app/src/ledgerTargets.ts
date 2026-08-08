@@ -1,4 +1,17 @@
-import { Shops, Credentials, AuditEvents, Deliveries, Events, Projections, Expectations, Findings, Aggregates, EventSkus } from './db.ts';
+import {
+	Shops,
+	Credentials,
+	AuditEvents,
+	Deliveries,
+	Events,
+	Projections,
+	Expectations,
+	Findings,
+	Aggregates,
+	EventSkus,
+	InventoryItems,
+	ShopLocations,
+} from './db.ts';
 import type { RetentionTarget, PurgeableTable } from './retention.ts';
 import type { RedactTarget } from './redaction.ts';
 
@@ -36,4 +49,10 @@ export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'Shop', keyField: 'shopId', shopField: 'shopId', table: purgeable(Shops) },
 	{ name: 'ShopCredential', keyField: 'shopId', shopField: 'shopId', table: purgeable(Credentials) },
 	{ name: 'AppAuditEvent', keyField: 'id', shopField: 'shopId', table: purgeable(AuditEvents) },
+	// Reference caches, NOT ledger records: they carry no order or customer linkage
+	// and are useless once the shop is gone, so they are erased by shop redaction
+	// but deliberately not aged out by the seven-day purge (re-fetching them every
+	// week would be pointless Admin API traffic).
+	{ name: 'InventoryItem', keyField: 'id', shopField: 'shopId', table: purgeable(InventoryItems) },
+	{ name: 'ShopLocation', keyField: 'id', shopField: 'shopId', table: purgeable(ShopLocations) },
 ];

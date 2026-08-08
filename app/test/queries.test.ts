@@ -291,6 +291,44 @@ test('getEventDetail refuses cross-tenant access even with the correct id', asyn
 	assert.equal(ok?.affectedProjection, true);
 });
 
+test('an inventory event detail names its SKU, product, and location', async () => {
+	const { events, projections, findings } = fixtures();
+	const items = new FakeTable('id', [{ id: 's1:inv9', shopId: 's1', inventoryItemId: 'inv9', sku: 'TSHIRT', productTitle: 'T-Shirt' }]);
+	const locations = new FakeTable('id', [{ id: 's1:987', shopId: 's1', locationId: '987', name: 'Brooklyn' }]);
+	await events.put({
+		eventId: 's1:inv',
+		shopId: 's1',
+		domain: 'inventory',
+		resourceId: 'inv9',
+		locationId: '987',
+		quantity: 4,
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+	});
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:inv', items, locations);
+	assert.equal(detail?.inventorySku, 'TSHIRT');
+	assert.equal(detail?.productTitle, 'T-Shirt');
+	assert.equal(detail?.locationName, 'Brooklyn');
+});
+
+test('another tenant cache row can never name this shop event', async () => {
+	const { events, projections, findings } = fixtures();
+	const items = new FakeTable('id', [{ id: 's2:inv9', shopId: 's2', inventoryItemId: 'inv9', sku: 'LEAKED' }]);
+	const locations = new FakeTable('id', []);
+	await events.put({
+		eventId: 's1:inv',
+		shopId: 's1',
+		domain: 'inventory',
+		resourceId: 'inv9',
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+	});
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:inv', items, locations);
+	assert.equal(detail?.inventorySku, undefined);
+});
+
 test('listFindings is tenant-scoped and filterable by status', async () => {
 	const { findings, expectations, projections } = fixtures();
 	const page = await listFindings(findings, expectations, projections, 's1', {});

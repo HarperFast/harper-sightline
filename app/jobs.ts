@@ -1,5 +1,17 @@
-import { Deliveries, Events, Projections, Expectations, Findings, Checkpoints, Shops, Credentials, EventSkus } from './src/db.ts';
-import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
+import {
+	Deliveries,
+	Events,
+	Projections,
+	Expectations,
+	Findings,
+	Checkpoints,
+	Shops,
+	Credentials,
+	EventSkus,
+	InventoryItems,
+	ShopLocations,
+} from './src/db.ts';
+import type { Expectation, GapFinding, OperationalEvent, InventoryItem } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
 import { writeEventWithSkus } from './src/eventSkus.ts';
@@ -10,8 +22,9 @@ import { purgeExpired, type PurgeResult } from './src/retention.ts';
 import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
-import { fetchOrdersUpdatedSince, fetchShopTimezone } from './src/adminApi.ts';
+import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
+import { unresolvedIds, inventoryItemRow, locationRow, skuRowsForInventoryEvent } from './src/inventoryEnrich.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
@@ -396,6 +409,110 @@ export function startReconcileLoop(): void {
 	setInterval(reconcileTick, RECONCILE_INTERVAL_MS);
 }
 
+// Inventory enrichment. An inventory webhook carries only inventory_item_id and
+// a quantity, which is unreadable to a merchant and unsearchable by SKU. This
+// sweep resolves unseen item ids (and the shop's locations) through the Admin API
+// once, caches them, and backfills EventSku rows so inventory events become
+// SKU-searchable like every other domain.
+//
+// Cheap by construction: it only ever looks at inventory events from the read
+// window, only resolves ids not already cached, and stops after one batch per
+// tick — a shop with a stable catalog converges and then does nothing.
+const ENRICH_INTERVAL_MS = 900_000; // 15 minutes
+const ENRICH_INITIAL_DELAY_MS = 60_000;
+const enrichTicker = ticker('inventory.enrich', 30 * 60_000);
+
+export async function runInventoryEnrichment(now = Date.now()): Promise<{ items: number; locations: number; indexed: number }> {
+	let items = 0;
+	let locations = 0;
+	let indexed = 0;
+	for await (const s of Shops.search({ conditions: [{ attribute: 'status', value: 'active' }] })) {
+		const shopId = (s as { shopId: string }).shopId;
+		const token = await getUsableAccessToken(tokenDeps, shopId, now);
+		if (!token) continue;
+
+		// Locations: one small call, refreshed when we have none cached.
+		let cachedLocations = 0;
+		for await (const _l of ShopLocations.search({ conditions: [{ attribute: 'shopId', value: shopId }], select: ['id'], limit: 1 })) {
+			cachedLocations++;
+		}
+		if (cachedLocations === 0) {
+			try {
+				for (const location of await fetchLocations(shopId, token)) {
+					await ShopLocations.put(locationRow(shopId, location, now));
+					locations++;
+				}
+			} catch (e: unknown) {
+				log('warn', 'enrich.locations.failed', { shop: shopId, message: (e as Error).message });
+			}
+		}
+
+		// Inventory events in the window, and which item ids we already know.
+		const inventoryEvents: OperationalEvent[] = [];
+		for await (const e of Events.search({
+			conditions: [
+				{ attribute: 'shopId', value: shopId },
+				{ attribute: 'domain', value: 'inventory' },
+				{ attribute: 'receivedAt', value: now - 7 * 86_400_000, comparator: 'greater_than_equal' },
+			],
+			operator: 'and',
+		})) {
+			inventoryEvents.push(e as unknown as OperationalEvent);
+		}
+		if (inventoryEvents.length === 0) continue;
+
+		const resolved = new Set<string>();
+		const skuById = new Map<string, string>();
+		for await (const row of InventoryItems.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
+			const item = row as unknown as InventoryItem;
+			resolved.add(item.inventoryItemId);
+			if (item.sku) skuById.set(item.inventoryItemId, item.sku);
+		}
+
+		const wanted = unresolvedIds(inventoryEvents, resolved);
+		if (wanted.length > 0) {
+			try {
+				for (const facts of await fetchInventoryItems(shopId, token, wanted)) {
+					await InventoryItems.put(inventoryItemRow(shopId, facts, now));
+					resolved.add(facts.inventoryItemId);
+					if (facts.sku) skuById.set(facts.inventoryItemId, facts.sku);
+					items++;
+				}
+			} catch (e: unknown) {
+				log('warn', 'enrich.items.failed', { shop: shopId, message: (e as Error).message });
+			}
+		}
+
+		// Backfill the SKU index for every event whose item we can now name. Keys are
+		// deterministic, so re-running writes the same rows.
+		for (const event of inventoryEvents) {
+			const sku = event.resourceId ? skuById.get(event.resourceId) : undefined;
+			if (!sku) continue;
+			for (const row of skuRowsForInventoryEvent(event, sku)) {
+				await EventSkus.put(row);
+				indexed++;
+			}
+		}
+	}
+	return { items, locations, indexed };
+}
+
+function enrichTick(): void {
+	void enrichTicker.run(async () => {
+		try {
+			const r = await runInventoryEnrichment();
+			if (r.items || r.locations || r.indexed) log('trace', 'enrich.tick', r);
+		} catch (e: unknown) {
+			log('error', 'enrich.error', { message: (e as Error).message });
+		}
+	});
+}
+
+export function startInventoryEnrichmentLoop(): void {
+	setTimeout(enrichTick, ENRICH_INITIAL_DELAY_MS);
+	setInterval(enrichTick, ENRICH_INTERVAL_MS);
+}
+
 // Observability heartbeat (#22). Periodically derives the aggregate ops-health
 // (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
 // and emits it — with the cumulative metrics tally — as a single structured line.
@@ -436,4 +553,5 @@ startProcessingLoop();
 startPurgeLoop();
 startDetectorLoop();
 startReconcileLoop();
+startInventoryEnrichmentLoop();
 startOpsSnapshotLoop();
