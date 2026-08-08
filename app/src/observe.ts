@@ -202,6 +202,13 @@ export const M = {
 	enrichLocations: 'enrich.locations',
 	enrichIndexed: 'enrich.indexed',
 	enrichError: 'enrich.error',
+	// One-time backfill of the derived `state` column on projections written before
+	// it existed (src/stateBackfill.ts). `fixed` must fall to zero and stay there
+	// once the sweep converges; a non-zero `fixed` long after a deploy means new
+	// stateless rows are being written from somewhere, which would be a defect.
+	stateBackfillScanned: 'state_backfill.scanned',
+	stateBackfillFixed: 'state_backfill.fixed',
+	stateBackfillError: 'state_backfill.error',
 	// A background loop's previous pass failed to settle within its stall budget
 	// and a new pass was started anyway (src/tick.ts). Non-zero means a loop hung.
 	tickStalled: 'tick.stalled',

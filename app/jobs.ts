@@ -25,6 +25,7 @@ import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
 import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
 import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
+import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/stateBackfill.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
@@ -459,6 +460,53 @@ export function startInventoryEnrichmentLoop(): void {
 	setInterval(enrichTick, ENRICH_INTERVAL_MS);
 }
 
+// One-time backfill of the derived `state` column on order projections written
+// before that column existed. Without it, every lane count on the Overview
+// disagrees with the list it links to — getSummary/computeFlows derive the lane
+// live, listOrders filters the stored column — and the worst-affected population
+// is the one the worklist exists for: a paid, unfulfilled, QUIET order gets no
+// further events by definition, so it never rebuilds, and reconciliation's
+// cursor-scoped sweep never re-fetches it either.
+//
+// Runs on a short interval so a deploy converges quickly, then goes quiet: rows
+// written after the deploy always carry `state`, so once the checkpoint's
+// frontier reaches the present each tick reads one small batch and writes
+// nothing. The sweep itself is deps-injected in src/stateBackfill.ts (same split
+// as inventoryEnrich.ts) so it is unit-testable without the Harper runtime.
+const BACKFILL_INTERVAL_MS = 60_000;
+const BACKFILL_INITIAL_DELAY_MS = 15_000;
+const backfillTicker = ticker('state.backfill', 10 * 60_000);
+
+const backfillDeps: BackfillDeps = {
+	projections: Projections as unknown as BackfillDeps['projections'],
+	checkpoints: Checkpoints as unknown as BackfillDeps['checkpoints'],
+};
+
+export function runProjectionStateBackfill(now = Date.now()): Promise<BackfillResult> {
+	return runStateBackfill(now, backfillDeps);
+}
+
+function backfillTick(): void {
+	void backfillTicker.run(async () => {
+		try {
+			const r = await runProjectionStateBackfill();
+			metrics.inc(M.stateBackfillScanned, r.scanned);
+			metrics.inc(M.stateBackfillFixed, r.fixed);
+			// Only speaks up while there is something to do — a converged sweep is
+			// silent, which is how an operator can tell it converged.
+			if (r.fixed) log('info', 'state.backfill.tick', { scanned: r.scanned, fixed: r.fixed, cursor: r.cursor });
+		} catch (e: unknown) {
+			metrics.inc(M.stateBackfillError);
+			log('error', 'state.backfill.error', { message: (e as Error).message });
+		}
+	});
+}
+
+export function startProjectionStateBackfillLoop(): void {
+	setTimeout(backfillTick, BACKFILL_INITIAL_DELAY_MS);
+	setInterval(backfillTick, BACKFILL_INTERVAL_MS);
+}
+
 // Observability heartbeat (#22). Periodically derives the aggregate ops-health
 // (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
 // and emits it — with the cumulative metrics tally — as a single structured line.
@@ -500,4 +548,5 @@ startPurgeLoop();
 startDetectorLoop();
 startReconcileLoop();
 startInventoryEnrichmentLoop();
+startProjectionStateBackfillLoop();
 startOpsSnapshotLoop();
