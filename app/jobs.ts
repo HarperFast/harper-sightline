@@ -28,7 +28,12 @@ import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchL
 import { synthesizeEvents } from './src/reconcile.ts';
 import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
 import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/stateBackfill.ts';
-import { runDigestBuild as runDigestBuildSweep, type DigestBuildDeps, type DigestBuildResult } from './src/digestBuild.ts';
+import {
+	runDigestBuild as runDigestBuildSweep,
+	scrubEmailShaped,
+	type DigestBuildDeps,
+	type DigestBuildResult,
+} from './src/digestBuild.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
@@ -533,7 +538,11 @@ export function startProjectionStateBackfillLoop(): void {
 // the Harper runtime. This section only wires the real tables and the tick.
 const DIGEST_INTERVAL_MS = 3_600_000; // hourly; the period check does the real gating
 const DIGEST_INITIAL_DELAY_MS = 90_000;
-const digestTicker = ticker('digest', 30 * 60_000);
+// 180 minutes = 3x the hourly interval, matching reconcile's margin (also 3x its
+// own interval): both sweep every active shop and do several full-table reads
+// per shop, so a moderately slow pass should be tolerated before being flagged
+// as stalled, not treated as unconditionally wedged at half the interval.
+const digestTicker = ticker('digest', 180 * 60_000);
 
 const digestBuildDeps: DigestBuildDeps = {
 	subscriptions: DigestSubscriptions as unknown as DigestBuildDeps['subscriptions'],
@@ -556,11 +565,17 @@ function digestTick(): void {
 			// notDue and quiet are logged separately (not combined into one
 			// "skipped" figure): they answer different questions when digests seem
 			// absent — were subscriptions even due, or did they build but decide not
-			// to send?
-			if (r.built || r.skippedQuiet)
-				log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue });
+			// to send? `failed` (per-subscription failures, already logged with their
+			// own shopId inside runDigestBuildSweep) surfaces here too, so a sweep
+			// with failures is never mistaken for a quiet, healthy one.
+			if (r.built || r.skippedQuiet || r.failed)
+				log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue, failed: r.failed });
 		} catch (e: unknown) {
-			log('error', 'digest.error', { message: (e as Error).message });
+			// This catch is outside any per-subscription scope, so — unlike the
+			// per-subscription failure log inside runDigestBuildSweep, which knows
+			// the exact address to scrub — there is no specific address in hand
+			// here. Scrub anything email-shaped rather than logging the message raw.
+			log('error', 'digest.error', { message: scrubEmailShaped((e as Error).message) });
 		}
 	});
 }
