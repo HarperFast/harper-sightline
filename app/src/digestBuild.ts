@@ -72,19 +72,38 @@ export interface DigestBuildResult {
 // scrubbers are a second, value-level line of defense scoped to this loop,
 // not a change to that shared, key-based mechanism.
 
+// For building a RegExp from a literal string (an address) rather than a
+// pattern — without this, an address containing `+` or `.` (both legal in the
+// local part) would be interpreted as regex metacharacters instead of literal
+// characters.
+function escapeRegExp(literal: string): string {
+	return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Used where the address at risk is known (the per-subscription catch below):
-// remove that exact string. A message with no occurrence of it, or no address
-// argument at all, passes through byte-for-byte.
+// remove every case-insensitive occurrence of that exact string. Case-
+// insensitive because normalizeEmail (src/digestSubscription.ts) lowercases on
+// write, but a scrubber must not depend on an invariant enforced three modules
+// away — an error message quoting the address in its original casing (a
+// Shopify-supplied value before normalization, say) must still be caught here.
+// A message with no occurrence of it, or no address argument at all, passes
+// through byte-for-byte.
 export function scrubKnownAddress(message: string, address: string | undefined): string {
 	if (!address) return message;
-	return message.split(address).join('[address]');
+	return message.replace(new RegExp(escapeRegExp(address), 'gi'), '[address]');
 }
 
 // Used where the failure is caught too far from any specific subscription to
 // know which address (if any) was involved — jobs.ts's outer tick catch. Scans
-// for anything email-shaped rather than a specific string. An ordinary message
-// with nothing email-shaped in it passes through unchanged.
-const EMAIL_SHAPED = /[^\s@]+@[^\s@]+\.[^\s@]+/g;
+// for anything email-shaped rather than a specific string. Excludes `/` on
+// both sides of the `@` (and in the final segment) so a module path — e.g.
+// `node_modules/@scope/pkg/index.js`, which this app hits constantly since
+// `harper` has no file on disk outside the deployed runtime — cannot be
+// mistaken for an address: a real address never contains a slash, but a
+// scrubber that mangles an ordinary error message is worse than the leak it
+// exists to prevent. An ordinary message with nothing email-shaped in it
+// passes through unchanged.
+const EMAIL_SHAPED = /[^\s@/]+@[^\s@/]+\.[^\s@/]+/g;
 export function scrubEmailShaped(message: string): string {
 	return message.replace(EMAIL_SHAPED, '[address]');
 }

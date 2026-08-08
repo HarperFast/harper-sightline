@@ -203,9 +203,49 @@ test('scrubKnownAddress removes exactly the given address, and leaves an address
 	assert.equal(scrubKnownAddress('table offline', 'bad@b.example'), 'table offline');
 });
 
+// Edit that breaks this: dropping the 'i' flag (or reverting to the plain
+// split/join) in scrubKnownAddress. Not exploitable today — normalizeEmail
+// lowercases on write — but the scrubber must not depend on an invariant
+// enforced three modules away in src/digestSubscription.ts.
+test('scrubKnownAddress matches the address regardless of case', () => {
+	assert.equal(scrubKnownAddress('write conflict for Ops@Merchant.Example', 'ops@merchant.example'), 'write conflict for [address]');
+});
+
+// Edit that breaks this: escapeRegExp's replace stripping the backslash-escape
+// (e.g. reverting to new RegExp(address, 'gi') with no escaping) — a `+` or
+// `.` in the address would then be interpreted as a regex quantifier/wildcard
+// rather than a literal character, silently under- or over-matching.
+test('scrubKnownAddress treats a `+`-tagged address as a literal string, not a regex pattern', () => {
+	const address = 'ops+billing@merchant.example';
+	assert.equal(scrubKnownAddress(`write conflict for ${address}`, address), 'write conflict for [address]');
+	// If '+' were a live regex quantifier, 'opsbilling@merchant.example' (no
+	// '+') would ALSO match (one-or-more of the preceding char, here zero 's'
+	// characters) — it must not.
+	assert.equal(
+		scrubKnownAddress('write conflict for opsbilling@merchant.example', address),
+		'write conflict for opsbilling@merchant.example',
+	);
+});
+
 // scrubEmailShaped: used where the catch has no specific address in scope
 // (jobs.ts's outer tick catch) and must scan for anything email-shaped instead.
 test('scrubEmailShaped removes any email-shaped substring, and leaves an ordinary error unchanged', () => {
 	assert.equal(scrubEmailShaped('write failed for ops@merchant.example during put'), 'write failed for [address] during put');
 	assert.equal(scrubEmailShaped('ECONNRESET: socket hang up'), 'ECONNRESET: socket hang up');
+});
+
+// Edit that breaks this: dropping the `/` exclusion from EMAIL_SHAPED (back to
+// /[^\s@]+@[^\s@]+\.[^\s@]+/g) — a module path containing an `@scope` segment
+// would then be mistaken for an address and mangled. This is not hypothetical:
+// this app hits ERR_MODULE_NOT_FOUND constantly, since `harper` has no file on
+// disk outside the deployed runtime, and that error text is exactly this shape.
+test('scrubEmailShaped leaves a module path with an @scope segment unchanged, but still scrubs a genuine address in a similar sentence', () => {
+	assert.equal(
+		scrubEmailShaped('Cannot find module node_modules/@scope/pkg/index.js'),
+		'Cannot find module node_modules/@scope/pkg/index.js',
+	);
+	// Same shape of sentence ("Cannot find module ..."), but a real address this
+	// time — reducing false positives on paths must not turn into a blanket
+	// exemption that also misses genuine addresses.
+	assert.equal(scrubEmailShaped('Cannot find module for ops@merchant.example'), 'Cannot find module for [address]');
 });
