@@ -154,6 +154,13 @@ export const API_CONTRACT = {
 				'reconciliation',
 			],
 		},
+		digest: {
+			path: '/api/v1/digest',
+			fields: ['email', 'cadence', 'status', 'lastBuiltAt'],
+			// The app's only write surface, and it writes Sightline's own
+			// configuration — never Shopify data.
+			methods: ['GET', 'PUT'],
+		},
 	},
 } as const;
 

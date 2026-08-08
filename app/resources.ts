@@ -19,6 +19,7 @@ import {
 	EventSkus as EventSkusTable,
 	InventoryItems as InventoryItemsTable,
 	ShopLocations as ShopLocationsTable,
+	DigestSubscriptions as DigestSubscriptionsTable,
 } from './src/db.ts';
 import {
 	listEvents,
@@ -41,6 +42,7 @@ import { redactShop, redactOrders } from './src/redaction.ts';
 import { REDACT_TARGETS } from './src/ledgerTargets.ts';
 import { writeAudit } from './src/audit.ts';
 import { handleCompliance, type ComplianceDeps } from './src/compliance.ts';
+import { applySubscriptionUpdate, toSubscriptionView } from './src/digestSubscription.ts';
 
 // db.ts types tables as Table<T>; the read layer needs only the search/get subset.
 const EventsQ = EventsTable as unknown as QueryTable;
@@ -418,6 +420,52 @@ export class PrivacyResource extends Resource {
 			shopId,
 			Date.now(),
 		);
+	}
+}
+
+// The notification subscription — the app's ONLY write endpoint, and it writes
+// Sightline's own configuration, never Shopify's data. shopId comes from the
+// verified principal; a shopId in the body is ignored.
+//
+// Every change is audited, and the address is never logged: it is the one
+// merchant-identifying string this app holds.
+export class DigestResource extends Resource {
+	static path = '/api/v1/digest';
+	allowRead() {
+		return true;
+	}
+	allowUpdate() {
+		return true;
+	}
+	async get() {
+		const shopId = (await identity.authenticate(this.getContext())).shopId;
+		return toSubscriptionView(await DigestSubscriptionsTable.get(shopId));
+	}
+	async put() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const resolved = await ctx.data;
+		// The raw-JSON content-type handler means bodies arrive as a Buffer.
+		let body: Record<string, unknown> = {};
+		try {
+			const text = Buffer.isBuffer(resolved) ? resolved.toString('utf8') : typeof resolved === 'string' ? resolved : '';
+			const parsed = JSON.parse(text);
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
+		} catch {
+			throw httpError('body must be a JSON object', 400);
+		}
+
+		const now = Date.now();
+		const existing = await DigestSubscriptionsTable.get(shopId);
+		const next = applySubscriptionUpdate(existing, shopId, body, now);
+		await DigestSubscriptionsTable.put(next);
+		// Audit the CHANGE, never the address itself.
+		await writeAudit(`digest:${shopId}:${now}`, shopId, 'digest.subscription.updated', now, {
+			status: next.status,
+			cadence: next.cadence,
+			hasEmail: Boolean(next.email),
+		});
+		return toSubscriptionView(next);
 	}
 }
 

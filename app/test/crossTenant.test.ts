@@ -16,6 +16,7 @@ import {
 import { detectorKey } from '../src/detector.ts';
 import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/apiContract.ts';
 import { EXPORT_COLUMNS } from '../src/csv.ts';
+import { applySubscriptionUpdate } from '../src/digestSubscription.ts';
 
 // Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
 // `victim` and `attacker`. The attacker deliberately (a) reuses the victim's
@@ -366,6 +367,41 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 		['o4'],
 	);
 	assert.equal(lane.items[0].paidAt, NOW - 50, "the attacker's own o4, not the victim's");
+});
+
+// The digest subscription endpoint (#24) — the app's first and only write
+// surface. shopId is derived from the verified principal and passed as its own
+// argument; a shopId (or lastBuiltAt/createdAt) carried in the body must be
+// unable to retarget or backdate another tenant's row.
+//
+// NOTE: this proves only the pure merge function (applySubscriptionUpdate). The
+// resource-level guarantee — that DigestResource.get/put in resources.ts key
+// strictly on the authenticated principal's shopId, never a caller-supplied one
+// — cannot be exercised here: resources.ts imports src/db.ts, which imports the
+// `harper` module, and that module has no file on disk outside the deployed
+// Harper runtime, so importing resources.ts under `node --test` fails with
+// ERR_MODULE_NOT_FOUND before any assertion runs. That half is deferred to a
+// live check against a dev store.
+test('a digest update body cannot retarget or backdate another tenant subscription', () => {
+	const victim = {
+		shopId: 'victim.myshopify.com',
+		email: 'victim@example.com',
+		cadence: 'daily' as const,
+		status: 'active' as const,
+		createdAt: 1,
+		updatedAt: 1,
+		lastBuiltAt: 999,
+	};
+	// The attacker's principal is attacker.myshopify.com; the body lies.
+	const row = applySubscriptionUpdate(
+		undefined,
+		'attacker.myshopify.com',
+		{ email: 'attacker@example.com', shopId: victim.shopId, lastBuiltAt: 0, createdAt: 0 } as Record<string, unknown>,
+		2000,
+	);
+	assert.equal(row.shopId, 'attacker.myshopify.com');
+	assert.equal(row.lastBuiltAt, undefined);
+	assert.equal(row.createdAt, 2000);
 });
 
 test('export columns never reference a field outside the API allowlist', () => {

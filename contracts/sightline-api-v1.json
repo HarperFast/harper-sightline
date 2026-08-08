@@ -230,6 +230,19 @@
 				"webhooks",
 				"reconciliation"
 			]
+		},
+		"digest": {
+			"path": "/api/v1/digest",
+			"fields": [
+				"email",
+				"cadence",
+				"status",
+				"lastBuiltAt"
+			],
+			"methods": [
+				"GET",
+				"PUT"
+			]
 		}
 	}
 }
