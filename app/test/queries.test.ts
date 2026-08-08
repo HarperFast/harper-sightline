@@ -657,6 +657,38 @@ test('getSetup is tenant-scoped: another shop’s deliveries are not this shop�
 	assert.equal(setup.eventsObserved, false, "another tenant's delivery is not evidence this shop has seen activity");
 });
 
+test('the summary reports an aging breakdown of orders awaiting confirmation', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	const aging = summary.aging as { buckets: Array<{ key: string; count: number }> };
+	const byKey = Object.fromEntries(aging.buckets.map((b) => [b.key, b.count]));
+	// o2 (paid 2000ms ago) and oA (paid 2h ago) are both awaiting and both under24.
+	assert.equal(byKey.under24, 2); // o2, oA
+	assert.equal(byKey.h24to48, 1); // oB, paid 30h ago
+	assert.equal(byKey.over72, 1); // oC, paid 80h ago
+	assert.equal(byKey.h48to72, 0);
+});
+
+test('aging counts only awaiting orders — a fulfilled order is not aging', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	const aging = summary.aging as { buckets: Array<{ count: number }> };
+	const total = aging.buckets.reduce((n, b) => n + b.count, 0);
+	assert.equal(total, (summary.orders as { awaitingConfirmation: number }).awaitingConfirmation);
+});
+
+test('the aging breakdown never counts another tenant orders', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's2', NOW);
+	const aging = summary.aging as { buckets: Array<{ count: number }> };
+	// s2 has its own two awaiting orders (s2:o1, s2:oA) — if s1's four awaiting
+	// orders leaked in, this would be 6, not 2.
+	assert.equal(
+		aging.buckets.reduce((n, b) => n + b.count, 0),
+		2,
+	);
+});
+
 test('orders default to newest-paid first and carry the worklist columns', async () => {
 	const { projections } = fixtures();
 	const page = await listOrders(projections, 's1', NOW, {});

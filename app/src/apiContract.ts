@@ -92,7 +92,7 @@ export const API_CONTRACT = {
 		setup: { path: '/api/v1/setup', fields: ['shop', 'complete', 'steps', 'eventsObserved', 'action'] },
 		summary: {
 			path: '/api/v1/summary',
-			fields: ['shop', 'windowDays', 'events', 'orders', 'findings', 'recorder', 'reconciliation', 'activity'],
+			fields: ['shop', 'windowDays', 'events', 'orders', 'aging', 'findings', 'recorder', 'reconciliation', 'activity'],
 		},
 		events: {
 			path: '/api/v1/events',

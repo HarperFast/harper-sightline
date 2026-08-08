@@ -157,6 +157,56 @@ export function statGrid(tiles: Array<[string, number]>): string {
 	return `<s-grid gridTemplateColumns="@container (inline-size > 600px) repeat(4, 1fr), repeat(2, 1fr)" gap="base">${cells}</s-grid>`;
 }
 
+// Stat tiles that are also links. A count with nowhere to go is a dead end: the
+// merchant's next question is always "which ones?", and the worklist answers it.
+export function statGridLinked(tiles: Array<[string, number, string]>): string {
+	const cells = tiles
+		.map(
+			([label, value, href]) => `<s-grid-item><s-box padding="base" background="subdued" borderRadius="base">
+			<s-link href="${esc(href)}">
+				<s-text type="strong" fontVariantNumeric="tabular-nums">${value}</s-text>
+				<s-paragraph><s-text color="subdued">${esc(label)}</s-text></s-paragraph>
+			</s-link>
+		</s-box></s-grid-item>`,
+		)
+		.join('');
+	return `<s-grid gridTemplateColumns="@container (inline-size > 600px) repeat(4, 1fr), repeat(2, 1fr)" gap="base">${cells}</s-grid>`;
+}
+
+// The API's bucket keys are opaque strings; this is the one place that maps them
+// to the worklist's numeric threshold, so a renamed bucket breaks here loudly
+// rather than producing a silently wrong link.
+function bucketMinHours(key: string): number {
+	switch (key) {
+		case 'under24':
+			return 0;
+		case 'h24to48':
+			return 24;
+		case 'h48to72':
+			return 48;
+		default:
+			return 72;
+	}
+}
+
+// How long the awaiting orders have been waiting. Each bucket links into the
+// worklist filtered to that threshold, so the breakdown is a set of entry points
+// rather than a chart to read and then act on separately.
+export function agingView(aging: Summary['aging']): string {
+	const rows = aging.buckets
+		.map(
+			(b) => `<s-table-row>
+			<s-table-cell><s-link href="#/orders?state=awaiting&amp;minAgeHours=${encodeURIComponent(String(bucketMinHours(b.key)))}">${esc(b.label)}</s-link></s-table-cell>
+			<s-table-cell>${b.count}</s-table-cell>
+		</s-table-row>`,
+		)
+		.join('');
+	return `<s-section heading="Waiting for confirmation, by age">
+		<s-paragraph><s-text color="subdued">Time since Shopify showed payment. Sightline opens a finding at 72 hours.</s-text></s-paragraph>
+		${table([{ label: 'Age since payment' }, { label: 'Orders', numeric: true }], rows, 'Nothing is waiting for confirmation.')}
+	</s-section>`;
+}
+
 export function bullets(items: string[]): string {
 	return `<s-unordered-list>${items.map((c) => `<s-list-item>${esc(c)}</s-list-item>`).join('')}</s-unordered-list>`;
 }
@@ -435,14 +485,17 @@ export function overviewView(d: OverviewData): string {
 					[{ label: 'Lane' }, { label: 'Orders', numeric: true }],
 					(
 						[
-							['Paid', d.flows.lanes.paid],
-							['Fulfilled', d.flows.lanes.fulfilled],
-							['Awaiting confirmation', d.flows.lanes.awaitingConfirmation],
-							['Cancelled', d.flows.lanes.cancelled],
-							['Refunded', d.flows.lanes.refunded],
-						] as Array<[string, number]>
+							['Paid', d.flows.lanes.paid, '#/orders'],
+							['Fulfilled', d.flows.lanes.fulfilled, '#/orders?state=fulfilled'],
+							['Awaiting confirmation', d.flows.lanes.awaitingConfirmation, '#/orders?state=awaiting'],
+							['Cancelled', d.flows.lanes.cancelled, '#/orders?state=cancelled'],
+							['Refunded', d.flows.lanes.refunded, '#/orders?state=refunded'],
+						] as Array<[string, number, string]>
 					)
-						.map(([label, n]) => `<s-table-row><s-table-cell>${esc(label)}</s-table-cell><s-table-cell>${n}</s-table-cell></s-table-row>`)
+						.map(
+							([label, n, href]) =>
+								`<s-table-row><s-table-cell><s-link href="${esc(href)}">${esc(label)}</s-link></s-table-cell><s-table-cell>${n}</s-table-cell></s-table-row>`,
+						)
 						.join(''),
 					'No order activity in the window.',
 				)}
@@ -454,21 +507,22 @@ export function overviewView(d: OverviewData): string {
 		`${contextStrip(s, now)}
 		<s-section>${health}${stale}${backfill}${partial}</s-section>
 		<s-section heading="Orders (last ${s.windowDays} days)">
-			${statGrid([
-				['Tracked', s.orders.tracked],
-				['Paid', s.orders.paid],
-				['Fulfilled', s.orders.fulfilled],
-				['Awaiting confirmation', s.orders.awaitingConfirmation],
+			${statGridLinked([
+				['Tracked', s.orders.tracked, '#/orders'],
+				['Paid', s.orders.paid, '#/orders?state=awaiting'],
+				['Fulfilled', s.orders.fulfilled, '#/orders?state=fulfilled'],
+				['Awaiting confirmation', s.orders.awaitingConfirmation, '#/orders?state=awaiting'],
 			])}
 		</s-section>
 		<s-section heading="Findings">
-			${statGrid([
-				['Unconfirmed', s.findings.unconfirmed],
-				['Resolved', s.findings.resolved],
-				['Suppressed', s.findings.suppressed],
+			${statGridLinked([
+				['Unconfirmed', s.findings.unconfirmed, '#/findings?status=unconfirmed'],
+				['Resolved', s.findings.resolved, '#/findings?status=resolved'],
+				['Suppressed', s.findings.suppressed, '#/findings?status=suppressed'],
 			])}
 		</s-section>
 		${flows}
+		${s.aging ? agingView(s.aging) : ''}
 		${s.activity ? activityView(s.activity) : ''}
 		${d.unconfirmed ? needsAttention(d.unconfirmed, now) : ''}
 		<s-section><s-paragraph><s-text color="subdued">${s.events.total} normalized events recorded in the window.</s-text></s-paragraph></s-section>`,

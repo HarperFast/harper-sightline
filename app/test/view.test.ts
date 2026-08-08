@@ -13,6 +13,7 @@ import type {
 } from '../web/src/api.ts';
 import {
 	activityView,
+	agingView,
 	contextStrip,
 	errorViewMarkup,
 	authExpiredView,
@@ -55,6 +56,7 @@ function summary(over: Partial<Summary> = {}): Summary {
 		events: { total: 12 },
 		orders: { tracked: 4, paid: 3, fulfilled: 2, awaitingConfirmation: 1 },
 		findings: { unconfirmed: 1, resolved: 2, suppressed: 0 },
+		aging: { buckets: [] },
 		recorder: { healthy: true, deadLetteredDeliveries: 0 },
 		reconciliation: { lastReconciledAt: NOW - 4 * MIN, ageMs: 4 * MIN, stale: false, state: 'ready' },
 		activity: {
@@ -277,6 +279,30 @@ test('a fully healthy overview shows no warning banners', () => {
 	for (const absent of ['Partial data', 'Reconciliation delayed', 'Initial check still running']) {
 		assert.ok(!html.includes(absent), `${absent} must not appear on a healthy overview`);
 	}
+});
+
+// ── aging / drill-down links ─────────────────────────────────────────────────
+
+test('the aging breakdown links each bucket into the filtered worklist', () => {
+	const html = agingView({
+		buckets: [
+			{ key: 'under24', label: 'Under 24h', count: 3 },
+			{ key: 'over72', label: 'Over 72h', count: 1 },
+		],
+	});
+	assert.match(html, /Under 24h/);
+	assert.match(html, /href="#\/orders\?state=awaiting&amp;minAgeHours=72"/);
+});
+
+test('the overview stat tiles link into the worklist', () => {
+	const html = overviewView({ summary: summary(), flows: null, unconfirmed: [], setup: null, now: NOW });
+	assert.match(html, /href="#\/orders\?state=awaiting"/);
+	assert.match(html, /href="#\/orders\?state=fulfilled"/);
+});
+
+test('a zero-count aging bucket still renders, so the breakdown is readable', () => {
+	const html = agingView({ buckets: [{ key: 'h48to72', label: '48–72h', count: 0 }] });
+	assert.match(html, /48–72h/);
 });
 
 // ── activity visualization ───────────────────────────────────────────────────

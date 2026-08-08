@@ -16,7 +16,7 @@ import {
 	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
 import { describeFinding, detectorKey } from './detector.ts';
-import { ageHours } from './orders.ts';
+import { AGE_BUCKETS, ageBucketKey, ageHours, isAwaitingConfirmation } from './orders.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every
@@ -485,19 +485,19 @@ export async function getSummary(
 	let paid = 0;
 	let fulfilled = 0;
 	let awaitingConfirmation = 0;
+	// Aging of the awaiting set, so the Overview can show what is heading for the
+	// 72-hour deadline while it can still be acted on — not just what already
+	// blew it. Zero-filled so every bucket renders.
+	const agingCounts: Record<string, number> = Object.fromEntries(AGE_BUCKETS.map((b) => [b.key, 0]));
 	for await (const p of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const proj = p as unknown as OrderProjection;
 		ordersTracked++;
 		if (proj.paidAt !== undefined) paid++;
 		if (proj.fulfilledAt !== undefined) fulfilled++;
-		if (
-			proj.paidAt !== undefined &&
-			proj.requiresFulfillment &&
-			proj.fulfilledAt === undefined &&
-			proj.cancelledAt === undefined &&
-			proj.fullyRefundedAt === undefined
-		) {
+		if (isAwaitingConfirmation(proj)) {
 			awaitingConfirmation++;
+			const key = ageBucketKey(proj.paidAt, now);
+			if (key !== undefined) agingCounts[key]++;
 		}
 	}
 
@@ -512,6 +512,7 @@ export async function getSummary(
 		windowDays: WINDOW_DAYS,
 		events: { total: eventsTotal },
 		orders: { tracked: ordersTracked, paid, fulfilled, awaitingConfirmation },
+		aging: { buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: agingCounts[b.key] })) },
 		findings: findingCounts,
 		recorder: { healthy: deadLettered === 0, deadLetteredDeliveries: deadLettered },
 		reconciliation: reconciliationView(shop, now),
