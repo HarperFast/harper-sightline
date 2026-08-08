@@ -7,7 +7,10 @@ embedded = true
 
 [access_scopes]
 # Minimal read set (docs/shopify-contract.md §2). No write scopes; no read_all_orders.
-scopes = "read_orders,read_fulfillments,read_inventory"
+# read_products/read_locations are read-only Admin API reads used to resolve
+# inventory-item -> product/variant titles and location names for the merchant
+# UI; neither adds a customer identifier (still PCD Level 1 — see §5).
+scopes = "read_orders,read_fulfillments,read_inventory,read_products,read_locations"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
