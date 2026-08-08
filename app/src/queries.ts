@@ -420,9 +420,9 @@ export async function listOrders(projections: QueryTable, shopId: string, now: n
 	const windowStart = now - WINDOW_MS;
 	const conditions: QuerySpec['conditions'] = [
 		{ attribute: 'shopId', value: shopId },
-		// Same window bound the flow lanes use, so the worklist and the lane counts
-		// describe the same set of orders.
-		{ attribute: 'lastEventAt', value: windowStart, comparator: 'greater_than_equal' },
+		// Same window bound the flow lanes and the Overview tiles use (windowCondition),
+		// so the worklist and the lane counts describe the same set of orders.
+		windowCondition(windowStart),
 	];
 	if (params.state) conditions.push({ attribute: 'state', value: params.state });
 	// Age bounds. `ageHours` floors, so the pair is exactly the half-open interval
@@ -566,8 +566,20 @@ function emptyBuckets(windowStart: number): Array<Record<string, number>> {
 // anyway, but "usually" is not a guarantee: a purge run capped at
 // MAX_DELETES_PER_RUN leaves residue behind, and that residue must not surface in
 // one panel and not another.
+//
+// The same predicate is available as an INDEXABLE condition, and the two order
+// scans below push it into the search (windowCondition) as well as keeping this
+// code-side check as a belt. Without it, getSummary — which runs on every screen
+// load behind a 15s cache — scanned every projection the shop had ever stored and
+// filtered in code.
 function inWindow(p: OrderProjection, windowStart: number): boolean {
 	return (p.lastEventAt ?? 0) >= windowStart;
+}
+
+// listOrders uses the identical condition, so all three surfaces bound the set the
+// same way, in the database. `lastEventAt` is @indexed for exactly this.
+function windowCondition(windowStart: number): QuerySpec['conditions'][number] {
+	return { attribute: 'lastEventAt', value: windowStart, comparator: 'greater_than_equal' };
 }
 
 // GET /summary — the Overview screen's counts. Recorder health is separate from
@@ -618,7 +630,10 @@ export async function getSummary(
 	// 72-hour deadline while it can still be acted on — not just what already
 	// blew it. Zero-filled so every bucket renders.
 	const agingCounts: Record<string, number> = Object.fromEntries(AGE_BUCKETS.map((b) => [b.key, 0]));
-	for await (const p of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
+	for await (const p of tables.projections.search({
+		conditions: [{ attribute: 'shopId', value: shopId }, windowCondition(windowStart)],
+		operator: 'and',
+	})) {
 		const proj = p as unknown as OrderProjection;
 		if (!inWindow(proj, windowStart)) continue;
 		ordersTracked++;
@@ -670,7 +685,10 @@ export async function getSummary(
 export async function computeFlows(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
 	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 };
-	for await (const p of projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
+	for await (const p of projections.search({
+		conditions: [{ attribute: 'shopId', value: shopId }, windowCondition(windowStart)],
+		operator: 'and',
+	})) {
 		const proj = p as unknown as OrderProjection;
 		if (!inWindow(proj, windowStart)) continue;
 		if (proj.paidAt !== undefined) lanes.paid++;

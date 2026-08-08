@@ -796,6 +796,49 @@ test('the summary order counts and the flow lanes describe the same window', asy
 	assert.equal(orders.tracked, 9, 'the out-of-window order must not be counted');
 });
 
+test('the order scans bound the window in the database, not only in code', async () => {
+	// getSummary runs on every screen load. Both it and computeFlows searched on
+	// `{ shopId }` alone and dropped out-of-window rows in code, so the hottest read
+	// in the app scanned every projection the shop had ever stored. The predicate is
+	// indexable and identical to the one listOrders already used, so it belongs in the
+	// query — the code-side check stays as a belt, which is why every count above is
+	// unchanged.
+	const { events, findings, deliveries, shops } = fixtures();
+	const projections = new FakeTable('id', [
+		{ id: 's1:in', shopId: 's1', orderId: 'in', paidAt: NOW - HOUR, requiresFulfillment: true, state: 'awaiting', lastEventAt: NOW - HOUR },
+		// Purge residue: expired but still queryable (a purge run capped at
+		// MAX_DELETES_PER_RUN leaves some behind).
+		{
+			id: 's1:old',
+			shopId: 's1',
+			orderId: 'old',
+			paidAt: NOW - 20 * DAY,
+			requiresFulfillment: true,
+			state: 'awaiting',
+			lastEventAt: NOW - 20 * DAY,
+		},
+	]);
+	let yielded = 0;
+	const counting = {
+		search: async function* (spec: unknown) {
+			for await (const row of projections.search(spec as never)) {
+				yielded++;
+				yield row;
+			}
+		},
+		get: (id: string) => projections.get(id),
+	} as unknown as typeof projections;
+
+	const summary = await getSummary({ events, projections: counting, findings, deliveries, shops }, 's1', NOW);
+	assert.equal((summary.orders as { tracked: number }).tracked, 1);
+	assert.equal(yielded, 1, 'the expired row was never read, not read and then discarded');
+
+	yielded = 0;
+	const flows = await computeFlows(counting, 's1', NOW);
+	assert.equal((flows.lanes as Record<string, number>).awaitingConfirmation, 1);
+	assert.equal(yielded, 1);
+});
+
 test('the fulfilled count is lane-consistent: a fulfilled-then-cancelled order counts once, as cancelled', async () => {
 	const { projections } = fixtures();
 	const summary = await getSummary(
