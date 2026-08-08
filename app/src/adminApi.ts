@@ -145,3 +145,58 @@ export async function fetchShopTimezone(shop: string, token: string, fetchImpl: 
 	const tz = data.shop?.ianaTimezone;
 	return typeof tz === 'string' && tz.length > 0 ? tz : undefined;
 }
+
+const INVENTORY_ITEMS_QUERY = `query($ids:[ID!]!){nodes(ids:$ids){... on InventoryItem{id sku variant{title product{title}}}}}`;
+
+// Resolve inventory item ids to their SKU/product facts. Ids arrive as numeric
+// strings (matching the webhook's inventory_item_id) and are widened to gids for
+// the API. Nodes that no longer exist come back null and are skipped.
+export async function fetchInventoryItems(
+	shop: string,
+	token: string,
+	ids: string[],
+	fetchImpl: typeof fetch = fetch,
+): Promise<Array<{ inventoryItemId: string; sku?: string; productTitle?: string; variantTitle?: string }>> {
+	if (ids.length === 0) return [];
+	const data = await adminGraphql<{
+		nodes: Array<{ id?: unknown; sku?: unknown; variant?: { title?: unknown; product?: { title?: unknown } } } | null>;
+	}>(shop, token, INVENTORY_ITEMS_QUERY, { ids: ids.map((id) => `gid://shopify/InventoryItem/${id}`) }, fetchImpl);
+	const out: Array<{ inventoryItemId: string; sku?: string; productTitle?: string; variantTitle?: string }> = [];
+	for (const node of data.nodes ?? []) {
+		if (!node) continue;
+		const inventoryItemId = numericId(node.id);
+		if (!inventoryItemId) continue;
+		out.push({
+			inventoryItemId,
+			sku: typeof node.sku === 'string' && node.sku.length > 0 ? node.sku : undefined,
+			productTitle: typeof node.variant?.product?.title === 'string' ? node.variant.product.title : undefined,
+			variantTitle: typeof node.variant?.title === 'string' ? node.variant.title : undefined,
+		});
+	}
+	return out;
+}
+
+const LOCATIONS_QUERY = `{locations(first:100){nodes{id name}}}`;
+
+// A shop's locations. Small and slow-changing, so the whole set is cached in one
+// call rather than resolved per event.
+export async function fetchLocations(
+	shop: string,
+	token: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<Array<{ locationId: string; name?: string }>> {
+	const data = await adminGraphql<{ locations: { nodes: Array<{ id?: unknown; name?: unknown }> } }>(
+		shop,
+		token,
+		LOCATIONS_QUERY,
+		{},
+		fetchImpl,
+	);
+	const out: Array<{ locationId: string; name?: string }> = [];
+	for (const node of data.locations?.nodes ?? []) {
+		const locationId = numericId(node.id);
+		if (!locationId) continue;
+		out.push({ locationId, name: typeof node.name === 'string' ? node.name : undefined });
+	}
+	return out;
+}
