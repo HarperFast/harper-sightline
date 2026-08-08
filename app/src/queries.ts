@@ -16,7 +16,7 @@ import {
 	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
 import { describeFinding, detectorKey, DETECTOR_FAILED } from './detector.ts';
-import { AGE_BUCKETS, ageBucketKey, ageHours, isAwaitingConfirmation } from './orders.ts';
+import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from './orders.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every
@@ -498,6 +498,16 @@ function emptyBuckets(windowStart: number): Array<Record<string, number>> {
 	});
 }
 
+// One definition of "in the read window" for every order-derived count, so the
+// Overview's tiles, the flow lanes, and the worklist can never describe different
+// sets of orders. Retention usually keeps expired projections out of the table
+// anyway, but "usually" is not a guarantee: a purge run capped at
+// MAX_DELETES_PER_RUN leaves residue behind, and that residue must not surface in
+// one panel and not another.
+function inWindow(p: OrderProjection, windowStart: number): boolean {
+	return (p.lastEventAt ?? 0) >= windowStart;
+}
+
 // GET /summary — the Overview screen's counts. Recorder health is separate from
 // the finding count: an unhealthy recorder cannot claim "no gaps" (screen spec).
 export async function getSummary(
@@ -548,6 +558,7 @@ export async function getSummary(
 	const agingCounts: Record<string, number> = Object.fromEntries(AGE_BUCKETS.map((b) => [b.key, 0]));
 	for await (const p of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const proj = p as unknown as OrderProjection;
+		if (!inWindow(proj, windowStart)) continue;
 		ordersTracked++;
 		if (proj.paidAt !== undefined) paid++;
 		if (proj.fulfilledAt !== undefined) fulfilled++;
@@ -587,27 +598,33 @@ export async function getSummary(
 
 // GET /flows — bounded lane counts derived from order projections in the window.
 // A pure function of the projections, so it reconciles to fixtures and rebuilds.
+// Lanes come from deriveOrderLane, the same definition the worklist and the
+// summary use, so the three views cannot disagree.
 export async function computeFlows(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
 	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, cancelled: 0, refunded: 0 };
 	for await (const p of projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const proj = p as unknown as OrderProjection;
-		if ((proj.lastEventAt ?? 0) < windowStart) continue;
+		if (!inWindow(proj, windowStart)) continue;
 		if (proj.paidAt !== undefined) lanes.paid++;
-		if (proj.fulfilledAt !== undefined) lanes.fulfilled++;
-		if (proj.cancelledAt !== undefined) lanes.cancelled++;
-		if (proj.fullyRefundedAt !== undefined) lanes.refunded++;
-		if (
-			proj.paidAt !== undefined &&
-			proj.requiresFulfillment &&
-			proj.fulfilledAt === undefined &&
-			proj.cancelledAt === undefined &&
-			proj.fullyRefundedAt === undefined
-		) {
-			lanes.awaitingConfirmation++;
+		switch (deriveOrderLane(proj)) {
+			case 'fulfilled':
+				lanes.fulfilled++;
+				break;
+			case 'cancelled':
+				lanes.cancelled++;
+				break;
+			case 'refunded':
+				lanes.refunded++;
+				break;
+			case 'awaiting':
+				lanes.awaitingConfirmation++;
+				break;
+			default:
+				break;
 		}
 	}
-	return { shop: shopId, windowDays: WINDOW_MS / 86_400_000, lanes };
+	return { shop: shopId, windowDays: WINDOW_DAYS, lanes };
 }
 
 // Customer fields Sightline deliberately never records. Stated positively on the

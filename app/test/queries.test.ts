@@ -77,15 +77,13 @@ function fixtures() {
 	//   list/aging tests.
 	//
 	// All of these functions read from this SAME table — one shared universe, not
-	// two — but not identically: getSummary (plain shopId scan) and getPrivacy's
-	// footprint (countWhere) have no window or state filter, so o1/o2 count toward
-	// their totals right alongside oA-oD. computeFlows DOES filter on
-	// `lastEventAt >= windowStart`; it only looks unfiltered here because every
-	// row above, even oC's 80-hour-old lastEventAt, sits inside the 7-day window.
-	// That getSummary/computeFlows asymmetry is a known inconsistency a later task
-	// in this plan resolves — don't "fix" it in passing, and don't assume a row
-	// with an out-of-window lastEventAt will count toward computeFlows.lanes the
-	// way it counts toward getSummary.orders.
+	// two. getSummary and computeFlows now share one window predicate (`inWindow`
+	// in src/queries.ts): both filter on `lastEventAt >= windowStart`, so o1/o2 and
+	// oA-oD all count toward both, since every row here, even oC's 80-hour-old
+	// lastEventAt, sits inside the 7-day window. getPrivacy's footprint
+	// (countWhere) is intentionally different — it reports the tenant's whole
+	// stored footprint, not a "last 7 days" claim, so it has no window filter and
+	// o1/o2 count toward it regardless of lastEventAt.
 	const projections = new FakeTable('id', [
 		{
 			id: 's1:o1',
@@ -650,6 +648,29 @@ test('computeFlows lane counts reconcile and are rebuildable from projections', 
 	assert.deepEqual(flows.lanes, { paid: 6, fulfilled: 2, awaitingConfirmation: 4, cancelled: 0, refunded: 0 });
 	// Rebuild = same function over the same data → identical (idempotent).
 	assert.deepEqual((await computeFlows(projections, 's1', NOW)).lanes, flows.lanes);
+});
+
+test('the summary order counts and the flow lanes describe the same window', async () => {
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	// An order whose last activity is older than the window — present because the
+	// purge has not run yet. Neither panel may count it.
+	await projections.put({
+		id: 's1:oStale',
+		shopId: 's1',
+		orderId: 'oStale',
+		paidAt: NOW - 20 * DAY,
+		requiresFulfillment: true,
+		state: 'awaiting',
+		lastEventAt: NOW - 20 * DAY,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	const flows = await computeFlows(projections, 's1', NOW);
+	const orders = summary.orders as { tracked: number; awaitingConfirmation: number };
+	const lanes = flows.lanes as Record<string, number>;
+	assert.equal(orders.awaitingConfirmation, lanes.awaitingConfirmation);
+	// The fixture universe already has six in-window s1 orders (o1, o2, oA-oD)
+	// before oStale is added; oStale must not become a seventh.
+	assert.equal(orders.tracked, 6, 'the out-of-window order must not be counted');
 });
 
 test('getPrivacy reports no PII and the tenant footprint', async () => {
