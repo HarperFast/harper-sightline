@@ -65,6 +65,20 @@ function fixtures() {
 			receivedAt: NOW - 800,
 		},
 	]);
+	// Two deliberately different scales of "recent" among the s1 rows below:
+	// - o1/o2 (and s2's o1) are the ORIGINAL pair, millisecond-fresh, used by the
+	//   event/finding tests above. Their paidAt/lastEventAt are seconds old, which
+	//   puts them ahead of every hour-scale row in any unfiltered/newest-first
+	//   order query, and — because getSummary/computeFlows/getPrivacy scan ALL of
+	//   a shop's projections with no window or state filter — they also count
+	//   toward those functions' totals. Do not retime them "to make the ordering
+	//   tidier": their paidAt is joined into the findings-list assertions and
+	//   their orderId is reused as an event resourceId elsewhere in this file, so
+	//   retiming would ripple into unrelated tests.
+	// - oA-oD are the WORKLIST set, hour-scale ages, purpose-built for the order
+	//   list/aging tests. Any test written against "all of s1's orders" (getSummary,
+	//   computeFlows, getPrivacy footprint, and later the aging-bucket work) must
+	//   count o1/o2 too — there is one shared universe, not two.
 	const projections = new FakeTable('id', [
 		{
 			id: 's1:o1',
