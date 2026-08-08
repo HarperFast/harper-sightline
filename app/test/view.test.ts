@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type {
+	DigestSettings,
 	EventDetail,
 	EventItem,
 	FindingDetail,
@@ -32,6 +33,7 @@ import {
 	integrityView,
 	money,
 	needsAttention,
+	notificationsView,
 	observedTimeline,
 	orderDetailView,
 	orderTimeline,
@@ -1213,4 +1215,115 @@ test('every list screen offers a CSV export', () => {
 	assert.match(eventsView({}, [], false, ''), /data-export="events"/);
 	assert.match(findingsListView({}, [], NOW, ''), /data-export="findings"/);
 	assert.match(ordersView({}, [], false, ''), /data-export="orders"/);
+});
+
+// ── notifications ────────────────────────────────────────────────────────────
+// The digest subscription screen. Two things it must be honest about: nothing is
+// sent yet (delivery isn't built), and the stored address is the app's only
+// merchant-identifying data. Both claims get their own pinned test below, not a
+// loose page-wide substring match — a loose match on this screen already hid one
+// vacuous test (see the "not yet sent" test) and would hide an inverted status
+// badge just as easily.
+
+function digestSettings(over: Partial<DigestSettings> = {}): DigestSettings {
+	return { cadence: 'daily', status: 'paused', ...over };
+}
+
+test('the notifications screen offers an address, a cadence, and a save action', () => {
+	const html = notificationsView(digestSettings(), NOW, '');
+	assert.match(html, /id="f-email"/);
+	assert.match(html, /id="f-cadence"/);
+	assert.match(html, /data-save-digest/);
+});
+
+test('an active subscription shows its address and current cadence selected', () => {
+	const html = notificationsView(digestSettings({ email: 'ops@merchant.example', cadence: 'weekly', status: 'active' }), NOW, '');
+	assert.match(html, /ops@merchant\.example/);
+	assert.match(html, /value="weekly" selected/);
+	// Pinned to the badge markup itself: `assert.match(html, /active/)` (the
+	// brief's original assertion) is also satisfied by the substring inside
+	// "inactive", so it cannot tell a correct badge from an inverted one.
+	assert.match(html, /<s-badge tone="success">active<\/s-badge>/);
+});
+
+test('an active subscription never shows a paused badge, and a paused one never shows active', () => {
+	// Two fixtures, both directions checked, so an inverted status ternary — which
+	// the single positive assertion above cannot catch, since a badge that always
+	// rendered "active" would still pass it — fails here in whichever direction it
+	// is wrong.
+	const active = notificationsView(digestSettings({ email: 'ops@merchant.example', status: 'active' }), NOW, '');
+	assert.match(active, /<s-badge tone="success">active<\/s-badge>/);
+	assert.doesNotMatch(active, /<s-badge tone="neutral">paused<\/s-badge>/);
+
+	const paused = notificationsView(digestSettings({ status: 'paused' }), NOW, '');
+	assert.match(paused, /<s-badge tone="neutral">paused<\/s-badge>/);
+	assert.doesNotMatch(paused, /<s-badge tone="success">active<\/s-badge>/);
+});
+
+test('the screen states plainly, in its own banner, that digests are stored and not yet sent', () => {
+	// Promising email that does not go out would be the worst possible copy here —
+	// this is the single highest-value test on the screen.
+	//
+	// A prior version of this test matched /not yet|will not be sent|stored/i
+	// against the WHOLE page. That is vacuous: deleting this banner entirely still
+	// leaves the assertion passing, because "stored" also appears, correctly, in
+	// the unrelated address-disclosure paragraph further down the screen. Anchoring
+	// the match to the banner's own markup is what makes the test able to fail —
+	// confirmed by deleting the banner and watching only this test go red, then
+	// restoring it (see the task report for the transcript).
+	const html = notificationsView(digestSettings(), NOW, '');
+	const banner = html.match(/<s-banner tone="info" heading="Digests are being prepared[^"]*">[\s\S]*?<\/s-banner>/);
+	assert.ok(banner, 'the delivery-status banner must be present');
+	assert.match(banner![0], /not yet|will not be sent/i);
+});
+
+test('the screen discloses that the address is stored and how to remove it', () => {
+	const html = notificationsView(digestSettings({ email: 'ops@merchant.example', status: 'active' }), NOW, '');
+	assert.match(html, /stored/i);
+	assert.match(html, /clear|remove|empty/i);
+});
+
+test('a save error is shown to the merchant rather than swallowed', () => {
+	assert.match(
+		notificationsView(digestSettings(), NOW, '', { tone: 'critical', text: 'email is not a valid address' }),
+		/not a valid address/,
+	);
+});
+
+test('a save confirmation is shown on success', () => {
+	assert.match(
+		notificationsView(digestSettings({ status: 'active', email: 'a@b.example' }), NOW, '', { tone: 'success', text: 'Saved' }),
+		/Saved/,
+	);
+});
+
+test('a hostile stored address cannot inject markup', () => {
+	const html = notificationsView(digestSettings({ email: '"><script>alert(1)</script>' }), NOW, '');
+	assert.doesNotMatch(html, /<script>alert/);
+});
+
+test('a never-checked subscription says so, in its own status line', () => {
+	// Scoped to the status stack, not the whole page — the delivery-status banner
+	// legitimately says Sightline "prepares" digests in general terms, and an
+	// unscoped /prepared/i check on the whole page would fail on that unrelated
+	// sentence rather than on the line this test actually means to check.
+	const html = notificationsView(digestSettings(), NOW, '');
+	const statusLine = html.match(/<s-stack direction="inline" gap="small-200" alignItems="center">[\s\S]*?<\/s-stack>/);
+	assert.ok(statusLine, 'the status line must be present');
+	assert.match(statusLine![0], /Not checked yet/);
+});
+
+test('a checked subscription’s status line says when it was last checked, not when a digest was "prepared"', () => {
+	// lastBuiltAt is stamped by the build loop even on a quiet period where nothing
+	// was written (Task 6) — a recurring "all clear" email trains people to ignore
+	// the channel, so the loop deliberately writes no digest then. The field means
+	// "last period evaluated", not "last digest produced", so THIS line must say
+	// "checked", not "prepared" — rendering it as "prepared" would have the screen
+	// assert an artifact it never made. (The banner elsewhere on the page may still
+	// say "prepared" in general terms — see the scoping note on the previous test.)
+	const html = notificationsView(digestSettings({ lastBuiltAt: NOW - HOUR }), NOW, '');
+	const statusLine = html.match(/<s-stack direction="inline" gap="small-200" alignItems="center">[\s\S]*?<\/s-stack>/);
+	assert.ok(statusLine, 'the status line must be present');
+	assert.match(statusLine![0], /Last checked .*ago/);
+	assert.doesNotMatch(statusLine![0], /prepared/i);
 });

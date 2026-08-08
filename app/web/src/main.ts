@@ -11,6 +11,8 @@ import {
 	apiPrivacy,
 	apiOrders,
 	apiOrder,
+	apiDigest,
+	apiSaveDigest,
 	type EventItem,
 	type OrderItem,
 	type Setup,
@@ -27,6 +29,7 @@ import {
 	findingDetailView,
 	findingsListView,
 	notFoundView,
+	notificationsView,
 	orderDetailView,
 	orderQuery,
 	ordersView,
@@ -305,6 +308,25 @@ async function privacy(): Promise<void> {
 	render(privacyView(await apiPrivacy(), Date.now(), contextHtml));
 }
 
+async function notifications(message?: { tone: string; text: string }): Promise<void> {
+	loading();
+	const contextHtml = await strip();
+	const settings = await apiDigest();
+	render(notificationsView(settings, Date.now(), contextHtml, message));
+	document.querySelector('[data-save-digest]')?.addEventListener('click', () => {
+		void (async () => {
+			try {
+				await apiSaveDigest({ email: fieldValue('f-email'), cadence: fieldValue('f-cadence') });
+				await notifications({ tone: 'success', text: 'Saved.' });
+			} catch (err) {
+				// A 400 carries the validation reason; show it rather than a bare code.
+				const text = String((err as Error).message).replace(/^400\s*/, '') || 'Could not save.';
+				await notifications({ tone: 'critical', text });
+			}
+		})();
+	});
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 async function route(): Promise<void> {
 	const { path, params } = parseHash(location.hash);
@@ -322,6 +344,7 @@ async function route(): Promise<void> {
 		else if (findingId) await findingDetail(decodeURIComponent(findingId[1]));
 		else if (path === '/findings') await findingsList(params);
 		else if (path === '/privacy') await privacy();
+		else if (path === '/notifications') await notifications();
 		else render(notFoundView());
 	} catch (err) {
 		// api.ts prefixes the thrown message with the HTTP status; a 401 means the

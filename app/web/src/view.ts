@@ -1,4 +1,15 @@
-import type { EventDetail, EventItem, FindingDetail, FindingItem, OrderDetail, OrderItem, Privacy, Setup, Summary } from './api.ts';
+import type {
+	DigestSettings,
+	EventDetail,
+	EventItem,
+	FindingDetail,
+	FindingItem,
+	OrderDetail,
+	OrderItem,
+	Privacy,
+	Setup,
+	Summary,
+} from './api.ts';
 
 // Every screen's markup, as PURE functions of already-fetched data. Nothing here
 // touches the DOM, the network, or any Shopify global — main.ts owns all of that.
@@ -1190,6 +1201,62 @@ export function findingDetailView(f: FindingDetail, lastReconciledAt: number | u
 			])}
 		</s-section>`,
 		{ href: '#/findings', label: 'Findings' },
+	);
+}
+
+// ── notifications ────────────────────────────────────────────────────────────
+// The digest subscription. Two things this screen must be honest about:
+//
+// 1. Nothing is sent yet. Digests are built and stored; delivery is not built.
+//    Promising an email that never arrives would be worse than offering nothing.
+// 2. The address is stored. It is the only merchant-identifying string the app
+//    holds, so the screen says so and says how to remove it.
+export const CADENCES: Array<[string, string]> = [
+	['daily', 'Daily'],
+	['weekly', 'Weekly'],
+];
+
+export function notificationsView(settings: DigestSettings, now: number, strip: string, message?: { tone: string; text: string }): string {
+	const cadenceOptions = CADENCES.map(
+		([value, label]) => `<option value="${esc(value)}"${value === settings.cadence ? ' selected' : ''}>${esc(label)}</option>`,
+	).join('');
+	const status = settings.status === 'active' ? badge('active', 'success') : badge('paused', 'neutral');
+	// lastBuiltAt is stamped by the build loop even on a period where it wrote no
+	// digest (Task 6, by design — a recurring "all clear" email trains people to
+	// ignore the channel), so it means "last period evaluated", not "last digest
+	// produced". Rendering it as "prepared" would assert an artifact that may never
+	// have existed; "checked" is the claim the field actually supports.
+	const lastChecked =
+		settings.lastBuiltAt === undefined
+			? `<s-text color="subdued">Not checked yet</s-text>`
+			: `<s-text color="subdued">Last checked ${esc(relative(settings.lastBuiltAt, now))}</s-text>`;
+
+	return page(
+		'Notifications',
+		`${strip}
+		${message ? `<s-section><s-banner tone="${esc(message.tone)}"><s-paragraph>${esc(message.text)}</s-paragraph></s-banner></s-section>` : ''}
+		<s-section heading="Operations digest">
+			<s-banner tone="info" heading="Digests are being prepared, not yet delivered">
+				<s-paragraph>Sightline builds your digest on schedule and stores it. Email delivery is not switched on yet, so nothing will be sent to this address for now — subscribing tells us you want it and makes sure your first digest is ready when delivery ships.</s-paragraph>
+			</s-banner>
+			<s-stack direction="inline" gap="small-200" alignItems="center">${status}${lastChecked}</s-stack>
+			<s-stack id="digestForm" direction="inline" gap="base" alignItems="end">
+				<s-text-field id="f-email" label="Notification email" placeholder="ops@yourstore.com" value="${esc(settings.email ?? '')}"></s-text-field>
+				<s-select id="f-cadence" label="Frequency">${cadenceOptions}</s-select>
+				<s-button variant="primary" data-save-digest>Save</s-button>
+			</s-stack>
+			<s-paragraph><s-text color="subdued">Clear the field and save to remove your address and stop preparing digests. The address is stored with your shop's Sightline data and is erased when you uninstall.</s-text></s-paragraph>
+		</s-section>
+		<s-section heading="What a digest contains">
+			${bullets([
+				'How many orders are awaiting fulfillment confirmation',
+				'How many fulfillment attempts Shopify recorded as unsuccessful',
+				'How many changes Sightline found by direct check rather than by webhook',
+				'Whether the recorder itself needs attention',
+				'The orders that have been waiting longest, by order name',
+			])}
+			<s-paragraph><s-text color="subdued">A digest never contains customer names, emails, phone numbers, or addresses — Sightline does not store them.</s-text></s-paragraph>
+		</s-section>`,
 	);
 }
 

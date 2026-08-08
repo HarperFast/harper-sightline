@@ -174,6 +174,12 @@ export interface Page<T> {
 	items: T[];
 	nextCursor?: string;
 }
+export interface DigestSettings {
+	email?: string;
+	cadence: string;
+	status: string;
+	lastBuiltAt?: number;
+}
 
 const qs = (params: Record<string, string | undefined>): string => {
 	const p = new URLSearchParams();
@@ -193,6 +199,27 @@ export const apiFinding = (id: string) => get<FindingDetail>(`/api/v1/findings/$
 export const apiPrivacy = () => get<Privacy>('/api/v1/privacy');
 export const apiOrders = (params: Record<string, string | undefined>) => get<Page<OrderItem>>(`/api/v1/orders${qs(params)}`);
 export const apiOrder = (orderId: string) => get<OrderDetail>(`/api/v1/orders/${encodeURIComponent(orderId)}`);
+export const apiDigest = () => get<DigestSettings>('/api/v1/digest');
+
+// The one write the SPA performs, and it writes Sightline's own settings.
+export async function apiSaveDigest(body: { email?: string; cadence?: string; status?: string }): Promise<DigestSettings> {
+	const token = await shopify.idToken();
+	const res = await nativeFetch()('/api/v1/digest', {
+		method: 'PUT',
+		headers: { 'X-Shopify-Session-Token': token, 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		let detail = '';
+		try {
+			detail = ((await res.json()) as { error?: string }).error ?? '';
+		} catch {
+			// no JSON body
+		}
+		throw new Error(`${res.status}${detail ? ` ${detail}` : ''}`);
+	}
+	return res.json() as Promise<DigestSettings>;
+}
 
 // Export is a file, not JSON, so it bypasses get<T>(): the same session-token
 // header, but the body is text and the row-count/truncation signals come back as
