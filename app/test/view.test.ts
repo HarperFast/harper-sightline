@@ -770,6 +770,7 @@ function privacy(over: Partial<Privacy> = {}): Privacy {
 		dataCategories: ['order status & timestamps'],
 		excludedFields: ['customer name', 'customer email', 'customer phone', 'shipping & billing address'],
 		deletion: { onUninstall: 'shop data erased' },
+		notifications: { emailStored: false, status: 'paused' },
 		footprint: { events: 10, orders: 4, findings: 1 },
 		webhooks: { received: 10, processed: 9, deadLettered: 1, healthy: false, lastReceivedAt: NOW - MIN },
 		reconciliation: { lastReconciledAt: NOW - 4 * MIN, ageMs: 4 * MIN, stale: false, state: 'ready' },
@@ -799,6 +800,14 @@ test('the privacy screen never renders secrets or another tenant', () => {
 
 test('a shop with no scopes recorded says so rather than showing an empty list', () => {
 	assert.ok(privacyView(privacy({ scopes: [] }), NOW, '').includes('read-only scopes pending confirmation'));
+});
+
+test('the privacy screen states whether a notification address is stored', () => {
+	assert.match(
+		privacyView(privacy({ notifications: { emailStored: true, status: 'active' } }), NOW, ''),
+		/Notification email[\s\S]*stored/,
+	);
+	assert.match(privacyView(privacy({ notifications: { emailStored: false, status: 'paused' } }), NOW, ''), /none stored/);
 });
 
 // ── shell states ─────────────────────────────────────────────────────────────

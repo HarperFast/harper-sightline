@@ -738,8 +738,24 @@ export const EXCLUDED_CUSTOMER_FIELDS = ['customer name', 'customer email', 'cus
 // auditable (screen spec §5). Deliberately returns NO secrets, token material,
 // internal host/cluster names, or cross-tenant metrics: scopes are the granted
 // OAuth scope strings, and every count is constrained to this shop.
+// The outbox keeps a longer, separate retention than the seven-day ledger purge
+// (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts) — duplicated here as a literal
+// rather than an import, because ledgerTargets.ts pulls in db.ts's `import {
+// databases } from 'harper'`, a module with no resolvable file under plain node
+// (see test/ledgerTargets.test.ts, which hits the same wall). A test in
+// queries.test.ts reads that file's source and pins this literal against the
+// real constant, so the two numbers cannot silently drift apart.
+const DIGEST_OUTBOX_RETENTION_DAYS = 30;
+
 export async function getPrivacy(
-	tables: { events: QueryTable; findings: QueryTable; projections: QueryTable; deliveries: QueryTable; shops: QueryTable },
+	tables: {
+		events: QueryTable;
+		findings: QueryTable;
+		projections: QueryTable;
+		deliveries: QueryTable;
+		shops: QueryTable;
+		digestSubscriptions?: QueryTable;
+	},
 	shopId: string,
 	now: number,
 ): Promise<Record<string, unknown>> {
@@ -749,6 +765,19 @@ export async function getPrivacy(
 		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
 	};
 	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+
+	// Whether a notification address is on file for this shop — stated, never
+	// echoed. The address is the merchant's own and is shown on the Notifications
+	// screen; repeating it here would make an audit endpoint into a second place it
+	// can leak from.
+	const subscription = tables.digestSubscriptions ? await tables.digestSubscriptions.get(shopId) : undefined;
+	const notifications = {
+		emailStored: Boolean(subscription && subscription.shopId === shopId && subscription.email),
+		...(subscription && subscription.shopId === shopId && typeof subscription.cadence === 'string'
+			? { cadence: subscription.cadence }
+			: {}),
+		status: subscription && subscription.shopId === shopId && subscription.status === 'active' ? 'active' : 'paused',
+	};
 
 	let received = 0;
 	let processed = 0;
@@ -786,13 +815,19 @@ export async function getPrivacy(
 			'inventory levels',
 			'refund status',
 			'SKUs, product & variant titles & quantities',
+			'notification email you supply for digests (merchant contact, not customer data)',
 		],
 		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
 		deletion: {
 			onUninstall: 'shop data erased',
 			onRequest: 'shop/customer redaction (targeted delete)',
-			automatic: 'seven-day retention purge',
+			// Two separate windows, both real: the ledger's seven-day purge, and the
+			// digest outbox's own, independently-tracked 30-day purge (it outlives the
+			// ledger on purpose — see DigestOutbox in docs/data-inventory.md). Stating
+			// only one would understate retention for the other.
+			automatic: `${WINDOW_DAYS}-day retention purge; digest outbox rows are kept separately for ${DIGEST_OUTBOX_RETENTION_DAYS} days, then removed`,
 		},
+		notifications,
 		footprint,
 		webhooks: {
 			received,

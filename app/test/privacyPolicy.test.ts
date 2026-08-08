@@ -141,6 +141,35 @@ test('a hostile support value cannot inject markup into a public page', () => {
 	assert.ok(html.includes('&lt;script&gt;'));
 });
 
+test('the public policy discloses the notification address, its purpose, and its own deletion claim', () => {
+	const html = privacyPolicyHtml({ email: 'support@harperdb.io' }, '2026-08-07');
+	// Pinned to the notification-email section itself, not "appears anywhere on
+	// the page": /uninstall/i already matches twice today (install/uninstall
+	// timestamps in "What we store"; the Uninstall bullet under "Deletion and
+	// your rights"), so a bare page-wide match would pass even if this new
+	// section shipped with no deletion promise of its own.
+	const section = html.match(/<h2>Notification email<\/h2>\s*<p>([\s\S]*?)<\/p>/);
+	assert.ok(section, 'the "Notification email" section must exist');
+	const paragraph = section[1];
+	assert.match(paragraph, /notification email/i);
+	assert.match(paragraph, /not customer data/i);
+	// The deletion claim must live IN this paragraph — removing it here (leaving
+	// it only in the page's other, pre-existing uninstall bullets) must fail.
+	assert.match(paragraph, /deleted|removed|purged/i);
+	assert.match(paragraph, /clear|uninstall/i);
+});
+
+test('the notification-email retention figure matches the digest outbox retention stated elsewhere on the page', () => {
+	const html = privacyPolicyHtml({});
+	const section = html.match(/<h2>Notification email<\/h2>\s*<p>([\s\S]*?)<\/p>/);
+	assert.ok(section, 'the "Notification email" section must exist');
+	// "30 days" is Notifications screen wording (web/src/view.ts's "stores it for
+	// 30 days, then removes it") — the policy must agree with it in substance and
+	// in number, not just gesture at "a while".
+	assert.match(section[1], /30 days/);
+	assert.match(html, /30 days/, 'the "How long we keep it" section states the same figure');
+});
+
 test('the policy is a standalone document, not the embedded app shell', () => {
 	const html = privacyPolicyHtml({ email: 'help@example.com' });
 	assert.ok(html.startsWith('<!doctype html>'));

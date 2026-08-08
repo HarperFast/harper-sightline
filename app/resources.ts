@@ -57,6 +57,9 @@ const CredentialsQ = CredentialsTable as unknown as QueryTable;
 const EventSkusQ = EventSkusTable as unknown as QueryTable;
 const InventoryItemsQ = InventoryItemsTable as unknown as QueryTable;
 const ShopLocationsQ = ShopLocationsTable as unknown as QueryTable;
+// Read ONLY for `email`/`cadence`/`status` in /privacy's notifications
+// disclosure — stated, never echoed (see getPrivacy in src/queries.ts).
+const DigestSubscriptionsQ = DigestSubscriptionsTable as unknown as QueryTable;
 import { readShopifySecret, SHOPIFY_API_KEY } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 import { log, metrics, M } from './src/observe.ts';
@@ -416,7 +419,14 @@ export class PrivacyResource extends Resource {
 	async get() {
 		const shopId = (await identity.authenticate(this.getContext())).shopId;
 		return getPrivacy(
-			{ events: EventsQ, findings: FindingsQ, projections: ProjectionsQ, deliveries: DeliveriesQ, shops: ShopsQ },
+			{
+				events: EventsQ,
+				findings: FindingsQ,
+				projections: ProjectionsQ,
+				deliveries: DeliveriesQ,
+				shops: ShopsQ,
+				digestSubscriptions: DigestSubscriptionsQ,
+			},
 			shopId,
 			Date.now(),
 		);

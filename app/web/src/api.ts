@@ -144,6 +144,7 @@ export interface Privacy {
 	dataCategories: string[];
 	excludedFields: string[];
 	deletion: Record<string, string>;
+	notifications: { emailStored: boolean; cadence?: string; status: string };
 	footprint: { events: number; orders: number; findings: number };
 	webhooks: { received: number; processed: number; deadLettered: number; healthy: boolean; lastReceivedAt?: number };
 	reconciliation: Reconciliation;

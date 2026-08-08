@@ -226,6 +226,7 @@
 				"dataCategories",
 				"excludedFields",
 				"deletion",
+				"notifications",
 				"footprint",
 				"webhooks",
 				"reconciliation"

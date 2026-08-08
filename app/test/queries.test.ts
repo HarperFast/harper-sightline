@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { FakeTable } from './fakeTable.ts';
 import {
 	listEvents,
@@ -905,6 +906,68 @@ test('getPrivacy never returns token material or cross-tenant metrics', async ()
 	assert.ok(!serialized.includes('s2'), 'no other tenant referenced');
 });
 
+test('the privacy payload discloses whether a notification address is stored, without echoing it', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const subscriptions = new FakeTable('shopId', [{ shopId: 's1', email: 'ops@merchant.example', cadence: 'daily', status: 'active' }]);
+	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops, digestSubscriptions: subscriptions }, 's1', NOW);
+	const notifications = privacy.notifications as { emailStored: boolean; status: string };
+	assert.equal(notifications.emailStored, true);
+	assert.equal(notifications.status, 'active');
+	// The address itself is on the Notifications screen; the privacy payload states
+	// only that one exists, so this endpoint cannot become an address disclosure.
+	assert.equal(JSON.stringify(privacy).includes('ops@merchant.example'), false);
+});
+
+test('a shop with no subscription reports none stored', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const privacy = await getPrivacy(
+		{ events, findings, projections, deliveries, shops, digestSubscriptions: new FakeTable('shopId') },
+		's1',
+		NOW,
+	);
+	assert.equal((privacy.notifications as { emailStored: boolean }).emailStored, false);
+});
+
+test('the data categories disclose the notification address', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const privacy = await getPrivacy(
+		{ events, findings, projections, deliveries, shops, digestSubscriptions: new FakeTable('shopId') },
+		's1',
+		NOW,
+	);
+	assert.ok((privacy.dataCategories as string[]).some((c) => /notification email/i.test(c)));
+});
+
+test('the no-customer-PII promise is unchanged by the notification address', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const privacy = await getPrivacy(
+		{ events, findings, projections, deliveries, shops, digestSubscriptions: new FakeTable('shopId') },
+		's1',
+		NOW,
+	);
+	// A merchant's own staff address is not customer data.
+	assert.equal(privacy.storesCustomerPii, false);
+	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);
+});
+
+test('the deletion disclosure states the digest outbox retention alongside the ledger purge, and the two numbers cannot drift apart', async () => {
+	const { events, findings, projections, deliveries, shops } = fixtures();
+	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
+	const automatic = (privacy.deletion as Record<string, string>).automatic;
+	assert.match(automatic, /7-day/);
+	assert.match(automatic, /30 days/);
+	// src/ledgerTargets.ts can't be imported here — it pulls in db.ts's `import {
+	// databases } from 'harper'`, unresolvable under plain node (see
+	// test/ledgerTargets.test.ts, which hits the same wall and reads source text
+	// instead). Reading the real OUTBOX_RETENTION_DAYS literal here means a future
+	// change to either number, made without the other, fails this test rather than
+	// silently leaving the privacy payload wrong.
+	const source = readFileSync(new URL('../src/ledgerTargets.ts', import.meta.url), 'utf8');
+	const outboxDays = source.match(/export const OUTBOX_RETENTION_DAYS = (\d+);/);
+	assert.ok(outboxDays, 'OUTBOX_RETENTION_DAYS not found in ledgerTargets.ts');
+	assert.match(automatic, new RegExp(`${outboxDays![1]} days`));
+});
+
 test('the privacy disclosure lists every category actually stored, and no more', async () => {
 	const { events, findings, projections, deliveries, shops } = fixtures();
 	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
@@ -919,6 +982,7 @@ test('the privacy disclosure lists every category actually stored, and no more',
 		'inventory levels',
 		'refund status',
 		'SKUs, product & variant titles & quantities',
+		'notification email you supply for digests (merchant contact, not customer data)',
 	]);
 	// The exclusion list is the load-bearing promise and must not have widened.
 	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);

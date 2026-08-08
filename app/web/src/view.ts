@@ -1303,6 +1303,12 @@ export function privacyView(p: Privacy, now: number, strip: string): string {
 						: `<s-text color="subdued">read-only scopes pending confirmation</s-text>`,
 				],
 				['Retention', `${p.retentionDays} days, then permanently purged`],
+				[
+					'Notification email',
+					p.notifications?.emailStored
+						? `${badge(p.notifications.status === 'active' ? 'stored' : 'stored, paused', 'info')} · <s-link href="#/notifications">Manage</s-link>`
+						: `<s-text color="subdued">none stored</s-text> · <s-link href="#/notifications">Add one</s-link>`,
+				],
 			])}
 		</s-section>
 		<s-section heading="What we store">${bullets(p.dataCategories)}</s-section>

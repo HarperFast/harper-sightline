@@ -149,6 +149,7 @@ export const API_CONTRACT = {
 				'dataCategories',
 				'excludedFields',
 				'deletion',
+				'notifications',
 				'footprint',
 				'webhooks',
 				'reconciliation',

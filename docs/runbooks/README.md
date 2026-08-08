@@ -42,6 +42,7 @@ below is paged.
 | `purge.residue` warn line, `purge.failure`/`purge.error` rising, or expired rows still present | [purge-failure](./purge-failure.md) | Sightline on-call → data/privacy owner |
 | Failed deploy, health-probe 404, or post-deploy smoke failure | [deployment-rollback](./deployment-rollback.md) | Sightline on-call → Harper Fabric on-call |
 | Shopify Admin API / webhook delivery outage (widespread `reconcile.error`, backlog with no ingress) | [shopify-outage](./shopify-outage.md) | Sightline on-call |
+| `digest.error` rising, or `tick.stalled` with `loop="digest"` — **not** a quiet shop's absent outbox row, which is expected behavior | [digest-not-building](./digest-not-building.md) | Sightline on-call |
 
 > Owners are role-based. Map each role to a named person / PagerDuty schedule as
 > part of staging cutover (#25) before App Store launch (#26).
