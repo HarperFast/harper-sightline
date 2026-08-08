@@ -121,7 +121,16 @@ function tables() {
 				receivedAt: PERIOD_START + 2 * HOUR,
 			},
 		]),
-		deliveries: new FakeTable('id', [{ id: 's1:d1', shopId: 's1', status: 'processed', receivedAt: PERIOD_START }]),
+		deliveries: new FakeTable('id', [
+			{ id: 's1:d1', shopId: 's1', status: 'processed', receivedAt: PERIOD_START },
+			// A second tenant's dead letter, in every test's fixture — not just the one
+			// test that adds an s1 row — so nothing can drop the deliveries shopId
+			// condition without a test noticing. deadLettered drives recorderHealthy,
+			// which drives the subject line, so a leak here would make one shop's
+			// delivery failure show up as "Sightline needs attention" in ANOTHER
+			// shop's digest.
+			{ id: 's2:d1', shopId: 's2', status: 'dead_letter', receivedAt: PERIOD_START },
+		]),
 	};
 }
 
@@ -134,6 +143,8 @@ test('counts are scoped to the shop and to the period', async () => {
 	assert.equal(input.cadence, 'daily');
 	assert.equal(input.periodStart, PERIOD_START);
 	assert.equal(input.periodEnd, PERIOD_END);
+	assert.equal(input.recorderHealthy, true, "another tenant's dead letter must not make this shop's recorder look unhealthy");
+	assert.equal(input.deadLettered, 0);
 });
 
 test('the longest-waiting orders are listed oldest first and capped', async () => {
@@ -168,6 +179,8 @@ test('dead-lettered deliveries make the recorder unhealthy', async () => {
 	await t.deliveries.put({ id: 's1:d2', shopId: 's1', status: 'dead_letter', receivedAt: PERIOD_START });
 	const input = await gatherDigestInput(t, 's1', 'daily', PERIOD_START, PERIOD_END, NOW);
 	assert.equal(input.recorderHealthy, false);
+	// 1, not 2: the fixture's other dead letter belongs to s2 and must not be
+	// counted into this shop's total.
 	assert.equal(input.deadLettered, 1);
 });
 
