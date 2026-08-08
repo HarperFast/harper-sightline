@@ -1,15 +1,21 @@
 // TypeScript mirror of schema.graphql, for use by resources/workers. Required
 // (non-null `!`) schema fields are non-optional here. Epoch-ms times are number.
 
+import type { OrderLane } from './orders.ts';
+
 export type ShopStatus = 'active' | 'reauthorization_required' | 'uninstalled';
 export type DeliveryStatus = 'accepted' | 'processed' | 'dead_letter';
 export type EventDomain = 'order' | 'fulfillment' | 'inventory' | 'refund';
 export type EventSource = 'webhook' | 'reconciliation';
-// The order's lane, derived from the latches by src/orders.ts. NOTE: this
-// replaces an earlier value set ('pending' | 'awaiting_window' | 'confirmed' |
-// 'unconfirmed') that was declared but never written by any code path — no stored
-// row has ever carried it, so redefining the column's meaning is safe.
-export type ProjectionState = 'unpaid' | 'awaiting' | 'fulfilled' | 'cancelled' | 'refunded';
+// The order's lane, derived from the latches by src/orders.ts. An ALIAS, never a
+// second copy of the union: the stored column and the derived lane are the same
+// value set by construction (projection.ts writes deriveOrderLane's result into
+// it), and two hand-maintained lists would let the two drift apart silently.
+// NOTE: this replaces an earlier value set ('pending' | 'awaiting_window' |
+// 'confirmed' | 'unconfirmed') that was declared but never written by any code
+// path — no stored row has ever carried it, so redefining the column's meaning is
+// safe.
+export type ProjectionState = OrderLane;
 export type ExpectationState = 'pending' | 'resolved' | 'suppressed' | 'expired';
 export type FindingStatus = 'pending' | 'unconfirmed' | 'resolved' | 'suppressed';
 

@@ -84,7 +84,7 @@ function summary(over: Partial<Summary> = {}): Summary {
 	};
 }
 
-const FLOWS = { lanes: { paid: 3, fulfilled: 2, awaitingConfirmation: 1, cancelled: 0, refunded: 0 } };
+const FLOWS = { lanes: { paid: 3, fulfilled: 2, awaitingConfirmation: 1, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 } };
 
 function setup(over: Partial<Setup> = {}): Setup {
 	return {
@@ -955,6 +955,34 @@ test('the orders worklist shows the merchant-facing name, lane, age and value', 
 test('the age cell renders plain hours under the 24h cutoff and days+hours past it', () => {
 	assert.ok(ordersView({}, [order({ ageHours: 6 })], false, '').includes('<s-table-cell>6h</s-table-cell>'));
 	assert.ok(ordersView({}, [order({ ageHours: 30 })], false, '').includes('<s-table-cell>1d 6h</s-table-cell>'));
+});
+
+test('a digital order is never labelled as fulfilled, and its label claims nothing unobserved', () => {
+	const html = ordersView({}, [order({ state: 'no_fulfillment_expected', fulfilledAt: undefined })], false, '');
+	assert.match(html, /<s-badge tone="neutral">no fulfillment expected<\/s-badge>/, 'the raw lane value is not shown as snake_case');
+	// Scoped to the table body: "fulfilled" legitimately appears in the Lane
+	// select's own option list, and an unscoped search would pass on that instead of
+	// on the row it is meant to be checking.
+	const body = html.match(/<s-table-body>[\s\S]*<\/s-table-body>/)?.[0] ?? '';
+	assert.doesNotMatch(body, /fulfilled/i, 'no row cell claims a fulfillment nobody observed');
+	// "expected" is a fact about Sightline's own expectation. requiresFulfillment is
+	// only ever latched true, so its absence cannot license a claim about the order
+	// itself ("needs no shipping").
+	assert.doesNotMatch(html, /needs no shipping|no shipping required|digital/i);
+	// The same label reaches the Lane select, so the filter reads like the badge.
+	assert.match(html, /<option value="no_fulfillment_expected">no fulfillment expected<\/option>/);
+});
+
+test('the overview flow lanes include the no-fulfillment-expected lane, linked to the set it counts', () => {
+	const html = overviewView({
+		...OVERVIEW_BASE,
+		flows: { lanes: { paid: 4, fulfilled: 2, awaitingConfirmation: 1, noFulfillmentExpected: 1, cancelled: 0, refunded: 0 } },
+		summary: summary(),
+	});
+	assert.match(
+		html,
+		/<s-table-cell><s-link href="#\/orders\?state=no_fulfillment_expected">No fulfillment expected<\/s-link><\/s-table-cell><s-table-cell>1<\/s-table-cell>/,
+	);
 });
 
 test('an order with no name falls back to its id so the row is never blank', () => {

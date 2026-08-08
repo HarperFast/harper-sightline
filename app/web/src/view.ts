@@ -568,6 +568,11 @@ export function overviewView(d: OverviewData): string {
 							['Paid', d.flows.lanes.paid],
 							['Fulfilled', d.flows.lanes.fulfilled, '#/orders?state=fulfilled'],
 							['Awaiting confirmation', d.flows.lanes.awaitingConfirmation, '#/orders?state=awaiting'],
+							// Paid, live, no fulfillment observed and none expected (a digital
+							// order). Named for Sightline's expectation, not the order's nature:
+							// requiresFulfillment is only ever latched true, so its absence is an
+							// absence of observation, not an observation of absence.
+							['No fulfillment expected', d.flows.lanes.noFulfillmentExpected, '#/orders?state=no_fulfillment_expected'],
 							['Cancelled', d.flows.lanes.cancelled, '#/orders?state=cancelled'],
 							['Refunded', d.flows.lanes.refunded, '#/orders?state=refunded'],
 						] as Array<[string, number, string?]>
@@ -751,7 +756,23 @@ export function eventDetailView(e: EventDetail, strip: string): string {
 // it existed, "Awaiting confirmation: 14" was a number with nowhere to go, and
 // the only order list was the findings list, which shows only orders that have
 // ALREADY blown the deadline.
-export const ORDER_STATES = ['', 'awaiting', 'fulfilled', 'cancelled', 'refunded', 'unpaid'];
+export const ORDER_STATES = ['', 'awaiting', 'fulfilled', 'no_fulfillment_expected', 'cancelled', 'refunded', 'unpaid'];
+// Merchant-facing lane labels. Only lanes whose stored value is not already
+// readable need an entry — the badge and the Lane select both fall back to the
+// raw value, which is how 'awaiting'/'fulfilled' have always rendered.
+//
+// The wording is load-bearing: `requiresFulfillment` is only ever latched TRUE,
+// so its absence means "no fulfillment-eligible units were observed", which is
+// NOT the same as "this order needs no shipping". The label therefore states
+// Sightline's own expectation, which is a fact about Sightline, rather than a
+// claim about the order that no observation supports.
+export const ORDER_LANE_LABELS: Record<string, string> = {
+	no_fulfillment_expected: 'no fulfillment expected',
+};
+export function laneLabel(state: string | undefined): string {
+	if (state === undefined) return '';
+	return ORDER_LANE_LABELS[state] ?? state;
+}
 // The worklist sorts on LAST OBSERVED ACTIVITY (`lastEventAt`), not on payment:
 // `paidAt` is null for every unpaid order, and keysetting a pager on a nullable
 // column made the list repeat its first page forever (C3). These labels name the
@@ -809,7 +830,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 		.map(
 			(o) => `<s-table-row>
 			<s-table-cell><s-link href="#/orders/${encodeURIComponent(o.orderId)}">${esc(orderLabel(o))}</s-link></s-table-cell>
-			<s-table-cell>${badge(o.state)}${attemptFlag(o)}</s-table-cell>
+			<s-table-cell>${badge(laneLabel(o.state))}${attemptFlag(o)}</s-table-cell>
 			<s-table-cell>${ts(o.paidAt)}</s-table-cell>
 			<s-table-cell>${esc(ageCell(o))}</s-table-cell>
 			<s-table-cell>${ts(o.lastEventAt)}</s-table-cell>
@@ -820,7 +841,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 		)
 		.join('');
 	const stateOptions = ORDER_STATES.map(
-		(v) => `<option value="${esc(v)}"${v === (params.state ?? '') ? ' selected' : ''}>${esc(v || 'Any lane')}</option>`,
+		(v) => `<option value="${esc(v)}"${v === (params.state ?? '') ? ' selected' : ''}>${esc(v ? laneLabel(v) : 'Any lane')}</option>`,
 	).join('');
 	const ageOptions = ORDER_AGES.map(
 		([v, label]) => `<option value="${esc(v)}"${v === (params.minAgeHours ?? '') ? ' selected' : ''}>${esc(label)}</option>`,
@@ -919,7 +940,7 @@ export function orderDetailView(o: OrderDetail, strip: string): string {
 		`Order ${orderLabel(o)}`,
 		`${strip}
 		<s-section>
-			<s-stack direction="inline" gap="small-200" alignItems="center">${badge(o.state)}${adminOrderLink(o.orderId)}</s-stack>
+			<s-stack direction="inline" gap="small-200" alignItems="center">${badge(laneLabel(o.state))}${adminOrderLink(o.orderId)}</s-stack>
 			${fields([
 				['Order', esc(orderLabel(o))],
 				['Value', money(o.orderTotal, o.currency)],

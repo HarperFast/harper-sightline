@@ -627,7 +627,7 @@ export async function getSummary(
 // summary use, so the three views cannot disagree.
 export async function computeFlows(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
-	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, cancelled: 0, refunded: 0 };
+	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 };
 	for await (const p of projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const proj = p as unknown as OrderProjection;
 		if (!inWindow(proj, windowStart)) continue;
@@ -635,6 +635,14 @@ export async function computeFlows(projections: QueryTable, shopId: string, now:
 		switch (deriveOrderLane(proj)) {
 			case 'fulfilled':
 				lanes.fulfilled++;
+				break;
+			// Paid, live, no fulfillment observed and none expected (a digital order).
+			// It gets its own lane rather than being folded into 'fulfilled', which
+			// would assert a fulfillment nobody observed, or left out of the breakdown
+			// entirely, which would make a digital-only store's flow panel read as all
+			// zeroes beside a non-zero Paid count.
+			case 'no_fulfillment_expected':
+				lanes.noFulfillmentExpected++;
 				break;
 			case 'cancelled':
 				lanes.cancelled++;

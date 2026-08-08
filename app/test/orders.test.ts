@@ -19,15 +19,35 @@ test('a paid, fulfillment-eligible, unfulfilled order is awaiting', () => {
 	assert.equal(isAwaitingConfirmation(p({ paidAt: NOW, requiresFulfillment: true })), true);
 });
 
-test('a digital order needs no fulfillment, so it is never awaiting', () => {
-	assert.equal(deriveOrderLane(p({ paidAt: NOW, requiresFulfillment: false })), 'fulfilled');
-	assert.equal(isAwaitingConfirmation(p({ paidAt: NOW, requiresFulfillment: false })), false);
+test('a digital order is never awaiting, and is never claimed as fulfilled', () => {
+	// `requiresFulfillment` is UNDEFINED here, not false: the reducer only ever
+	// latches it true (from a positive fulfillableItemCount), so `false` is an input
+	// no code path produces and testing it proved nothing about the case that
+	// actually occurs. A digital order has zero fulfillable units, so the latch never
+	// fires — and with no observed fulfillment either, calling it 'fulfilled' would
+	// assert something Sightline never saw.
+	const digital = p({ paidAt: NOW });
+	assert.equal(isAwaitingConfirmation(digital), false, 'no confirmation is expected');
+	assert.equal(deriveOrderLane(digital), 'no_fulfillment_expected');
+	// An order Sightline has only ever seen a payment for — no line items observed —
+	// is indistinguishable from a digital one, and gets the same honest answer.
+	assert.equal(deriveOrderLane(p({ paidAt: NOW, requiresFulfillment: undefined })), 'no_fulfillment_expected');
+});
+
+test('an observed fulfillment is what makes an order fulfilled, whatever the eligibility latch says', () => {
+	// The lane says a fulfillment WAS observed, so it must not depend on whether the
+	// order-eligibility latch also arrived.
+	assert.equal(deriveOrderLane(p({ paidAt: NOW, fulfilledAt: NOW })), 'fulfilled');
+	assert.equal(deriveOrderLane(p({ paidAt: NOW, requiresFulfillment: true, fulfilledAt: NOW })), 'fulfilled');
 });
 
 test('fulfilled beats awaiting; cancelled and refunded beat fulfilled', () => {
 	assert.equal(deriveOrderLane(p({ paidAt: NOW, requiresFulfillment: true, fulfilledAt: NOW })), 'fulfilled');
 	assert.equal(deriveOrderLane(p({ paidAt: NOW, requiresFulfillment: true, fulfilledAt: NOW, cancelledAt: NOW })), 'cancelled');
 	assert.equal(deriveOrderLane(p({ paidAt: NOW, requiresFulfillment: true, fullyRefundedAt: NOW })), 'refunded');
+	// Finality still wins over the digital case.
+	assert.equal(deriveOrderLane(p({ paidAt: NOW, cancelledAt: NOW })), 'cancelled');
+	assert.equal(deriveOrderLane(p({ paidAt: NOW, fullyRefundedAt: NOW })), 'refunded');
 });
 
 test('a failed fulfillment attempt does not change the lane — the order is still awaiting', () => {

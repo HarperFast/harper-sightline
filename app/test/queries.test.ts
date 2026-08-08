@@ -73,17 +73,26 @@ function fixtures() {
 	//   paidAt is joined into the findings-list assertions and their orderId is
 	//   reused as an event resourceId elsewhere in this file, so retiming would
 	//   ripple into unrelated tests.
-	// - oA-oE are the WORKLIST set, hour-scale ages, purpose-built for the order
+	// - oA-oF are the WORKLIST set, hour-scale ages, purpose-built for the order
 	//   list/aging/lane tests.
 	//
+	// EVERY row carries a stored `state` that agrees with its own latches — that is
+	// an invariant of this fixture set, not an incidental detail. The stored column
+	// is what listOrders filters on while getSummary/computeFlows derive the lane
+	// live, so a fixture row whose `state` disagrees with its latches encodes a
+	// count/list divergence AS THE EXPECTED RESULT: a correct implementation then
+	// fails the suite and an incorrect one passes. (Three rows here carried no
+	// `state` at all for exactly that reason, which is how C1 stayed invisible.) The
+	// one deliberate exception is oLegacy below, whose whole purpose is to be the
+	// pre-backfill shape, and which is named and tested as such.
+	//
 	// All of these functions read from this SAME table — one shared universe, not
-	// two. getSummary and computeFlows now share one window predicate (`inWindow`
-	// in src/queries.ts): both filter on `lastEventAt >= windowStart`, so o1/o2 and
-	// oA-oE all count toward both, since every row here, even oC's 80-hour-old
-	// lastEventAt, sits inside the 7-day window. getPrivacy's footprint
-	// (countWhere) is intentionally different — it reports the tenant's whole
-	// stored footprint, not a "last 7 days" claim, so it has no window filter and
-	// o1/o2 count toward it regardless of lastEventAt.
+	// two. getSummary and computeFlows share one window predicate: both filter on
+	// `lastEventAt >= windowStart`, so o1/o2 and oA-oF all count toward both, since
+	// every row here, even oC's 80-hour-old lastEventAt, sits inside the 7-day
+	// window. getPrivacy's footprint (countWhere) is intentionally different — it
+	// reports the tenant's whole stored footprint, not a "last 7 days" claim, so it
+	// has no window filter and o1/o2 count toward it regardless of lastEventAt.
 	const projections = new FakeTable('id', [
 		{
 			id: 's1:o1',
@@ -93,24 +102,28 @@ function fixtures() {
 			requiresFulfillment: true,
 			fulfilledAt: NOW - 500,
 			lastEventAt: NOW - 500,
+			state: 'fulfilled',
 		},
 		{
 			id: 's1:o2',
 			shopId: 's1',
 			orderId: 'o2',
-			// The whole s1 set below is numbered by paidAt, oldest to newest: oC (80h)
+			// The named s1 rows are numbered by paidAt, oldest to newest: oC (80h)
 			// #1001, oB (30h) #1002, oD (5h) #1003, oA (2h) #1004, and o2 (2s — the
 			// most recent order in the fixture set) #1005. Order names increase over
 			// time in Shopify, so a fixture whose numbers don't track paidAt tells two
 			// contradictory stories about ordering — keep them in this order when
 			// adding or editing rows here, not in whatever order is convenient to type.
+			// Rows added later (oE, oF, oLegacy) deliberately carry NO name rather than
+			// disturbing that sequence.
 			orderName: '#1005',
 			paidAt: NOW - 2000,
 			requiresFulfillment: true,
 			lastEventAt: NOW - 2000,
+			state: 'awaiting',
 		}, // awaiting confirmation
-		{ id: 's2:o1', shopId: 's2', orderId: 'o1', paidAt: NOW, requiresFulfillment: true, lastEventAt: NOW },
-		// Worklist fixtures: five s1 orders across lanes/ages plus an s2 order that
+		{ id: 's2:o1', shopId: 's2', orderId: 'o1', paidAt: NOW, requiresFulfillment: true, lastEventAt: NOW, state: 'awaiting' },
+		// Worklist fixtures: six s1 orders across lanes/ages plus an s2 order that
 		// shares an order id, so tenant bleed is testable.
 		{
 			id: 's1:oA',
@@ -174,6 +187,21 @@ function fixtures() {
 			fulfilledAt: NOW - 8 * HOUR,
 			cancelledAt: NOW - 6 * HOUR,
 			lastEventAt: NOW - 6 * HOUR,
+		},
+		// A DIGITAL order: paid, live, zero fulfillable units — so
+		// `requiresFulfillment` was never latched (the reducer only ever latches it
+		// true) and no fulfillment was ever observed. It is not awaiting and it is not
+		// fulfilled; it has its own lane, because rendering it as "Fulfilled" asserted
+		// a fulfillment nobody saw.
+		{
+			id: 's1:oF',
+			shopId: 's1',
+			orderId: 'oF',
+			paidAt: NOW - 3 * HOUR,
+			state: 'no_fulfillment_expected',
+			lastEventAt: NOW - 3 * HOUR,
+			orderTotal: 25,
+			currency: 'USD',
 		},
 		{
 			id: 's2:oA',
@@ -613,10 +641,10 @@ test('getSummary counts reconcile to the fixtures, scoped to the tenant', async 
 	const f = fixtures();
 	const s = await getSummary(f, 's1', NOW);
 	assert.equal((s.events as Record<string, number>).total, 2, 's1 in-window events');
-	// Includes the worklist fixture orders (oA-oE): 7 tracked, 7 paid, 2 fulfilled
-	// (o1, oD — oE is fulfilled-then-cancelled, so it lands in cancelled, not
-	// here), 4 awaiting (o2, oA, oB, oC).
-	assert.deepEqual(s.orders, { tracked: 7, paid: 7, fulfilled: 2, awaitingConfirmation: 4 });
+	// Includes the worklist fixture orders (oA-oF): 8 tracked, 8 paid, 2 fulfilled
+	// (o1, oD — oE is fulfilled-then-cancelled so it lands in cancelled, and oF is
+	// digital so it lands in no_fulfillment_expected), 4 awaiting (o2, oA, oB, oC).
+	assert.deepEqual(s.orders, { tracked: 8, paid: 8, fulfilled: 2, awaitingConfirmation: 4 });
 	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0, failedAttempts: 0 });
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 });
 });
@@ -662,9 +690,10 @@ test('getSummary activity buckets the window by day and reconciles to the total'
 test('computeFlows lane counts reconcile and are rebuildable from projections', async () => {
 	const { projections } = fixtures();
 	const flows = await computeFlows(projections, 's1', NOW);
-	// Includes the worklist fixture orders (oA-oE), all within the window. oE is
-	// fulfilled-then-cancelled, so it counts once, in cancelled.
-	assert.deepEqual(flows.lanes, { paid: 7, fulfilled: 2, awaitingConfirmation: 4, cancelled: 1, refunded: 0 });
+	// Includes the worklist fixture orders (oA-oF), all within the window. oE is
+	// fulfilled-then-cancelled, so it counts once, in cancelled; oF is digital, so it
+	// counts once, in noFulfillmentExpected — never as fulfilled.
+	assert.deepEqual(flows.lanes, { paid: 8, fulfilled: 2, awaitingConfirmation: 4, noFulfillmentExpected: 1, cancelled: 1, refunded: 0 });
 	// Rebuild = same function over the same data → identical (idempotent).
 	assert.deepEqual((await computeFlows(projections, 's1', NOW)).lanes, flows.lanes);
 });
@@ -687,9 +716,9 @@ test('the summary order counts and the flow lanes describe the same window', asy
 	const orders = summary.orders as { tracked: number; awaitingConfirmation: number };
 	const lanes = flows.lanes as Record<string, number>;
 	assert.equal(orders.awaitingConfirmation, lanes.awaitingConfirmation);
-	// The fixture universe already has seven in-window s1 orders (o1, o2, oA-oE)
-	// before oStale is added; oStale must not become an eighth.
-	assert.equal(orders.tracked, 7, 'the out-of-window order must not be counted');
+	// The fixture universe already has eight in-window s1 orders (o1, o2, oA-oF)
+	// before oStale is added; oStale must not become a ninth.
+	assert.equal(orders.tracked, 8, 'the out-of-window order must not be counted');
 });
 
 test('the fulfilled count is lane-consistent: a fulfilled-then-cancelled order counts once, as cancelled', async () => {
@@ -732,8 +761,8 @@ test('getPrivacy reports no PII and the tenant footprint', async () => {
 	const p = await getPrivacy(f, 's1', NOW);
 	assert.equal(p.storesCustomerPii, false);
 	assert.equal(p.retentionDays, 7);
-	// Includes the worklist fixture orders (oA-oE) alongside o1/o2.
-	assert.deepEqual(p.footprint, { events: 3, orders: 7, findings: 1 });
+	// Includes the worklist fixture orders (oA-oF) alongside o1/o2.
+	assert.deepEqual(p.footprint, { events: 3, orders: 8, findings: 1 });
 });
 
 test('getPrivacy discloses scopes, exclusions, and capture/reconciliation health', async () => {
@@ -950,7 +979,7 @@ test('orders default to latest-activity first and carry the worklist columns', a
 	// a nullable column cannot page (C3).
 	assert.deepEqual(
 		page.items.map((i) => i.orderId),
-		['o1', 'o2', 'oA', 'oD', 'oE', 'oB', 'oC'],
+		['o1', 'o2', 'oA', 'oF', 'oD', 'oE', 'oB', 'oC'],
 	);
 	const first = page.items.find((i) => i.orderId === 'oA')!;
 	assert.equal(first.orderName, '#1004');
@@ -965,14 +994,34 @@ test('the worklist can be sorted oldest-first, which is what triage needs', asyn
 	const page = await listOrders(projections, 's1', NOW, { sort: 'oldest' });
 	assert.deepEqual(
 		page.items.map((i) => i.orderId),
-		['oC', 'oB', 'oE', 'oD', 'oA', 'o2', 'o1'],
+		['oC', 'oB', 'oE', 'oD', 'oF', 'oA', 'o2', 'o1'],
+	);
+});
+
+test('a digital order is neither awaiting nor claimed as fulfilled', async () => {
+	const { projections } = fixtures();
+	// oF is paid, live, and has no observed fulfillment and no observed
+	// fulfillment-eligible units. Before it had a lane of its own it fell through to
+	// 'fulfilled' — a tile asserting a fulfillment nobody observed.
+	const fulfilled = await listOrders(projections, 's1', NOW, { state: 'fulfilled' });
+	assert.deepEqual(new Set(fulfilled.items.map((i) => i.orderId)), new Set(['o1', 'oD']), 'only orders with an observed fulfillment');
+	const awaiting = await listOrders(projections, 's1', NOW, { state: 'awaiting' });
+	assert.ok(!awaiting.items.some((i) => i.orderId === 'oF'), 'and it is not awaiting a confirmation nobody expects');
+	const own = await listOrders(projections, 's1', NOW, { state: 'no_fulfillment_expected' });
+	assert.deepEqual(
+		own.items.map((i) => i.orderId),
+		['oF'],
 	);
 });
 
 test('orders filter by lane', async () => {
 	const { projections } = fixtures();
 	const page = await listOrders(projections, 's1', NOW, { state: 'awaiting' });
-	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['oA', 'oB', 'oC']));
+	// o2 belongs here too — it is paid, fulfillment-eligible and unconfirmed. It was
+	// missing from this expectation only because the fixture row carried no stored
+	// `state`, which is the divergence C1 fixed: the Overview counted it (awaiting: 4)
+	// while this list returned three.
+	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['o2', 'oA', 'oB', 'oC']));
 });
 
 test('orders filter by minimum age, which is the sub-deadline aging view', async () => {

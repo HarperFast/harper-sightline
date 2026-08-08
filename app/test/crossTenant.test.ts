@@ -114,6 +114,10 @@ function world() {
 			lastEventAt: NOW - 70,
 			state: 'fulfilled',
 		},
+		// A digital order per shop, sharing an order id, so the newest lane value is
+		// attacked exactly like every other filter.
+		{ id: `${V}:o4`, shopId: V, orderId: 'o4', paidAt: NOW - 60, lastEventAt: NOW - 60, state: 'no_fulfillment_expected' },
+		{ id: `${A}:o4`, shopId: A, orderId: 'o4', paidAt: NOW - 50, lastEventAt: NOW - 50, state: 'no_fulfillment_expected' },
 	]);
 	const findings = new FakeTable('id', [
 		{
@@ -270,7 +274,7 @@ test('getSummary: every count is victim-only despite the attacker holding more',
 	const w = world();
 	const s = await getSummary(w, V, NOW);
 	assert.equal((s.events as Record<string, number>).total, 2, 'victim in-window events only (attacker has 4)');
-	assert.deepEqual(s.orders, { tracked: 2, paid: 2, fulfilled: 1, awaitingConfirmation: 1 }, 'victim projections only');
+	assert.deepEqual(s.orders, { tracked: 3, paid: 3, fulfilled: 1, awaitingConfirmation: 1 }, 'victim projections only');
 	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0, failedAttempts: 0 }, 'victim findings only');
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 }, 'victim dead letters only (attacker has 3)');
 });
@@ -278,13 +282,13 @@ test('getSummary: every count is victim-only despite the attacker holding more',
 test('computeFlows: lane counts are victim-only', async () => {
 	const { projections } = world();
 	const flows = await computeFlows(projections, V, NOW);
-	assert.deepEqual(flows.lanes, { paid: 2, fulfilled: 1, awaitingConfirmation: 1, cancelled: 0, refunded: 0 });
+	assert.deepEqual(flows.lanes, { paid: 3, fulfilled: 1, awaitingConfirmation: 1, noFulfillmentExpected: 1, cancelled: 0, refunded: 0 });
 });
 
 test('getPrivacy: footprint counts are victim-only', async () => {
 	const w = world();
 	const p = await getPrivacy(w, V, NOW);
-	assert.deepEqual(p.footprint, { events: 2, orders: 2, findings: 1 });
+	assert.deepEqual(p.footprint, { events: 2, orders: 3, findings: 1 });
 	// Disclosure fields are the victim's own: the attacker holds 3 dead letters and
 	// a wider scope string; neither may appear on the victim's privacy screen.
 	assert.deepEqual(p.scopes, ['read_orders']);
@@ -302,7 +306,7 @@ test('getSetup: the attacker’s reauthorization state never blocks the victim',
 test('listOrders: attacker never sees a victim order that shares an order id', async () => {
 	const { projections } = world();
 	const page = await listOrders(projections, A, NOW, {});
-	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3']), "only the attacker's own three orders");
+	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']), "only the attacker's own four orders");
 	// o1/o2 are shared order ids between shops — the returned rows must carry the
 	// attacker's own paidAt, never the victim's.
 	for (const item of page.items) {
@@ -337,10 +341,19 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 	assert.deepEqual(hostile.items, [], 'a hostile state filter matches nothing rather than everything');
 
 	// minAgeHours=0 ("at least 0 hours old") matches every paid order — still only
-	// the attacker's own three, never the victim's two.
+	// the attacker's own four, never the victim's three.
 	const wide = await listOrders(projections, A, NOW, { minAgeHours: 0 });
-	assert.deepEqual(new Set(wide.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3']));
-	assert.equal(wide.items.length, 3, "never the victim's two orders too");
+	assert.deepEqual(new Set(wide.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']));
+	assert.equal(wide.items.length, 4, "never the victim's three orders too");
+
+	// The newest lane value is a FILTER, not a scope: the victim also has an o4 in
+	// exactly this lane, and it must stay invisible.
+	const lane = await listOrders(projections, A, NOW, { state: 'no_fulfillment_expected' });
+	assert.deepEqual(
+		lane.items.map((i) => i.orderId),
+		['o4'],
+	);
+	assert.equal(lane.items[0].paidAt, NOW - 50, "the attacker's own o4, not the victim's");
 });
 
 test('export columns never reference a field outside the API allowlist', () => {

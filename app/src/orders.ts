@@ -8,7 +8,18 @@ import type { OrderProjection } from './model.ts';
 // three chances for the Overview tile, the flow lane, and the finding list to
 // disagree about the same order. Everything derives from here now.
 
-export type OrderLane = 'unpaid' | 'awaiting' | 'fulfilled' | 'cancelled' | 'refunded';
+// The lane set. `src/model.ts` aliases ProjectionState to this rather than
+// declaring its own copy — two hand-maintained unions for one column is how the
+// stored `state` and the derived lane would drift apart.
+//
+// 'no_fulfillment_expected' exists because 'fulfilled' must mean a fulfillment
+// was OBSERVED. A digital order has zero fulfillable units, so
+// `requiresFulfillment` is never latched and it is never awaiting — before this
+// lane existed it fell through to 'fulfilled' and rendered as "Fulfilled" with
+// "Fulfillment confirmed: —" and an empty timeline. For an app whose whole claim
+// is that it reports only what it observed, a tile asserting an unobserved
+// fulfillment is the wrong kind of wrong.
+export type OrderLane = 'unpaid' | 'awaiting' | 'fulfilled' | 'no_fulfillment_expected' | 'cancelled' | 'refunded';
 
 // Awaiting = Shopify has shown payment for an order that needs shipping, and has
 // not yet shown a fulfillment confirmation, and the order has not been called off.
@@ -30,12 +41,23 @@ export function isAwaitingConfirmation(p: OrderProjection): boolean {
 // an order that is still awaiting confirmation. Giving it a lane would quietly
 // remove those orders from the awaiting worklist — the one list where a merchant
 // most needs to see them.
+// 'fulfilled' requires an OBSERVED fulfillment (`fulfilledAt`). Everything else
+// that is paid, live, and not awaiting lands in 'no_fulfillment_expected': we
+// have never observed a fulfillment for it, and we have never observed that it
+// needs one. Note the asymmetry that makes this necessary —
+// `requiresFulfillment` is only ever latched TRUE (from a positive
+// fulfillableItemCount), never false, so `undefined` covers both "zero
+// fulfillable units were observed" and "no order payload carrying line items was
+// observed at all". Neither of those licenses the word "fulfilled", and neither
+// licenses claiming the order needs no shipping — which is why the lane is named
+// for OUR expectation, not for the order's nature.
 export function deriveOrderLane(p: OrderProjection): OrderLane {
 	if (p.paidAt === undefined) return 'unpaid';
 	if (p.cancelledAt !== undefined) return 'cancelled';
 	if (p.fullyRefundedAt !== undefined) return 'refunded';
 	if (isAwaitingConfirmation(p)) return 'awaiting';
-	return 'fulfilled';
+	if (p.fulfilledAt !== undefined) return 'fulfilled';
+	return 'no_fulfillment_expected';
 }
 
 const HOUR_MS = 3_600_000;
