@@ -125,7 +125,7 @@ export const API_CONTRACT = {
 			path: '/api/v1/orders',
 			item: ORDER_LIST_FIELDS,
 			paginated: true,
-			filters: ['state', 'minAgeHours', 'sort', 'cursor', 'limit'],
+			filters: ['state', 'minAgeHours', 'maxAgeHours', 'sort', 'cursor', 'limit'],
 		},
 		orderDetail: { path: '/api/v1/orders/:orderId', fields: [...ORDER_FIELDS, 'events', 'findings'] },
 		export: {

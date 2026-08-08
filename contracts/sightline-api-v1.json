@@ -178,6 +178,7 @@
 			"filters": [
 				"state",
 				"minAgeHours",
+				"maxAgeHours",
 				"sort",
 				"cursor",
 				"limit"

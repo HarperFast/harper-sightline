@@ -184,12 +184,12 @@ export function statGridLinked(tiles: Array<[string, number, string?]>): string 
 }
 
 // The API's bucket keys are opaque strings; this is the one place that maps them
-// to the worklist's numeric threshold. An unrecognized key silently falls back to
-// the last (over72) threshold rather than throwing — a throw here would blank the
-// whole Overview at runtime over what is really a build-time mismatch. The
-// fail-loud guarantee instead lives in a test (view.test.ts) that asserts this
-// function agrees with AGE_BUCKETS for every key, so a renamed or added bucket
-// fails CI rather than producing a plausible-but-wrong link in production.
+// to the worklist's numeric bounds. An unrecognized key silently falls back to the
+// last (over72) bucket rather than throwing — a throw here would blank the whole
+// Overview at runtime over what is really a build-time mismatch. The fail-loud
+// guarantee instead lives in a test (view.test.ts) that asserts these functions
+// agree with AGE_BUCKETS for every key, so a renamed or added bucket fails CI
+// rather than producing a plausible-but-wrong link in production.
 export function bucketMinHours(key: string): number {
 	switch (key) {
 		case 'under24':
@@ -203,17 +203,42 @@ export function bucketMinHours(key: string): number {
 	}
 }
 
+// The bucket's UPPER bound, or undefined for the open-ended last bucket. Without
+// it three of the four buckets linked to a strictly larger set than they display:
+// the buckets are half-open intervals [min, max) while `minAgeHours` alone is an
+// open-ended threshold, so "Under 24h: 1" opened the entire awaiting list.
+export function bucketMaxHours(key: string): number | undefined {
+	switch (key) {
+		case 'under24':
+			return 24;
+		case 'h24to48':
+			return 48;
+		case 'h48to72':
+			return 72;
+		default:
+			return undefined;
+	}
+}
+
 // How long the awaiting orders have been waiting. Each bucket links into the
-// worklist filtered to that threshold, so the breakdown is a set of entry points
-// rather than a chart to read and then act on separately.
+// worklist filtered to reproduce THAT bucket — both bounds, so the list a merchant
+// lands on is the set the number counted.
 export function agingView(aging: Summary['aging']): string {
 	const rows = aging.buckets
-		.map(
-			(b) => `<s-table-row>
-			<s-table-cell><s-link href="#/orders?state=awaiting&amp;minAgeHours=${encodeURIComponent(String(bucketMinHours(b.key)))}">${esc(b.label)}</s-link></s-table-cell>
+		.map((b) => {
+			// This attribute is assembled inline rather than passed through esc(), so the
+			// separators must be the literal HTML entity. (statGridLinked is the opposite:
+			// it escapes its href, so tile links there carry a plain `&`. Getting either
+			// backwards emits invalid markup or double-escapes.)
+			const max = bucketMaxHours(b.key);
+			const href =
+				`#/orders?state=awaiting&amp;minAgeHours=${encodeURIComponent(String(bucketMinHours(b.key)))}` +
+				(max === undefined ? '' : `&amp;maxAgeHours=${encodeURIComponent(String(max))}`);
+			return `<s-table-row>
+			<s-table-cell><s-link href="${href}">${esc(b.label)}</s-link></s-table-cell>
 			<s-table-cell>${b.count}</s-table-cell>
-		</s-table-row>`,
-		)
+		</s-table-row>`;
+		})
 		.join('');
 	return `<s-section heading="Waiting for confirmation, by age">
 		<s-paragraph><s-text color="subdued">Time since Shopify showed payment. Sightline opens a finding at 72 hours.</s-text></s-paragraph>
@@ -792,7 +817,11 @@ export const ORDER_AGES: Array<[string, string]> = [
 	['48', 'Paid over 48h ago'],
 	['72', 'Paid over 72h ago'],
 ];
-export const ORDER_FILTER_KEYS = ['state', 'minAgeHours', 'sort'];
+// `maxAgeHours` has no control of its own — it arrives only from an aging-bucket
+// link. It is listed here so orderQuery() forwards it from the URL to the API;
+// there is no `f-maxAgeHours` field, so changing the Age select deliberately drops
+// the bucket's upper bound rather than silently keeping it.
+export const ORDER_FILTER_KEYS = ['state', 'minAgeHours', 'maxAgeHours', 'sort'];
 
 export function orderQuery(params: Record<string, string>): Record<string, string> {
 	const q: Record<string, string> = {};

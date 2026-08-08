@@ -346,6 +346,18 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 	assert.deepEqual(new Set(wide.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']));
 	assert.equal(wide.items.length, 4, "never the victim's three orders too");
 
+	// An age WINDOW is a filter too. The victim's orders are older than every
+	// attacker order, so a bound wide enough to include them must still return only
+	// the attacker's own — and a bound that excludes the attacker's own returns
+	// nothing rather than falling back to a wider set.
+	const windowed = await listOrders(projections, A, NOW, { minAgeHours: 0, maxAgeHours: 24 });
+	assert.deepEqual(new Set(windowed.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']));
+	for (const item of windowed.items) {
+		assert.notEqual(item.paidAt, NOW - 1000, "victim's o1 paidAt must not leak");
+		assert.notEqual(item.paidAt, NOW - 2000, "victim's o2 paidAt must not leak");
+	}
+	assert.deepEqual(await listOrders(projections, A, NOW, { minAgeHours: 48, maxAgeHours: 72 }).then((r) => r.items), []);
+
 	// The newest lane value is a FILTER, not a scope: the victim also has an o4 in
 	// exactly this lane, and it must stay invisible.
 	const lane = await listOrders(projections, A, NOW, { state: 'no_fulfillment_expected' });

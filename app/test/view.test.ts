@@ -16,6 +16,7 @@ import {
 	adminOrderLink,
 	adminOrderUrl,
 	agingView,
+	bucketMaxHours,
 	bucketMinHours,
 	contextStrip,
 	errorViewMarkup,
@@ -366,15 +367,47 @@ test('a fully healthy overview shows no warning banners', () => {
 
 // ── aging / drill-down links ─────────────────────────────────────────────────
 
-test('the aging breakdown links each bucket into the filtered worklist', () => {
+test('the aging breakdown links each bucket to the bucket, not to everything older', () => {
+	// Every bucket, per bucket. Asserting one href (as this test used to) missed
+	// that three of the four linked to a strictly larger set than they displayed:
+	// the buckets are half-open intervals, `minAgeHours` alone is an open-ended
+	// threshold, so "Under 24h: 1" opened the whole awaiting list.
 	const html = agingView({
-		buckets: [
-			{ key: 'under24', label: 'Under 24h', count: 3 },
-			{ key: 'over72', label: 'Over 72h', count: 1 },
-		],
+		buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: 1 })),
 	});
-	assert.match(html, /Under 24h/);
-	assert.match(html, /href="#\/orders\?state=awaiting&amp;minAgeHours=72"/);
+	const expected: Record<string, string> = {
+		under24: '#/orders?state=awaiting&amp;minAgeHours=0&amp;maxAgeHours=24',
+		h24to48: '#/orders?state=awaiting&amp;minAgeHours=24&amp;maxAgeHours=48',
+		h48to72: '#/orders?state=awaiting&amp;minAgeHours=48&amp;maxAgeHours=72',
+		// The last bucket is genuinely open-ended, so it carries no upper bound.
+		over72: '#/orders?state=awaiting&amp;minAgeHours=72',
+	};
+	for (const bucket of AGE_BUCKETS) {
+		const row = html.match(new RegExp(`<s-table-row>[\\s\\S]*?${bucket.label}[\\s\\S]*?</s-table-row>`));
+		assert.ok(row, `no row rendered for ${bucket.key}`);
+		assert.match(
+			row![0],
+			new RegExp(`href="${expected[bucket.key].replace(/[?&]/g, (c) => `\\${c}`)}"`),
+			`${bucket.key} links to its own set`,
+		);
+	}
+	// Built inline rather than through esc(), so the separator must be the literal
+	// entity — and must not have been escaped twice.
+	assert.doesNotMatch(html, /&amp;amp;/);
+	assert.doesNotMatch(html, /minAgeHours=\d+&maxAgeHours/, 'a bare & in an attribute is invalid markup');
+});
+
+test('bucketMinHours and bucketMaxHours agree with AGE_BUCKETS, and the four buckets partition', () => {
+	for (const bucket of AGE_BUCKETS) {
+		assert.equal(bucketMinHours(bucket.key), bucket.minHours, `bucketMinHours('${bucket.key}') must match AGE_BUCKETS`);
+		assert.equal(bucketMaxHours(bucket.key), bucket.maxHours, `bucketMaxHours('${bucket.key}') must match AGE_BUCKETS`);
+	}
+	// Each bucket's upper bound is the next one's lower bound: contiguous, no gap,
+	// and (because the query pairs `<=` with `>`) no double-count at the seam.
+	for (let i = 0; i < AGE_BUCKETS.length - 1; i++) {
+		assert.equal(bucketMaxHours(AGE_BUCKETS[i].key), bucketMinHours(AGE_BUCKETS[i + 1].key));
+	}
+	assert.equal(bucketMaxHours(AGE_BUCKETS[AGE_BUCKETS.length - 1].key), undefined, 'only the last bucket is open-ended');
 });
 
 // Pull out one <s-grid-item>…</s-grid-item> block by the label it renders, so an
@@ -414,12 +447,6 @@ test('the overview surfaces failed attempts as their own count, linking to the e
 		gridItem(html, 'Failed attempts'),
 		/href="#\/findings\?detector=fulfillment_attempt_failed&amp;status=unconfirmed"[\s\S]*>2</,
 	);
-});
-
-test('bucketMinHours agrees with AGE_BUCKETS for every key, so a renamed bucket fails a test instead of silently mapping to 72', () => {
-	for (const bucket of AGE_BUCKETS) {
-		assert.equal(bucketMinHours(bucket.key), bucket.minHours, `bucketMinHours('${bucket.key}') must match AGE_BUCKETS`);
-	}
 });
 
 test('a zero-count aging bucket still renders, so the breakdown is readable', () => {

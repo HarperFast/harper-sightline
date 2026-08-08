@@ -15,6 +15,7 @@ import {
 } from '../src/queries.ts';
 import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/apiContract.ts';
 import { detectorKey } from '../src/detector.ts';
+import { runStateBackfill, type BackfillDeps } from '../src/stateBackfill.ts';
 
 const NOW = 1_000_000_000_000;
 const DAY = 86_400_000;
@@ -1081,6 +1082,64 @@ test('orders filter by minimum age, which is the sub-deadline aging view', async
 	const { projections } = fixtures();
 	const page = await listOrders(projections, 's1', NOW, { state: 'awaiting', minAgeHours: 24 });
 	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['oB', 'oC']));
+});
+
+test('orders filter by maximum age, so an aging bucket link opens the bucket', async () => {
+	const { projections } = fixtures();
+	// The stored-state universe after the backfill has run, which is what production
+	// looks like once the sweep converges — the bucket links must reproduce their
+	// counts there, not only on a hand-picked subset.
+	await runStateBackfill(NOW, {
+		projections: projections as unknown as BackfillDeps['projections'],
+		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+	});
+	const bucketed = async (min: number, max?: number) =>
+		(await listOrders(projections, 's1', NOW, { state: 'awaiting', minAgeHours: min, maxAgeHours: max })).items
+			.map((i) => String(i.orderId))
+			.sort();
+
+	// The awaiting set by age: o2 (2s), oA (2h), oB (30h), oLegacy (50h), oC (80h).
+	assert.deepEqual(await bucketed(0, 24), ['o2', 'oA'], 'under24 opens under24, not everything');
+	assert.deepEqual(await bucketed(24, 48), ['oB']);
+	assert.deepEqual(await bucketed(48, 72), ['oLegacy']);
+	assert.deepEqual(await bucketed(72), ['oC'], 'the last bucket is genuinely open-ended');
+	// Without the upper bound, three of the four opened a strictly larger set.
+	assert.deepEqual(await bucketed(0), ['o2', 'oA', 'oB', 'oC', 'oLegacy']);
+});
+
+test('the age bounds partition: no awaiting order lands in two buckets or in none', async () => {
+	const { projections } = fixtures();
+	await runStateBackfill(NOW, {
+		projections: projections as unknown as BackfillDeps['projections'],
+		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+	});
+	// An order paid EXACTLY on a boundary is the case a `<=`/`<=` pair would
+	// double-count and a `<`/`<` pair would drop. The query pairs `<=` with `>`.
+	for (const hours of [0, 24, 48, 72]) {
+		await projections.put({
+			id: `s1:edge${hours}`,
+			shopId: 's1',
+			orderId: `edge${hours}`,
+			paidAt: NOW - hours * HOUR,
+			requiresFulfillment: true,
+			state: 'awaiting',
+			lastEventAt: NOW - hours * HOUR,
+		});
+	}
+	const buckets: Array<[number, number | undefined]> = [
+		[0, 24],
+		[24, 48],
+		[48, 72],
+		[72, undefined],
+	];
+	const seen = new Map<string, number>();
+	for (const [min, max] of buckets) {
+		const page = await listOrders(projections, 's1', NOW, { state: 'awaiting', minAgeHours: min, maxAgeHours: max });
+		for (const item of page.items) seen.set(String(item.orderId), (seen.get(String(item.orderId)) ?? 0) + 1);
+	}
+	const all = await listOrders(projections, 's1', NOW, { state: 'awaiting' });
+	assert.equal(seen.size, all.items.length, 'every awaiting order is in some bucket');
+	for (const [orderId, count] of seen) assert.equal(count, 1, `${orderId} appears in ${count} buckets`);
 });
 
 test('orders never leak another tenant order that shares an id', async () => {

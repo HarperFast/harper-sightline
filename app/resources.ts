@@ -286,6 +286,7 @@ export class OrdersResource extends Resource {
 		return listOrders(ProjectionsQ, shopId, Date.now(), {
 			state: p.get('state') ?? undefined,
 			minAgeHours: numParam(p, 'minAgeHours'),
+			maxAgeHours: numParam(p, 'maxAgeHours'),
 			sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
 			cursor: p.get('cursor') ?? undefined,
 			limit: p.get('limit') ?? undefined,
@@ -355,6 +356,7 @@ export class ExportResource extends Resource {
 			return listOrders(ProjectionsQ, shopId, now, {
 				state: p.get('state') ?? undefined,
 				minAgeHours: numParam(p, 'minAgeHours'),
+				maxAgeHours: numParam(p, 'maxAgeHours'),
 				sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
 				cursor,
 				limit: MAX_LIMIT,

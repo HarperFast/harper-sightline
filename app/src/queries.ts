@@ -361,6 +361,10 @@ export async function getFindingDetail(
 export interface OrderQueryParams {
 	state?: string;
 	minAgeHours?: number;
+	// Upper bound on age, so an aging BUCKET link can reproduce the bucket rather
+	// than an open-ended threshold. The buckets are half-open intervals; without
+	// this, "Under 24h: 1" opened the entire awaiting list.
+	maxAgeHours?: number;
 	sort?: 'oldest' | 'newest';
 	cursor?: string;
 	limit?: unknown;
@@ -394,9 +398,20 @@ export async function listOrders(projections: QueryTable, shopId: string, now: n
 		{ attribute: 'lastEventAt', value: windowStart, comparator: 'greater_than_equal' },
 	];
 	if (params.state) conditions.push({ attribute: 'state', value: params.state });
-	// "At least N hours old" is "paid at or before now − N hours".
+	// Age bounds. `ageHours` floors, so the pair is exactly the half-open interval
+	// [min, max) the aging buckets use, and the four buckets partition the awaiting
+	// set with no gap and no double-count:
+	//   "at least N hours old"      → paid at or before now − N hours
+	//   "less than N hours old"     → paid strictly after   now − N hours
+	// At the boundary paidAt = now − 48h: minAgeHours=48 includes it (<=),
+	// maxAgeHours=48 excludes it (>), so it lands in exactly one bucket. Both are
+	// filters on this shop's own rows, never a scope — shopId still comes from the
+	// authenticated principal above.
 	if (params.minAgeHours !== undefined && Number.isFinite(params.minAgeHours)) {
 		conditions.push({ attribute: 'paidAt', value: now - params.minAgeHours * 3_600_000, comparator: 'less_than_equal' });
+	}
+	if (params.maxAgeHours !== undefined && Number.isFinite(params.maxAgeHours)) {
+		conditions.push({ attribute: 'paidAt', value: now - params.maxAgeHours * 3_600_000, comparator: 'greater_than' });
 	}
 
 	const page = await keysetPage(
