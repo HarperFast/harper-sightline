@@ -63,6 +63,25 @@ export const PROJECTION_FIELDS = [
 ] as const;
 export const EXPECTATION_FIELDS = ['state', 'deadline', 'createdAt', 'resolvedAt'] as const;
 
+// The orders worklist. `ageHours` is computed per request, not stored.
+export const ORDER_LIST_FIELDS = [
+	'orderId',
+	'orderName',
+	'state',
+	'paidAt',
+	'fulfilledAt',
+	'cancelledAt',
+	'fullyRefundedAt',
+	'fulfillmentFailedAt',
+	'hasTracking',
+	'trackingCompany',
+	'orderTotal',
+	'currency',
+	'lastEventAt',
+	'ageHours',
+] as const;
+export const ORDER_FIELDS = [...ORDER_LIST_FIELDS, 'requiresFulfillment', 'fulfillableItemCount'] as const;
+
 // The contract artifact shape (also what gen-contract.mjs serializes).
 export const API_CONTRACT = {
 	version: API_VERSION,
@@ -88,6 +107,13 @@ export const API_CONTRACT = {
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
 		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'detector', 'cursor', 'limit'] },
 		findingDetail: { path: '/api/v1/findings/:id', fields: [...FINDING_FIELDS, 'description', 'projection', 'expectation'] },
+		orders: {
+			path: '/api/v1/orders',
+			item: ORDER_LIST_FIELDS,
+			paginated: true,
+			filters: ['state', 'minAgeHours', 'sort', 'cursor', 'limit'],
+		},
+		orderDetail: { path: '/api/v1/orders/:orderId', fields: [...ORDER_FIELDS, 'events', 'findings'] },
 		privacy: {
 			path: '/api/v1/privacy',
 			fields: [

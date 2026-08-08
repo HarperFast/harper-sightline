@@ -150,6 +150,56 @@
 				"expectation"
 			]
 		},
+		"orders": {
+			"path": "/api/v1/orders",
+			"item": [
+				"orderId",
+				"orderName",
+				"state",
+				"paidAt",
+				"fulfilledAt",
+				"cancelledAt",
+				"fullyRefundedAt",
+				"fulfillmentFailedAt",
+				"hasTracking",
+				"trackingCompany",
+				"orderTotal",
+				"currency",
+				"lastEventAt",
+				"ageHours"
+			],
+			"paginated": true,
+			"filters": [
+				"state",
+				"minAgeHours",
+				"sort",
+				"cursor",
+				"limit"
+			]
+		},
+		"orderDetail": {
+			"path": "/api/v1/orders/:orderId",
+			"fields": [
+				"orderId",
+				"orderName",
+				"state",
+				"paidAt",
+				"fulfilledAt",
+				"cancelledAt",
+				"fullyRefundedAt",
+				"fulfillmentFailedAt",
+				"hasTracking",
+				"trackingCompany",
+				"orderTotal",
+				"currency",
+				"lastEventAt",
+				"ageHours",
+				"requiresFulfillment",
+				"fulfillableItemCount",
+				"events",
+				"findings"
+			]
+		},
 		"privacy": {
 			"path": "/api/v1/privacy",
 			"fields": [

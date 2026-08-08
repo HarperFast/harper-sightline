@@ -10,6 +10,8 @@ import {
 	computeFlows,
 	getPrivacy,
 	getSetup,
+	listOrders,
+	getOrderDetail,
 } from '../src/queries.ts';
 import { detectorKey } from '../src/detector.ts';
 import { encodeCursor } from '../src/apiContract.ts';
@@ -88,11 +90,29 @@ function world() {
 			requiresFulfillment: true,
 			fulfilledAt: NOW - 500,
 			lastEventAt: NOW - 500,
+			state: 'fulfilled',
 		},
-		{ id: `${V}:o2`, shopId: V, orderId: 'o2', paidAt: NOW - 2000, requiresFulfillment: true, lastEventAt: NOW - 2000 }, // awaiting
-		{ id: `${A}:o1`, shopId: A, orderId: 'o1', paidAt: NOW - 100, requiresFulfillment: true, lastEventAt: NOW - 100 },
-		{ id: `${A}:o2`, shopId: A, orderId: 'o2', paidAt: NOW - 90, requiresFulfillment: true, lastEventAt: NOW - 90 },
-		{ id: `${A}:o3`, shopId: A, orderId: 'o3', paidAt: NOW - 80, requiresFulfillment: true, fulfilledAt: NOW - 70, lastEventAt: NOW - 70 },
+		{
+			id: `${V}:o2`,
+			shopId: V,
+			orderId: 'o2',
+			paidAt: NOW - 2000,
+			requiresFulfillment: true,
+			lastEventAt: NOW - 2000,
+			state: 'awaiting',
+		}, // awaiting
+		{ id: `${A}:o1`, shopId: A, orderId: 'o1', paidAt: NOW - 100, requiresFulfillment: true, lastEventAt: NOW - 100, state: 'awaiting' },
+		{ id: `${A}:o2`, shopId: A, orderId: 'o2', paidAt: NOW - 90, requiresFulfillment: true, lastEventAt: NOW - 90, state: 'awaiting' },
+		{
+			id: `${A}:o3`,
+			shopId: A,
+			orderId: 'o3',
+			paidAt: NOW - 80,
+			requiresFulfillment: true,
+			fulfilledAt: NOW - 70,
+			lastEventAt: NOW - 70,
+			state: 'fulfilled',
+		},
 	]);
 	const findings = new FakeTable('id', [
 		{
@@ -276,4 +296,48 @@ test('getSetup: the attacker’s reauthorization state never blocks the victim',
 	assert.equal(victim.action, 'none', "the attacker's reauthorization_required credential is not the victim's");
 	const attacker = await getSetup(w, A, NOW);
 	assert.equal(attacker.action, 'reauthorize');
+});
+
+test('listOrders: attacker never sees a victim order that shares an order id', async () => {
+	const { projections } = world();
+	const page = await listOrders(projections, A, NOW, {});
+	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3']), "only the attacker's own three orders");
+	// o1/o2 are shared order ids between shops — the returned rows must carry the
+	// attacker's own paidAt, never the victim's.
+	for (const item of page.items) {
+		assert.notEqual(item.paidAt, NOW - 1000, "victim's o1 paidAt must not leak");
+		assert.notEqual(item.paidAt, NOW - 2000, "victim's o2 paidAt must not leak");
+	}
+});
+
+test('getOrderDetail: a crafted key cannot reach the victim order, and the attacker sees only its own data', async () => {
+	const { projections, events, findings } = world();
+	// `${shopId}:${orderId}` keying means these compute to a key that was never
+	// written for the attacker's tenant, regardless of what looks like a victim key.
+	assert.equal(await getOrderDetail(projections, events, findings, A, `../${V}:o1`), null);
+	assert.equal(await getOrderDetail(projections, events, findings, A, `${V}:o1`), null);
+	// The attacker's own o1 (same order id as the victim's) resolves to its own row.
+	const detail = await getOrderDetail(projections, events, findings, A, 'o1');
+	assert.equal(detail?.paidAt, NOW - 100, "the attacker's own o1, not the victim's");
+});
+
+test('listOrders: a cursor crafted from the victim boundary cannot surface victim rows for the attacker', async () => {
+	const { projections } = world();
+	// Victim's newest paidAt is o1 @ NOW-1000, older than every attacker order.
+	const cursor = encodeCursor(NOW - 1000, `${V}:o1`);
+	const page = await listOrders(projections, A, NOW, { cursor });
+	assert.ok(!page.items.some((i) => i.paidAt === NOW - 1000 || i.paidAt === NOW - 2000), 'no victim paidAt leaked');
+	assert.deepEqual(page.items, [], "the victim boundary excludes all of the attacker's own, newer orders");
+});
+
+test('listOrders: hostile filters cannot widen the attacker result set beyond its own shop', async () => {
+	const { projections } = world();
+	const hostile = await listOrders(projections, A, NOW, { state: "awaiting' OR 1=1" });
+	assert.deepEqual(hostile.items, [], 'a hostile state filter matches nothing rather than everything');
+
+	// minAgeHours=0 ("at least 0 hours old") matches every paid order — still only
+	// the attacker's own three, never the victim's two.
+	const wide = await listOrders(projections, A, NOW, { minAgeHours: 0 });
+	assert.deepEqual(new Set(wide.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3']));
+	assert.equal(wide.items.length, 3, "never the victim's two orders too");
 });

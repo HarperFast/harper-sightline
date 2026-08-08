@@ -11,8 +11,12 @@ import {
 	FINDING_LIST_FIELDS,
 	PROJECTION_FIELDS,
 	EXPECTATION_FIELDS,
+	MAX_LIMIT,
+	ORDER_FIELDS,
+	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
 import { describeFinding, detectorKey } from './detector.ts';
+import { ageHours } from './orders.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every
@@ -35,10 +39,12 @@ export interface Page {
 	nextCursor?: string;
 }
 
-// Keyset pagination over a descending numeric sort field with the row id as a
-// tiebreak. Over-fetches a small buffer and finalizes the cursor boundary in
-// code so equal-timestamp rows page correctly.
-async function keysetPageDesc(
+// Keyset pagination over a numeric sort field with the row id as a tiebreak.
+// Over-fetches a small buffer and finalizes the cursor boundary in code so
+// equal-timestamp rows page correctly. `descending` is the default because every
+// ledger view is newest-first; the orders worklist also needs oldest-first, where
+// the most overdue order belongs at the top.
+async function keysetPage(
 	table: QueryTable,
 	baseConditions: QuerySpec['conditions'],
 	sortField: string,
@@ -46,28 +52,46 @@ async function keysetPageDesc(
 	fields: readonly string[],
 	cursorRaw: string | undefined,
 	limitRaw: unknown,
+	descending = true,
 ): Promise<Page> {
 	const limit = clampLimit(limitRaw);
 	const cursor = decodeCursor(cursorRaw);
 	const conditions = [...baseConditions];
-	if (cursor) conditions.push({ attribute: sortField, value: cursor.sortValue, comparator: 'less_than_equal' });
+	if (cursor) {
+		conditions.push({
+			attribute: sortField,
+			value: cursor.sortValue,
+			comparator: descending ? 'less_than_equal' : 'greater_than_equal',
+		});
+	}
 
 	const rows: Array<Record<string, unknown>> = [];
 	for await (const row of table.search({
 		conditions,
 		operator: 'and',
-		sort: { attribute: sortField, descending: true },
+		sort: { attribute: sortField, descending },
 		limit: limit + 25,
 	})) {
 		rows.push(row);
 	}
-	rows.sort((a, b) => Number(b[sortField]) - Number(a[sortField]) || String(b[idField]).localeCompare(String(a[idField])));
+	rows.sort((a, b) => {
+		const av = Number(a[sortField]);
+		const bv = Number(b[sortField]);
+		if (av !== bv) return descending ? bv - av : av - bv;
+		const aid = String(a[idField]);
+		const bid = String(b[idField]);
+		return descending ? bid.localeCompare(aid) : aid.localeCompare(bid);
+	});
 
 	let start = 0;
 	if (cursor) {
-		start = rows.findIndex(
-			(r) => Number(r[sortField]) < cursor.sortValue || (Number(r[sortField]) === cursor.sortValue && String(r[idField]) < cursor.id),
-		);
+		start = rows.findIndex((r) => {
+			const v = Number(r[sortField]);
+			const id = String(r[idField]);
+			return descending
+				? v < cursor.sortValue || (v === cursor.sortValue && id < cursor.id)
+				: v > cursor.sortValue || (v === cursor.sortValue && id > cursor.id);
+		});
 		if (start < 0) start = rows.length;
 	}
 	const page = rows.slice(start, start + limit);
@@ -125,7 +149,7 @@ export async function listEvents(
 	}
 
 	if (params.sku && eventSkus) {
-		const indexPage = await keysetPageDesc(
+		const indexPage = await keysetPage(
 			eventSkus,
 			[...conditions, { attribute: 'sku', value: params.sku }],
 			'occurredAt',
@@ -150,7 +174,7 @@ export async function listEvents(
 	// when a caller hasn't (or can't) supply the index table.
 	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
 
-	return keysetPageDesc(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	return keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
 }
 
 // GET /events/:id — one event plus lightweight relations. Cross-tenant safe: an
@@ -240,7 +264,7 @@ export async function listFindings(
 	const conditions: QuerySpec['conditions'] = [{ attribute: 'shopId', value: shopId }];
 	if (params.status) conditions.push({ attribute: 'status', value: params.status });
 	if (params.detector) conditions.push({ attribute: 'detector', value: params.detector });
-	const page = await keysetPageDesc(findings, conditions, 'detectedAt', 'id', FINDING_FIELDS, params.cursor, params.limit);
+	const page = await keysetPage(findings, conditions, 'detectedAt', 'id', FINDING_FIELDS, params.cursor, params.limit);
 
 	const items = await Promise.all(
 		page.items.map(async (item) => {
@@ -274,6 +298,101 @@ export async function getFindingDetail(
 		expectation:
 			expectation && expectation.shopId === shopId ? pick(expectation as unknown as Record<string, unknown>, EXPECTATION_FIELDS) : null,
 		projection: projection ? pick(projection as unknown as Record<string, unknown>, PROJECTION_FIELDS) : null,
+	};
+}
+
+export interface OrderQueryParams {
+	state?: string;
+	minAgeHours?: number;
+	sort?: 'oldest' | 'newest';
+	cursor?: string;
+	limit?: unknown;
+}
+
+// GET /orders — the operational worklist the Overview's counts drill into.
+//
+// Sorted and filtered in the DATABASE on the indexed `paidAt` and `state`
+// columns. Post-filtering in code was the alternative and is wrong here: it
+// returns short pages and a `nextCursor` that implies more matches than exist.
+//
+// `ageHours` is computed per row rather than stored, because it changes every
+// hour and a stored copy would be stale the moment it was written.
+export async function listOrders(projections: QueryTable, shopId: string, now: number, params: OrderQueryParams): Promise<Page> {
+	const windowStart = now - WINDOW_MS;
+	const conditions: QuerySpec['conditions'] = [
+		{ attribute: 'shopId', value: shopId },
+		// Same window bound the flow lanes use, so the worklist and the lane counts
+		// describe the same set of orders.
+		{ attribute: 'lastEventAt', value: windowStart, comparator: 'greater_than_equal' },
+	];
+	if (params.state) conditions.push({ attribute: 'state', value: params.state });
+	// "At least N hours old" is "paid at or before now − N hours".
+	if (params.minAgeHours !== undefined && Number.isFinite(params.minAgeHours)) {
+		conditions.push({ attribute: 'paidAt', value: now - params.minAgeHours * 3_600_000, comparator: 'less_than_equal' });
+	}
+
+	const page = await keysetPage(
+		projections,
+		conditions,
+		'paidAt',
+		'id',
+		ORDER_LIST_FIELDS,
+		params.cursor,
+		params.limit,
+		params.sort !== 'oldest',
+	);
+	return {
+		items: page.items.map((item) => {
+			const hours = ageHours(item.paidAt as number | undefined, now);
+			return hours === undefined ? item : { ...item, ageHours: hours };
+		}),
+		nextCursor: page.nextCursor,
+	};
+}
+
+// GET /orders/:orderId — one order's latched facts, its normalized events in the
+// window (newest first, bounded), and any findings about it. This is the
+// order-centric forensics view: everything Sightline observed about one order,
+// without needing a finding to exist first.
+export async function getOrderDetail(
+	projections: QueryTable,
+	events: QueryTable,
+	findings: QueryTable,
+	shopId: string,
+	orderId: string,
+): Promise<Record<string, unknown> | null> {
+	// Keyed by `${shopId}:${orderId}`, so a manipulated orderId can only ever miss.
+	const projection = await projections.get(`${shopId}:${orderId}`);
+	if (!projection || projection.shopId !== shopId) return null;
+
+	const eventRows: Array<Record<string, unknown>> = [];
+	for await (const row of events.search({
+		conditions: [
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'resourceId', value: orderId },
+		],
+		operator: 'and',
+		sort: { attribute: 'occurredAt', descending: true },
+		limit: MAX_LIMIT,
+	})) {
+		eventRows.push(pick(row, EVENT_FIELDS));
+	}
+
+	const findingRows: Array<Record<string, unknown>> = [];
+	for await (const row of findings.search({
+		conditions: [
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'orderId', value: orderId },
+		],
+		operator: 'and',
+	})) {
+		findingRows.push({ ...pick(row, FINDING_FIELDS), description: describeFinding(row as unknown as GapFinding) });
+	}
+
+	return {
+		...pick(projection, ORDER_FIELDS),
+		events: eventRows,
+		findings: findingRows,
 	};
 }
 

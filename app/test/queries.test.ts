@@ -10,12 +10,15 @@ import {
 	computeFlows,
 	getPrivacy,
 	getSetup,
+	listOrders,
+	getOrderDetail,
 } from '../src/queries.ts';
 import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/apiContract.ts';
 import { detectorKey } from '../src/detector.ts';
 
 const NOW = 1_000_000_000_000;
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 
 // Two tenants; s2 rows must never surface for an s1 query.
 function fixtures() {
@@ -74,6 +77,64 @@ function fixtures() {
 		},
 		{ id: 's1:o2', shopId: 's1', orderId: 'o2', paidAt: NOW - 2000, requiresFulfillment: true, lastEventAt: NOW - 2000 }, // awaiting confirmation
 		{ id: 's2:o1', shopId: 's2', orderId: 'o1', paidAt: NOW, requiresFulfillment: true, lastEventAt: NOW },
+		// Worklist fixtures: four s1 orders across lanes/ages plus an s2 order that
+		// shares an order id, so tenant bleed is testable.
+		{
+			id: 's1:oA',
+			shopId: 's1',
+			orderId: 'oA',
+			orderName: '#1001',
+			paidAt: NOW - 2 * HOUR,
+			requiresFulfillment: true,
+			state: 'awaiting',
+			lastEventAt: NOW - 2 * HOUR,
+			orderTotal: 50,
+			currency: 'USD',
+		},
+		{
+			id: 's1:oB',
+			shopId: 's1',
+			orderId: 'oB',
+			orderName: '#1002',
+			paidAt: NOW - 30 * HOUR,
+			requiresFulfillment: true,
+			state: 'awaiting',
+			lastEventAt: NOW - 30 * HOUR,
+			orderTotal: 90,
+			currency: 'USD',
+			fulfillmentFailedAt: NOW - 20 * HOUR,
+		},
+		{
+			id: 's1:oC',
+			shopId: 's1',
+			orderId: 'oC',
+			orderName: '#1003',
+			paidAt: NOW - 80 * HOUR,
+			requiresFulfillment: true,
+			state: 'awaiting',
+			lastEventAt: NOW - 80 * HOUR,
+		},
+		{
+			id: 's1:oD',
+			shopId: 's1',
+			orderId: 'oD',
+			orderName: '#1004',
+			paidAt: NOW - 5 * HOUR,
+			requiresFulfillment: true,
+			state: 'fulfilled',
+			lastEventAt: NOW - 4 * HOUR,
+			fulfilledAt: NOW - 4 * HOUR,
+		},
+		{
+			id: 's2:oA',
+			shopId: 's2',
+			orderId: 'oA',
+			orderName: '#9999',
+			paidAt: NOW - 2 * HOUR,
+			requiresFulfillment: true,
+			state: 'awaiting',
+			lastEventAt: NOW - 2 * HOUR,
+		},
 	]);
 	const findings = new FakeTable('id', [
 		{
@@ -391,7 +452,9 @@ test('getSummary counts reconcile to the fixtures, scoped to the tenant', async 
 	const f = fixtures();
 	const s = await getSummary(f, 's1', NOW);
 	assert.equal((s.events as Record<string, number>).total, 2, 's1 in-window events');
-	assert.deepEqual(s.orders, { tracked: 2, paid: 2, fulfilled: 1, awaitingConfirmation: 1 });
+	// Includes the worklist fixture orders (oA-oD): 6 tracked, 6 paid, 2 fulfilled
+	// (o1, oD), 4 awaiting (o2, oA, oB, oC).
+	assert.deepEqual(s.orders, { tracked: 6, paid: 6, fulfilled: 2, awaitingConfirmation: 4 });
 	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0 });
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 });
 });
@@ -437,7 +500,8 @@ test('getSummary activity buckets the window by day and reconciles to the total'
 test('computeFlows lane counts reconcile and are rebuildable from projections', async () => {
 	const { projections } = fixtures();
 	const flows = await computeFlows(projections, 's1', NOW);
-	assert.deepEqual(flows.lanes, { paid: 2, fulfilled: 1, awaitingConfirmation: 1, cancelled: 0, refunded: 0 });
+	// Includes the worklist fixture orders (oA-oD), all within the window.
+	assert.deepEqual(flows.lanes, { paid: 6, fulfilled: 2, awaitingConfirmation: 4, cancelled: 0, refunded: 0 });
 	// Rebuild = same function over the same data → identical (idempotent).
 	assert.deepEqual((await computeFlows(projections, 's1', NOW)).lanes, flows.lanes);
 });
@@ -447,7 +511,8 @@ test('getPrivacy reports no PII and the tenant footprint', async () => {
 	const p = await getPrivacy(f, 's1', NOW);
 	assert.equal(p.storesCustomerPii, false);
 	assert.equal(p.retentionDays, 7);
-	assert.deepEqual(p.footprint, { events: 3, orders: 2, findings: 1 });
+	// Includes the worklist fixture orders (oA-oD) alongside o1/o2.
+	assert.deepEqual(p.footprint, { events: 3, orders: 6, findings: 1 });
 });
 
 test('getPrivacy discloses scopes, exclusions, and capture/reconciliation health', async () => {
@@ -569,4 +634,79 @@ test('getSetup is tenant-scoped: another shop’s deliveries are not this shop�
 		NOW,
 	);
 	assert.equal(setup.eventsObserved, false, "another tenant's delivery is not evidence this shop has seen activity");
+});
+
+test('orders default to newest-paid first and carry the worklist columns', async () => {
+	const { projections } = fixtures();
+	const page = await listOrders(projections, 's1', NOW, {});
+	// Unfiltered, so the pre-existing o1/o2 fixture rows (paid seconds ago) sort
+	// ahead of the worklist rows (paid hours ago) — newest paidAt first.
+	assert.deepEqual(
+		page.items.map((i) => i.orderId),
+		['o1', 'o2', 'oA', 'oD', 'oB', 'oC'],
+	);
+	const first = page.items.find((i) => i.orderId === 'oA')!;
+	assert.equal(first.orderName, '#1001');
+	assert.equal(first.state, 'awaiting');
+	assert.equal(first.orderTotal, 50);
+	assert.equal(first.currency, 'USD');
+	assert.equal(first.ageHours, 2);
+});
+
+test('the worklist can be sorted oldest-first, which is what triage needs', async () => {
+	const { projections } = fixtures();
+	const page = await listOrders(projections, 's1', NOW, { sort: 'oldest' });
+	assert.deepEqual(
+		page.items.map((i) => i.orderId),
+		['oC', 'oB', 'oD', 'oA', 'o2', 'o1'],
+	);
+});
+
+test('orders filter by lane', async () => {
+	const { projections } = fixtures();
+	const page = await listOrders(projections, 's1', NOW, { state: 'awaiting' });
+	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['oA', 'oB', 'oC']));
+});
+
+test('orders filter by minimum age, which is the sub-deadline aging view', async () => {
+	const { projections } = fixtures();
+	const page = await listOrders(projections, 's1', NOW, { state: 'awaiting', minAgeHours: 24 });
+	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['oB', 'oC']));
+});
+
+test('orders never leak another tenant order that shares an id', async () => {
+	const { projections } = fixtures();
+	const page = await listOrders(projections, 's1', NOW, {});
+	for (const item of page.items) assert.notEqual(item.orderName, '#9999');
+});
+
+test('a hostile state filter returns nothing rather than everything', async () => {
+	const { projections } = fixtures();
+	const page = await listOrders(projections, 's1', NOW, { state: "awaiting' OR 1=1" });
+	assert.deepEqual(page.items, []);
+});
+
+test('orders page with a stable cursor and no duplicates across pages', async () => {
+	const { projections } = fixtures();
+	const first = await listOrders(projections, 's1', NOW, { limit: 2 });
+	const second = await listOrders(projections, 's1', NOW, { limit: 2, cursor: first.nextCursor });
+	const ids = [...first.items, ...second.items].map((i) => i.orderId);
+	assert.equal(new Set(ids).size, ids.length);
+	assert.equal(ids.length, 4);
+});
+
+test('order detail returns the projection, its events, and its findings', async () => {
+	const { projections, events, findings } = fixtures();
+	const detail = await getOrderDetail(projections, events, findings, 's1', 'o1');
+	assert.equal(detail?.orderId, 'o1');
+	assert.ok(Array.isArray(detail?.events));
+	assert.ok(Array.isArray(detail?.findings));
+});
+
+test('order detail for another tenant order returns null, whatever id is supplied', async () => {
+	const { projections, events, findings } = fixtures();
+	assert.equal(await getOrderDetail(projections, events, findings, 's1', '../s2:oA'), null);
+	// s2 genuinely has order oA; s1 must not see it.
+	const detail = await getOrderDetail(projections, events, findings, 's1', 'oA');
+	assert.notEqual(detail?.orderName, '#9999');
 });
