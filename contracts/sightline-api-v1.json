@@ -202,7 +202,6 @@
 				"lastEventAt",
 				"ageHours",
 				"requiresFulfillment",
-				"fulfillableItemCount",
 				"events",
 				"findings"
 			]

@@ -490,10 +490,12 @@ export function activityView(a: Summary['activity']): string {
 // and let the merchant draw the conclusion.
 //
 // The banner copy must DENY the "Shopify failed" claim without containing that
-// literal phrase: the regression test guarding this boundary (view.test.ts, "does
-// not claim Shopify failed") is a deliberately blunt substring check, and it can't
-// tell a denial from an assertion. Don't "fix" this sentence back into containing
-// "Shopify failed" — say the same thing without that substring instead.
+// literal phrase: the regression test guarding this boundary (view.test.ts, "the
+// integrity section states what a direct-check discovery does and does not mean")
+// is a deliberately blunt substring check, and it can't tell a denial from an
+// assertion. Don't "fix" this sentence back into containing "Shopify failed" — say
+// the same thing without that substring instead. A comment whose only job is to be
+// greppable has to name the test that actually exists.
 export function integrityView(integrity: Summary['integrity']): string {
 	const clean = integrity.reconciliationOnlyEvents === 0;
 	return `<s-section heading="Capture integrity">
@@ -842,9 +844,20 @@ export function findingLabel(f: { orderName?: string; orderId: string }): string
 	return f.orderName ?? f.orderId;
 }
 
-function ageCell(o: OrderItem): string {
+// How long, formatted the same way everywhere it appears. Past a day it coarsens
+// to days+hours rather than three-digit hours ("1d 6h", not "30h").
+export function ageCell(o: { ageHours?: number }): string {
 	if (o.ageHours === undefined) return '—';
 	return o.ageHours < 24 ? `${o.ageHours}h` : `${Math.floor(o.ageHours / 24)}d ${o.ageHours % 24}h`;
+}
+
+// "Waiting" is only meaningful while the order is actually waiting. A fulfilled,
+// cancelled or refunded order is not waiting for anything, so its cell is an em
+// dash — which is what the screen spec's own mock shows. Shared by the worklist
+// column and the order detail's field, so the two can never describe the same
+// order differently.
+export function waitingCell(o: { ageHours?: number; state?: string }): string {
+	return o.state === 'awaiting' ? ageCell(o) : '—';
 }
 
 // A failed attempt is stated as an observation of Shopify's own record. It is
@@ -861,7 +874,7 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 			<s-table-cell><s-link href="#/orders/${encodeURIComponent(o.orderId)}">${esc(orderLabel(o))}</s-link></s-table-cell>
 			<s-table-cell>${badge(laneLabel(o.state))}${attemptFlag(o)}</s-table-cell>
 			<s-table-cell>${ts(o.paidAt)}</s-table-cell>
-			<s-table-cell>${esc(ageCell(o))}</s-table-cell>
+			<s-table-cell>${esc(waitingCell(o))}</s-table-cell>
 			<s-table-cell>${ts(o.lastEventAt)}</s-table-cell>
 			<s-table-cell>${money(o.orderTotal, o.currency)}</s-table-cell>
 			<s-table-cell>${o.hasTracking ? esc(o.trackingCompany ?? 'yes') : '—'}</s-table-cell>
@@ -974,8 +987,15 @@ export function orderDetailView(o: OrderDetail, strip: string): string {
 				['Order', esc(orderLabel(o))],
 				['Value', money(o.orderTotal, o.currency)],
 				['Paid', ts(o.paidAt)],
-				['Waiting since payment', o.ageHours === undefined ? '—' : esc(`${o.ageHours}h`)],
-				['Needs shipping', o.requiresFulfillment ? 'Yes' : 'No'],
+				// Same cell the worklist renders, so "30h" here and "1d 6h" there can no
+				// longer describe the same order, and neither claims an order that has
+				// already been fulfilled is still waiting.
+				['Waiting since payment', esc(waitingCell(o))],
+				// `requiresFulfillment` is only ever latched TRUE, so `undefined` means "no
+				// fulfillment-eligible units were observed" — which is not the same as
+				// observing that none are needed. "No" would assert the latter; an em dash
+				// says what is actually true, that Sightline has not seen it either way.
+				['Needs shipping', o.requiresFulfillment === true ? 'Yes' : o.requiresFulfillment === false ? 'No' : '—'],
 				['Fulfillment confirmed', ts(o.fulfilledAt)],
 				['Tracking', o.hasTracking ? esc(o.trackingCompany ?? 'present') : 'none observed'],
 			])}

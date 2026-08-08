@@ -608,6 +608,14 @@ export async function getSummary(
 		select: ['occurredAt', 'domain', 'source'],
 	})) {
 		eventsTotal++;
+		// `else` is a CATCH-ALL, not a test for 'webhook': any future `source` value
+		// would be silently counted as webhook-observed. That is tolerable only while
+		// this number is a denominator on the integrity panel and links nowhere —
+		// EventSource has exactly two values today, and the two counts sum to the
+		// total, which is the property the panel relies on. Give `webhookEvents` a link
+		// into a filtered event list and this becomes a real defect (a count that
+		// opens a smaller set than it claims): add the explicit `=== 'webhook'` branch
+		// and a third bucket at that point, not after.
 		if (String(e.source) === 'reconciliation') reconciliationOnlyEvents++;
 		else webhookEvents++;
 		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((Number(e.occurredAt) - windowStart) / DAY_MS)));

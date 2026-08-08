@@ -472,7 +472,12 @@ test('a zero-count day renders no bar height, so magnitude never overstates', ()
 
 test('the integrity section states what a direct-check discovery does and does not mean', () => {
 	const html = integrityView({ webhookEvents: 40, reconciliationOnlyEvents: 3 });
-	assert.match(html, /3/);
+	// Scoped to the banner heading and to each labelled row. `assert.match(html, /3/)`
+	// verified nothing about WHERE the number rendered — swapping the two integrity
+	// counts would still have passed it.
+	assert.match(html, /<s-banner tone="info" heading="3 change\(s\) found by direct check">/);
+	assert.match(html, /<s-table-cell>Arrived as a webhook<\/s-table-cell><s-table-cell>40<\/s-table-cell>/);
+	assert.match(html, /<s-table-cell>Found by direct check<\/s-table-cell><s-table-cell>3<\/s-table-cell>/);
 	assert.match(html, /direct check/i);
 	// It must NOT claim Shopify failed, or that other apps missed anything.
 	assert.doesNotMatch(html, /Shopify failed|never delivered to your|your vendors did not/i);
@@ -982,6 +987,41 @@ test('the orders worklist shows the merchant-facing name, lane, age and value', 
 test('the age cell renders plain hours under the 24h cutoff and days+hours past it', () => {
 	assert.ok(ordersView({}, [order({ ageHours: 6 })], false, '').includes('<s-table-cell>6h</s-table-cell>'));
 	assert.ok(ordersView({}, [order({ ageHours: 30 })], false, '').includes('<s-table-cell>1d 6h</s-table-cell>'));
+});
+
+test('only an awaiting order is shown as waiting — a fulfilled one is not waiting for anything', () => {
+	// The spec's own mock shows an em dash here for the fulfilled row. Before this the
+	// column read "Waiting: 5h" for an order whose fulfillment had already been
+	// observed.
+	for (const state of ['fulfilled', 'cancelled', 'refunded', 'no_fulfillment_expected', 'unpaid']) {
+		const html = ordersView({}, [order({ state, ageHours: 5 })], false, '');
+		assert.ok(html.includes('<s-table-cell>—</s-table-cell>'), `${state} must not render a waiting time`);
+		assert.ok(!html.includes('<s-table-cell>5h</s-table-cell>'), `${state} rendered a waiting time`);
+	}
+	assert.ok(ordersView({}, [order({ state: 'awaiting', ageHours: 5 })], false, '').includes('<s-table-cell>5h</s-table-cell>'));
+});
+
+test('the order detail formats the waiting time exactly as the worklist does', () => {
+	// Same order, two screens: the detail rendered "30h" while the list rendered
+	// "1d 6h" for the same value.
+	const detail = orderDetailView(orderDetail({ state: 'awaiting', ageHours: 30 }), '');
+	const list = ordersView({}, [order({ state: 'awaiting', ageHours: 30 })], false, '');
+	assert.match(detail, /<s-table-cell>1d 6h<\/s-table-cell>/);
+	assert.doesNotMatch(detail, />30h</, 'the raw-hours format is gone from the detail screen');
+	assert.ok(list.includes('<s-table-cell>1d 6h</s-table-cell>'));
+	// And the same lane gate applies, so the two screens agree about that too.
+	assert.doesNotMatch(orderDetailView(orderDetail({ state: 'fulfilled', ageHours: 30 }), ''), /1d 6h/);
+});
+
+test('"Needs shipping" says nothing Sightline did not observe', () => {
+	// requiresFulfillment is only ever latched TRUE, so undefined means "no
+	// fulfillment-eligible units observed" — not "this order needs no shipping".
+	assert.match(orderDetailView(orderDetail({ requiresFulfillment: true }), ''), /Needs shipping<\/s-table-cell><s-table-cell>Yes</);
+	assert.match(
+		orderDetailView(orderDetail({ requiresFulfillment: undefined, state: 'no_fulfillment_expected' }), ''),
+		/Needs shipping<\/s-table-cell><s-table-cell>—</,
+		'an unobserved eligibility is an em dash, not a "No" that asserts it',
+	);
 });
 
 test('a digital order is never labelled as fulfilled, and its label claims nothing unobserved', () => {

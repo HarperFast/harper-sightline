@@ -85,7 +85,12 @@ export const ORDER_LIST_FIELDS = [
 	'lastEventAt',
 	'ageHours',
 ] as const;
-export const ORDER_FIELDS = [...ORDER_LIST_FIELDS, 'requiresFulfillment', 'fulfillableItemCount'] as const;
+// `fulfillableItemCount` is deliberately NOT here: the column exists on the
+// schema but src/projection.ts never writes it (the reducer latches
+// `requiresFulfillment` from a positive count instead), so declaring it promised a
+// field the detail endpoint could never carry. Same defect an earlier task fixed
+// for `ageHours`. Removed rather than started — nothing needs the raw count.
+export const ORDER_FIELDS = [...ORDER_LIST_FIELDS, 'requiresFulfillment'] as const;
 
 // The contract artifact shape (also what gen-contract.mjs serializes).
 export const API_CONTRACT = {
