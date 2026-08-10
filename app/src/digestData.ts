@@ -172,6 +172,13 @@ export async function gatherDigestInput(
 	// absent from the Overview. Bounding it identically would mean silently
 	// dropping the oldest, most overdue orders from the one message whose job is to
 	// surface them, so the digest keeps the wider set.
+	//
+	// So when the two numbers disagree, THIS is the more complete one, and it can
+	// only ever be the higher: an order that has been awaiting for ten days is still
+	// awaiting, and telling the merchant so is the entire point of the message. The
+	// fix for a disagreement is never to bound this scan — see the note on the
+	// equality assertion in test/digestData.test.ts, which explains how to read the
+	// direction of the difference.
 	const awaiting: DigestOrderRef[] = [];
 	for await (const row of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const p = row as unknown as OrderProjection;

@@ -202,6 +202,18 @@ test('counts are scoped to the shop and to the period', async () => {
 // that would make the two differ for a reason that is not a defect (see the
 // comment in gatherDigestInput). Every projection in `tables()` is inside the
 // window, so this equality is honest rather than accidental.
+//
+// IF YOU SEE THESE TWO DISAGREE IN PRODUCTION, the digest is the number to trust,
+// and the direction tells you which case you are in. The digest can only be the
+// HIGHER of the two, and only by counting orders that are genuinely still awaiting
+// but whose last event predates the read window — purge residue, which retention
+// normally removes. Those orders are the most overdue ones the shop has, so the
+// digest is the more COMPLETE figure and the Overview is the one omitting them. Do
+// not "fix" that by bounding the digest's scan to the same window: it would make
+// the digest under-report real awaiting orders to win this assertion, which trades
+// the product's truth for a green test. A digest LOWER than the tile, or a gap
+// bigger than the residue explanation supports, is a real defect — start with
+// whether either side stopped using `isAwaitingConfirmation`.
 test('the digest reports the same awaiting count as the Overview tile, for the same shop', async () => {
 	const t = tables();
 	const input = await gatherDigestInput(t, 's1', 'daily', PERIOD_START, PERIOD_END, NOW);
