@@ -2,7 +2,7 @@ import type { DigestCadence, EventDomain, GapFinding, OrderProjection } from './
 import type { QueryTable } from './queries.ts';
 import type { DigestInput, DigestOrderRef } from './digest.ts';
 import { DETECTOR_FAILED } from './detector.ts';
-import { eventKind } from './eventKind.ts';
+import { eventKind, MATCH_MARGIN_MS } from './eventKind.ts';
 import { ageHours, isAwaitingConfirmation } from './orders.ts';
 
 // Gathering the digest's inputs. Split from digest.ts because rendering changes
@@ -16,13 +16,11 @@ import { ageHours, isAwaitingConfirmation } from './orders.ts';
 // stays readable and does not become a data export.
 export const TOP_AWAITING = 5;
 
-// How far outside the period to look for a webhook event that MATCHES an
-// in-period reconciliation event. One day: large enough to cover the ordinary
-// near-boundary case (an order created late one day and paid early the next),
-// small enough that the extra rows scanned stay proportional to a day of traffic.
-// See the delivery-gap comment in gatherDigestInput for why any margin is needed
-// at all. This only ever widens MATCHING; it never widens what is reported.
-export const MATCH_MARGIN_MS = 86_400_000;
+// MATCH_MARGIN_MS lives in src/eventKind.ts, imported rather than redeclared:
+// this window is closed on both ends (periodStart and periodEnd are both real
+// elapsed instants), so the margin below widens BOTH edges — see the comment on
+// the constant itself for why src/queries.ts's getSummary, whose window ends at
+// `now`, only ever needs the lower one.
 
 export async function gatherDigestInput(
 	tables: { projections: QueryTable; findings: QueryTable; events: QueryTable; deliveries: QueryTable },

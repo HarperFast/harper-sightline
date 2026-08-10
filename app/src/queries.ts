@@ -1,6 +1,5 @@
 import type { EventDomain, Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
-import { eventKind } from './eventKind.ts';
-import { MATCH_MARGIN_MS } from './digestData.ts';
+import { eventKind, MATCH_MARGIN_MS } from './eventKind.ts';
 import {
 	clampLimit,
 	decodeCursor,
@@ -647,9 +646,9 @@ export async function getSummary(
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
-			// Widened below windowStart by the digest's own match margin (imported, not
-			// redeclared) — see the comment above for why, and why every tally but
-			// `webhookKeys` below still gates back to the real windowStart.
+			// Widened below windowStart by MATCH_MARGIN_MS (src/eventKind.ts, imported
+			// rather than redeclared) — see the comment above for why, and why every
+			// tally but `webhookKeys` below still gates back to the real windowStart.
 			{ attribute: 'occurredAt', value: windowStart - MATCH_MARGIN_MS, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
