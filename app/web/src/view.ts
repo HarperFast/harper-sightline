@@ -649,7 +649,19 @@ export function overviewView(d: OverviewData): string {
 				// the tile shows (same defect class already caught on the Paid tile).
 				// statGridLinked runs this href through esc(), which turns the plain `&`
 				// below into `&amp;` — do not pre-encode it here, or it would double-escape.
-				['Failed attempts', s.findings.failedAttempts ?? 0, '#/findings?detector=fulfillment_attempt_failed&status=unconfirmed'],
+				//
+				// The label says ORDERS, not attempts. DETECTOR_FAILED writes one finding
+				// per (order, ruleVersion), so two failed attempts on one order are one
+				// finding and count as 1 — "Failed attempts" overstated what this measures.
+				// Naming orders also keeps the tile consistent with the list it links to,
+				// which is one row per finding, i.e. one row per order. Still a presence
+				// claim, and still names no warehouse or carrier: the detector fires on a
+				// fulfillment Shopify itself recorded as failed.
+				[
+					'Orders with a failed attempt',
+					s.findings.failedAttempts ?? 0,
+					'#/findings?detector=fulfillment_attempt_failed&status=unconfirmed',
+				],
 				['Resolved', s.findings.resolved, '#/findings?status=resolved'],
 				['Suppressed', s.findings.suppressed, '#/findings?status=suppressed'],
 			])}

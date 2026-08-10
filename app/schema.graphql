@@ -98,8 +98,18 @@ type DigestOutbox @table(database: "sightline_core") @sealed {
 	# "Unconfirmed" findings tile. One order can carry two findings, so the two
 	# numbers legitimately differ and must never be read as the same figure.
 	ordersAwaiting: Int
-	# The two below ARE scoped to this row's period, [periodStart, periodEnd).
-	failedAttempts: Int
+	# The two below ARE scoped to this row's period, [periodStart, periodEnd) — and
+	# the first one's name says so, because getSummary's `findings.failedAttempts`
+	# counts the same findings with NO time bound (capped only by 7-day retention).
+	# Same population, different window, and nothing but the name to tell them apart.
+	#
+	# It also counts ORDERS, not attempts: DETECTOR_FAILED writes one finding per
+	# (order, ruleVersion), so two failed attempts on one order are ONE finding. The
+	# rendered copy says "orders with a fulfillment attempt Shopify recorded as
+	# unsuccessful" for that reason.
+	failedAttemptsInPeriod: Int
+	# Reconciliation-sourced changes with no matching webhook, in this period — see
+	# gatherDigestInput for why matching is best-effort and uses a one-day margin.
 	deliveryGaps: Int
 	# Recorder health at build time (current-state, like ordersAwaiting): false means
 	# the numbers above may be incomplete, and the bodies say so.

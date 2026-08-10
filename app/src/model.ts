@@ -84,8 +84,11 @@ export interface DigestOutbox {
 	// getSummary's findings.unconfirmed) — a different population in a different
 	// tense, and one order can produce two findings.
 	ordersAwaiting?: number;
-	// Scoped to this row's period, [periodStart, periodEnd).
-	failedAttempts?: number;
+	// Scoped to this row's period, [periodStart, periodEnd) — the name says so because
+	// getSummary's `findings.failedAttempts` counts the same findings with no time
+	// bound at all. Also a count of ORDERS, not attempts: DETECTOR_FAILED writes one
+	// finding per (order, ruleVersion), so two failed attempts on one order are one.
+	failedAttemptsInPeriod?: number;
 	deliveryGaps?: number;
 	// Recorder health at build time, current-state like ordersAwaiting.
 	recorderHealthy?: boolean;

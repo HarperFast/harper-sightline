@@ -174,7 +174,7 @@ test('counts are scoped to the shop and to the period', async () => {
 	assert.equal(input.topAwaiting.length, input.ordersAwaiting, 'the headline count and the list beneath it are one population');
 	// Counted independently, not as a subset of the headline: this is a presence
 	// (Shopify recorded an attempt that did not succeed), scoped to the period.
-	assert.equal(input.failedAttempts, 1);
+	assert.equal(input.failedAttemptsInPeriod, 1);
 	assert.equal(input.deliveryGaps, 1, 'only the in-period reconciliation-only event');
 	assert.equal(input.shopId, 's1');
 	assert.equal(input.cadence, 'daily');
@@ -238,7 +238,7 @@ test('the digest reports the same awaiting count as the Overview tile, for the s
 	// the period; they coincide here because the fixture's only failed-attempt
 	// finding falls inside the period, and that is asserted rather than assumed.
 	const findings = summary.findings as { failedAttempts: number };
-	assert.equal(input.failedAttempts, findings.failedAttempts);
+	assert.equal(input.failedAttemptsInPeriod, findings.failedAttempts);
 });
 
 test('the longest-waiting orders are listed oldest first and capped', async () => {
@@ -422,7 +422,7 @@ test('a reconciliation event inside the match margin but outside the period is n
 test('a shop with nothing at all gathers a clean, zeroed input', async () => {
 	const input = await gatherDigestInput(tables(), 'unknown.myshopify.com', 'daily', PERIOD_START, PERIOD_END, NOW);
 	assert.equal(input.ordersAwaiting, 0);
-	assert.equal(input.failedAttempts, 0);
+	assert.equal(input.failedAttemptsInPeriod, 0);
 	assert.equal(input.deliveryGaps, 0);
 	assert.equal(input.recorderHealthy, true);
 	assert.deepEqual(input.topAwaiting, []);

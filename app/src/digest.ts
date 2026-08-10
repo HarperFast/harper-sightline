@@ -77,8 +77,11 @@ export interface DigestInput {
 	// GapFinding status elsewhere in this codebase, and one order can carry two
 	// findings, so the two are different populations in different tenses.
 	ordersAwaiting: number;
-	// Scoped to [periodStart, periodEnd).
-	failedAttempts: number;
+	// Scoped to [periodStart, periodEnd) — named for it, because getSummary's
+	// `findings.failedAttempts` is the same population with no time bound. Counts
+	// ORDERS with a failed-attempt finding, not attempts: one finding per
+	// (order, ruleVersion), so two failed attempts on one order are one.
+	failedAttemptsInPeriod: number;
 	deliveryGaps: number;
 	recorderHealthy: boolean;
 	deadLettered: number;
@@ -100,7 +103,7 @@ export interface DigestInput {
 // digest that says "nothing is wrong"; it was never "do not mention an unresolved
 // problem twice".
 export function hasSomethingToSay(input: DigestInput): boolean {
-	return input.ordersAwaiting > 0 || input.failedAttempts > 0 || input.deliveryGaps > 0 || !input.recorderHealthy;
+	return input.ordersAwaiting > 0 || input.failedAttemptsInPeriod > 0 || input.deliveryGaps > 0 || !input.recorderHealthy;
 }
 
 function day(ms: number): string {
@@ -161,8 +164,14 @@ export function digestSubject(input: DigestInput): string {
 	const window = input.cadence === 'weekly' ? `week of ${day(input.periodStart)} UTC` : `${day(input.periodStart)} UTC`;
 	let lead: string;
 	if (!input.recorderHealthy) lead = 'Sightline needs attention';
-	else if (input.failedAttempts > 0)
-		lead = `${plural(input.failedAttempts, 'fulfillment attempt', 'fulfillment attempts')} did not succeed`;
+	else if (input.failedAttemptsInPeriod > 0)
+		// ORDERS, not attempts — the count is one finding per order, and DETECTOR_FAILED
+		// writes one finding per (order, ruleVersion), so two failed attempts on one
+		// order are counted once. "N fulfillment attempts did not succeed" overstated
+		// that. Wording matches the Overview's tile for the same number, so the two
+		// surfaces read as one claim. Still a presence, still attributes nothing to a
+		// warehouse or carrier: Shopify's own record is what says the attempt failed.
+		lead = `${plural(input.failedAttemptsInPeriod, 'order', 'orders')} with a failed fulfillment attempt`;
 	else if (input.ordersAwaiting > 0) lead = `${plural(input.ordersAwaiting, 'order', 'orders')} awaiting confirmation now`;
 	else if (input.deliveryGaps > 0) lead = `${plural(input.deliveryGaps, 'change', 'changes')} found by direct check`;
 	else lead = 'Nothing to report';
@@ -190,8 +199,13 @@ export function digestText(input: DigestInput): string {
 	// the window named above. Without the labels a reader would take all three for
 	// the same period, which is how a findings count came to be read as an orders
 	// count in the first place.
+	//
+	// Both of the first two lines count ORDERS, and say so. They are still different
+	// claims: the first is an absence (no confirmation observed yet) and current-state,
+	// the second a presence (Shopify recorded an attempt that did not succeed) scoped
+	// to the window. An order can legitimately be in both.
 	lines.push(`Orders awaiting fulfillment confirmation, as of now: ${input.ordersAwaiting}`);
-	lines.push(`Fulfillment attempts Shopify recorded as unsuccessful in this window: ${input.failedAttempts}`);
+	lines.push(`Orders with a fulfillment attempt Shopify recorded as unsuccessful, in this window: ${input.failedAttemptsInPeriod}`);
 	lines.push(`Changes found by direct check rather than webhook, in this window: ${input.deliveryGaps}`);
 	if (input.topAwaiting.length > 0) {
 		lines.push('');
@@ -221,7 +235,7 @@ export function digestHtml(input: DigestInput): string {
 		'<ul>',
 		// Same tense labels as the text body — see digestText.
 		`<li>Orders awaiting fulfillment confirmation, as of now: ${input.ordersAwaiting}</li>`,
-		`<li>Fulfillment attempts Shopify recorded as unsuccessful in this window: ${input.failedAttempts}</li>`,
+		`<li>Orders with a fulfillment attempt Shopify recorded as unsuccessful, in this window: ${input.failedAttemptsInPeriod}</li>`,
 		`<li>Changes found by direct check rather than webhook, in this window: ${input.deliveryGaps}</li>`,
 		'</ul>',
 		rows ? `<h3>Longest waiting, as of now</h3><table>${rows}</table>` : '',
@@ -252,7 +266,7 @@ export function outboxRow(input: DigestInput, now: number): DigestOutbox {
 		bodyText: digestText(input),
 		bodyHtml: digestHtml(input),
 		ordersAwaiting: input.ordersAwaiting,
-		failedAttempts: input.failedAttempts,
+		failedAttemptsInPeriod: input.failedAttemptsInPeriod,
 		deliveryGaps: input.deliveryGaps,
 		recorderHealthy: input.recorderHealthy,
 		status: 'pending',

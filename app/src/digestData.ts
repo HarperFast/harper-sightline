@@ -32,26 +32,34 @@ export async function gatherDigestInput(
 	periodEnd: number,
 	now: number,
 ): Promise<DigestInput> {
-	// Failed fulfillment attempts DETECTED in the period — Shopify recorded an
-	// attempt that did not succeed. Direct evidence of a presence, so it is counted
-	// on its own terms and by detection time, which is what makes it a statement
-	// about this window.
+	// ORDERS with a failed-attempt finding detected in the period — Shopify recorded
+	// a fulfillment attempt that did not succeed. Direct evidence of a presence, so
+	// it is counted on its own terms and by detection time, which is what makes it a
+	// statement about this window (hence the name: getSummary's sibling counts the
+	// same findings with NO time bound at all).
+	//
+	// It counts ORDERS, not attempts, and the rendered copy says so. `DETECTOR_FAILED`
+	// writes one finding per (order, ruleVersion), not one per attempt, so two failed
+	// attempts on one order are ONE finding and count as 1 — a label saying "attempts"
+	// would overstate what this measures. The measure is right and useful; it was the
+	// words that were wrong, on this surface and on the Overview tile.
 	//
 	// It is NOT a subset of `ordersAwaiting` below, and must not be presented as one.
 	// This count used to be taken inside a loop that incremented the headline count
 	// for every finding first, so the two figures were nested while the bodies
 	// printed them as two adjacent, disjoint-looking lines — and it filed a PRESENCE
 	// (an attempt Shopify recorded as failed) underneath an ABSENCE headline. The
-	// `status === 'unconfirmed'` gate is kept deliberately: it is the same
-	// definition getSummary's `findings.failedAttempts` uses, so the digest and the
-	// Overview cannot disagree about this number either.
-	let failedAttempts = 0;
+	// `status === 'unconfirmed'` gate is kept deliberately: it is the same definition
+	// getSummary's `findings.failedAttempts` uses, so the two surfaces cannot
+	// disagree about which findings qualify — only about the window, which the names
+	// now distinguish.
+	let failedAttemptsInPeriod = 0;
 	for await (const row of tables.findings.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const finding = row as unknown as GapFinding;
 		const detectedAt = finding.detectedAt ?? 0;
 		if (detectedAt < periodStart || detectedAt >= periodEnd) continue;
 		if (finding.status !== 'unconfirmed') continue;
-		if (finding.detector === DETECTOR_FAILED) failedAttempts++;
+		if (finding.detector === DETECTOR_FAILED) failedAttemptsInPeriod++;
 	}
 
 	// Changes that reached us only through a direct Admin API check — the webhook
@@ -200,7 +208,7 @@ export async function gatherDigestInput(
 		// Orders, not findings — and every one of them is in `awaiting`, of which
 		// topAwaiting is the first TOP_AWAITING entries.
 		ordersAwaiting: awaiting.length,
-		failedAttempts,
+		failedAttemptsInPeriod,
 		deliveryGaps,
 		recorderHealthy: deadLettered === 0,
 		deadLettered,

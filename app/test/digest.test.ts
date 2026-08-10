@@ -25,7 +25,7 @@ function input(over: Partial<DigestInput> = {}): DigestInput {
 		periodStart: Date.parse('2026-08-04T00:00:00Z'),
 		periodEnd: Date.parse('2026-08-05T00:00:00Z'),
 		ordersAwaiting: 0,
-		failedAttempts: 0,
+		failedAttemptsInPeriod: 0,
 		deliveryGaps: 0,
 		recorderHealthy: true,
 		deadLettered: 0,
@@ -78,15 +78,21 @@ test('a quiet, healthy period has nothing to say', () => {
 
 test('anything worth acting on means there is something to say', () => {
 	assert.equal(hasSomethingToSay(input({ ordersAwaiting: 1 })), true);
-	assert.equal(hasSomethingToSay(input({ failedAttempts: 1 })), true);
+	assert.equal(hasSomethingToSay(input({ failedAttemptsInPeriod: 1 })), true);
 	assert.equal(hasSomethingToSay(input({ deliveryGaps: 1 })), true);
 	assert.equal(hasSomethingToSay(input({ recorderHealthy: false, deadLettered: 2 })), true);
 });
 
 test('the subject leads with the most actionable number and never says failed about an absence', () => {
 	assert.match(digestSubject(input({ ordersAwaiting: 3 })), /3 orders? awaiting confirmation/i);
-	assert.match(digestSubject(input({ failedAttempts: 2, ordersAwaiting: 3 })), /2 fulfillment attempts? did not succeed/i);
+	// ORDERS with a failed attempt, not a count of attempts — one finding per
+	// (order, ruleVersion) means two failed attempts on one order are counted once,
+	// so the previous "2 fulfillment attempts did not succeed" overstated the measure.
+	assert.match(digestSubject(input({ failedAttemptsInPeriod: 2, ordersAwaiting: 3 })), /2 orders? with a failed fulfillment attempt/i);
+	// The presence lead must not have quietly become an attempt count again.
+	assert.doesNotMatch(digestSubject(input({ failedAttemptsInPeriod: 2 })), /attempts did not succeed|2 fulfillment attempts/i);
 	assert.match(digestSubject(input({ recorderHealthy: false, deadLettered: 5 })), /needs attention/i);
+	// The ABSENCE lead still carries no failure language at all.
 	assert.doesNotMatch(digestSubject(input({ ordersAwaiting: 3 })), /failed/i);
 });
 
@@ -117,7 +123,7 @@ test('a daily subject marks its window UTC, and separates it from the current-st
 test('the subject has no CR or LF, so it can never inject a mail header', () => {
 	for (const subject of [
 		digestSubject(input({ ordersAwaiting: 3 })),
-		digestSubject(input({ failedAttempts: 1 })),
+		digestSubject(input({ failedAttemptsInPeriod: 1 })),
 		digestSubject(input({ recorderHealthy: false, deadLettered: 1 })),
 	]) {
 		assert.doesNotMatch(subject, /[\r\n]/);
@@ -162,14 +168,19 @@ test('a fractional age hour is rounded before rendering, never leaked as a decim
 test('each rendered number says whether it is current-state or scoped to the window', () => {
 	const filled = input({
 		ordersAwaiting: 4,
-		failedAttempts: 2,
+		failedAttemptsInPeriod: 2,
 		deliveryGaps: 1,
 		topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 80 }],
 	});
 	for (const body of [digestText(filled), digestHtml(filled)]) {
 		assert.match(body, /Orders awaiting fulfillment confirmation, as of now: 4/);
-		assert.match(body, /Fulfillment attempts Shopify recorded as unsuccessful in this window: 2/);
+		// "Orders with a fulfillment attempt …", not "Fulfillment attempts …": the
+		// number is one finding per order, so an attempts label overstated it.
+		assert.match(body, /Orders with a fulfillment attempt Shopify recorded as unsuccessful, in this window: 2/);
 		assert.match(body, /Changes found by direct check rather than webhook, in this window: 1/);
+		// Both order counts must stay distinguishable — an absence and a presence about
+		// the same kind of thing, which is exactly why each names its own condition.
+		assert.doesNotMatch(body, /^Fulfillment attempts/m);
 		// The list is the same current-state population as the first number, so its
 		// heading must not read as window-scoped either.
 		assert.match(body, /Longest waiting, as of now/);
@@ -201,11 +212,11 @@ test('the html body escapes hostile order names', () => {
 });
 
 test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
-	const row = outboxRow(input({ ordersAwaiting: 2, failedAttempts: 1, deliveryGaps: 3 }), NOW);
+	const row = outboxRow(input({ ordersAwaiting: 2, failedAttemptsInPeriod: 1, deliveryGaps: 3 }), NOW);
 	assert.equal(row.id, `s1.myshopify.com:${Date.parse('2026-08-04T00:00:00Z')}`);
 	assert.equal(row.status, 'pending');
 	assert.equal(row.ordersAwaiting, 2);
-	assert.equal(row.failedAttempts, 1);
+	assert.equal(row.failedAttemptsInPeriod, 1);
 	assert.equal(row.deliveryGaps, 3);
 	assert.equal(row.createdAt, NOW);
 	assert.ok((row.bodyText ?? '').length > 0);

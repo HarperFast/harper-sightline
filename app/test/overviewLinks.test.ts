@@ -307,10 +307,13 @@ test('the exact set of linked counts is pinned, so adding one is a deliberate ac
 			'Awaiting confirmation -> #/orders?state=awaiting',
 			'Awaiting confirmation -> #/orders?state=awaiting',
 			'Cancelled -> #/orders?state=cancelled',
-			'Failed attempts -> #/findings?detector=fulfillment_attempt_failed&amp;status=unconfirmed',
 			'Fulfilled -> #/orders?state=fulfilled',
 			'Fulfilled -> #/orders?state=fulfilled',
 			'No fulfillment expected -> #/orders?state=no_fulfillment_expected',
+			// Was 'Failed attempts', which overstated the measure: the tile counts one
+			// finding per order, so two failed attempts on one order are one row. The
+			// href is unchanged — the same filtered list, correctly described.
+			'Orders with a failed attempt -> #/findings?detector=fulfillment_attempt_failed&amp;status=unconfirmed',
 			'Over 72h -> #/orders?state=awaiting&amp;minAgeHours=72',
 			'Refunded -> #/orders?state=refunded',
 			'Resolved -> #/findings?status=resolved',

@@ -254,15 +254,17 @@ test('no screen accuses a downstream party of failing', () => {
 	];
 	for (const html of screens) {
 		// Both constants legitimately contain the words — they are the sentences that
-		// DENY the claim. The "Failed attempts" tile label and the
-		// fulfillment_attempt_failed detector id (in filter hrefs) are also legitimate:
-		// that detector fires on a fulfillment Shopify itself recorded as failed, so
-		// stating that is direct evidence, not an inference or an accusation against a
-		// downstream party — strip them too, then nothing else may make the claim.
+		// DENY the claim. The "Orders with a failed attempt" tile label (previously
+		// "Failed attempts", renamed because the tile counts one finding per ORDER, not
+		// one per attempt) and the fulfillment_attempt_failed detector id (in filter
+		// hrefs) are also legitimate: that detector fires on a fulfillment Shopify
+		// itself recorded as failed, so stating that is direct evidence, not an
+		// inference or an accusation against a downstream party — strip them too, then
+		// nothing else may make the claim.
 		const rest = html
 			.replace(FINDING_DISCLAIMER, '')
 			.replace(FINDINGS_BOUNDARY, '')
-			.replace(/Failed attempts/g, '')
+			.replace(/Orders with a failed attempt/g, '')
 			.replace(/fulfillment_attempt_failed/g, '');
 		assert.ok(!/failed/i.test(rest), 'no failure language outside the sentences/labels that are approved to use it');
 		assert.ok(!/warehouse|carrier|3PL|vendor/i.test(rest), 'no downstream party is named as a cause');
@@ -446,10 +448,15 @@ test('the overview surfaces failed attempts as their own count, linking to the e
 	// suppressed one is still counted in its own status bucket) — so the link must
 	// carry status=unconfirmed too, or it opens a bigger set than the tile shows
 	// (the same class of defect this plan already caught on the Paid tile).
+	// The label names ORDERS, not attempts: the tile counts one finding per
+	// (order, ruleVersion), so two failed attempts on one order are one row in the
+	// list it links to. Renaming it also keeps the count-equals-its-list invariant
+	// legible — the list is one row per order, and now the label says so.
 	assert.match(
-		gridItem(html, 'Failed attempts'),
+		gridItem(html, 'Orders with a failed attempt'),
 		/href="#\/findings\?detector=fulfillment_attempt_failed&amp;status=unconfirmed"[\s\S]*>2</,
 	);
+	assert.ok(!html.includes('>Failed attempts<'), 'the old attempts-labelled tile must not come back');
 });
 
 test('a zero-count aging bucket still renders, so the breakdown is readable', () => {
