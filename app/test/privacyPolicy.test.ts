@@ -166,9 +166,9 @@ test('the notification-email retention figure matches the digest outbox retentio
 	// "30 days" is Notifications screen wording (web/src/view.ts's "stores it for
 	// 30 days, then removes it") — the policy must agree with it in substance and
 	// in number, not just gesture at "a while". privacyPolicy.ts renders both
-	// mentions from the same imported OUTBOX_RETENTION_DAYS (src/ledgerTargets.ts,
-	// importable now that db.ts loads under test), so there is one real number
-	// behind both, not two literals that could drift apart independently.
+	// mentions from the same imported OUTBOX_RETENTION_DAYS (src/retention.ts), so
+	// there is one real number behind both, not two literals that could drift
+	// apart independently.
 	assert.match(section[1], /30 days/);
 	assert.match(html, /30 days/, 'the "How long we keep it" section states the same figure');
 });

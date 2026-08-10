@@ -64,11 +64,10 @@ export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'DigestOutbox', keyField: 'id', shopField: 'shopId', table: purgeable(DigestOutboxes) },
 ];
 
-// The digest outbox keeps a longer history than the 7-day ledger: a digest is a
-// record of what the merchant was told, which is worth having after the events it
-// described have been purged. It is NOT in RETENTION_TARGETS because that list is
-// swept with a single seven-day cutoff.
-export const OUTBOX_RETENTION_DAYS = 30;
+// The digest outbox keeps a longer history than the 7-day ledger (its retention
+// window, OUTBOX_RETENTION_DAYS, lives in src/retention.ts alongside RETENTION_DAYS
+// — see the comment there for why). It is NOT in RETENTION_TARGETS because that
+// list is swept with a single seven-day cutoff.
 export const OUTBOX_RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'DigestOutbox', keyField: 'id', tsField: 'createdAt', table: purgeable(DigestOutboxes) },
 ];

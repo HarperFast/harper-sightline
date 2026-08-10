@@ -88,9 +88,10 @@ test('cutoffMs default window is seven days', () => {
 	assert.equal(cutoffMs(NOW), NOW - RETENTION_DAYS * DAY_MS);
 });
 
-// The digest outbox keeps 30 days (OUTBOX_RETENTION_TARGETS/OUTBOX_RETENTION_DAYS
-// in src/ledgerTargets.ts), not the ledger's 7 — purgeExpired's third parameter
-// (retentionDays) is what lets one shared purge function serve both windows.
+// The digest outbox keeps 30 days (OUTBOX_RETENTION_TARGETS in
+// src/ledgerTargets.ts, OUTBOX_RETENTION_DAYS above in this same file), not the
+// ledger's 7 — purgeExpired's third parameter (retentionDays) is what lets one
+// shared purge function serve both windows.
 test('digest outbox rows are purged after thirty days, not seven', async () => {
 	const outbox = new FakeTable('id', [
 		{ id: 's1:old', shopId: 's1', periodStart: 1, status: 'pending', createdAt: NOW - 40 * DAY_MS },

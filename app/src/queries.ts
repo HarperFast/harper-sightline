@@ -18,7 +18,7 @@ import {
 } from './apiContract.ts';
 import { describeFinding, detectorKey, DETECTOR_FAILED } from './detector.ts';
 import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from './orders.ts';
-import { OUTBOX_RETENTION_DAYS } from './ledgerTargets.ts';
+import { OUTBOX_RETENTION_DAYS } from './retention.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every

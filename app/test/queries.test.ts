@@ -950,12 +950,14 @@ test('the no-customer-PII promise is unchanged by the notification address', asy
 });
 
 test('the deletion disclosure states the digest outbox retention alongside the ledger purge', async () => {
-	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/ledgerTargets.ts directly
+	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention.ts directly
 	// (queries.ts used to hold its own duplicated `DIGEST_OUTBOX_RETENTION_DAYS`
-	// literal, checked against the real constant by reading ledgerTargets.ts as
-	// text — now that db.ts is importable under test, queries.ts imports the
-	// constant itself, so there is only one number to get right, not two to keep
-	// in sync).
+	// literal, checked against the real constant by reading src/ledgerTargets.ts
+	// as text — now that db.ts is importable under test, the constant could have
+	// been imported from ledgerTargets.ts, but it lives in retention.ts instead,
+	// which has no imports of its own, so queries.ts stays testable without
+	// `--conditions=test`. Either way there is only one number to get right, not
+	// two to keep in sync).
 	const { events, findings, projections, deliveries, shops } = fixtures();
 	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
 	const automatic = (privacy.deletion as Record<string, string>).automatic;

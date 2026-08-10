@@ -1,6 +1,6 @@
 import { WINDOW_DAYS } from './apiContract.ts';
 import { EXCLUDED_CUSTOMER_FIELDS } from './queries.ts';
-import { OUTBOX_RETENTION_DAYS } from './ledgerTargets.ts';
+import { OUTBOX_RETENTION_DAYS } from './retention.ts';
 import type { SupportContact } from './support.ts';
 
 // The public privacy policy (#26). Served unauthenticated at /privacy-policy so
@@ -10,7 +10,7 @@ import type { SupportContact } from './support.ts';
 // Every factual claim here is traceable to something enforced in code, and the
 // ones that could drift are imported rather than retyped: the retention window
 // (WINDOW_DAYS), the digest outbox's own retention (OUTBOX_RETENTION_DAYS,
-// src/ledgerTargets.ts), and the excluded-field list (EXCLUDED_CUSTOMER_FIELDS,
+// src/retention.ts), and the excluded-field list (EXCLUDED_CUSTOMER_FIELDS,
 // the same constant the in-app Privacy screen renders). See
 // docs/data-inventory.md for the per-table behavior this summarises.
 //

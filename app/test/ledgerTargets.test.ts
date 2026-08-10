@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REDACT_TARGETS, RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS, OUTBOX_RETENTION_DAYS } from '../src/ledgerTargets.ts';
+import { REDACT_TARGETS, RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from '../src/ledgerTargets.ts';
+import { OUTBOX_RETENTION_DAYS } from '../src/retention.ts';
 import type { RedactTarget } from '../src/redaction.ts';
 import type { RetentionTarget } from '../src/retention.ts';
 

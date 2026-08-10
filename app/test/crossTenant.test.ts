@@ -377,9 +377,10 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 // NOTE: this proves only the pure merge function (applySubscriptionUpdate). The
 // resource-level guarantee — that DigestResource.get/put in resources.ts key
 // strictly on the authenticated principal's shopId, never a caller-supplied one
-// — cannot be exercised here: resources.ts imports src/db.ts, which imports the
-// `harper` module, and that module has no file on disk outside the deployed
-// Harper runtime, so importing resources.ts under `node --test` fails with
+// — cannot be exercised here: resources.ts imports `Resource` and `contentTypes`
+// directly from the `harper` package (not through src/db.ts's `#harper`
+// indirection), and that module has no file on disk outside the deployed Harper
+// runtime, so importing resources.ts under `node --test` fails with
 // ERR_MODULE_NOT_FOUND before any assertion runs. That half is deferred to a
 // live check against a dev store.
 test('a digest update body cannot retarget or backdate another tenant subscription', () => {
