@@ -37,13 +37,17 @@
 // WHAT IS DELIBERATELY NOT COMPARED, and why:
 //   - GraphQL Int vs Float. Both erase to TypeScript's `number` -- nothing
 //     in model.ts's source distinguishes them, so no comparison against it
-//     can tell a Float column from an Int one. This matters here because
-//     schema.graphql's header says every epoch-ms timestamp is deliberately
-//     Float (Int is 32-bit in GraphQL and would truncate one), but this
-//     guard cannot enforce that rule; changing a timestamp column from
-//     Float to Int passes this test unchanged. Verified experimentally
-//     (changed Shop.installedAt to Int, ran the comparison, saw zero
-//     issues, reverted) rather than assumed -- see task-8-report.md.
+//     can tell a Float column from an Int one; this is a limit of reading
+//     model.ts as TypeScript, not a gap in this guard's logic. This matters
+//     here because schema.graphql's header says every epoch-ms timestamp is
+//     deliberately Float (Int is 32-bit in GraphQL and would truncate one),
+//     but this guard cannot enforce that rule; changing a timestamp column
+//     from Float to Int passes this test unchanged. Verified experimentally
+//     (changed Shop.installedAt to Int, ran the comparison, saw zero issues,
+//     reverted). Closing this gap would need a schema-side marker (e.g. a
+//     directive naming the Int columns) to compare against, not a sharper
+//     heuristic over model.ts's field names or types -- TypeScript's type
+//     system has nothing left to give.
 //   - directives (@primaryKey, @indexed, @sealed, @table, ...), comments,
 //     and default values -- none of which model.ts has anywhere to encode.
 //   - String-literal-union narrowing. schema.graphql has no enum type, so
@@ -60,7 +64,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { API, isUnionType, TypeFlags } from 'typescript/unstable/sync';
 import { createVirtualFileSystem } from 'typescript/unstable/fs';
-import { isInterfaceDeclaration, isPropertySignatureDeclaration, isArrayTypeNode, isIdentifier } from 'typescript/unstable/ast';
+import {
+	isInterfaceDeclaration,
+	isPropertySignatureDeclaration,
+	isArrayTypeNode,
+	isIdentifier,
+	isExportKeyword,
+} from 'typescript/unstable/ast';
 
 const appDir = fileURLToPath(new URL('..', import.meta.url));
 const schemaPath = fileURLToPath(new URL('../schema.graphql', import.meta.url));
@@ -81,6 +91,13 @@ const unsupportedMemberPath = appDir + 'test/__schemaMirror_fixture_unsupportedM
 const unsupportedMemberSource = 'export interface Foo {\n\tbar(): void;\n}\n';
 const brokenSyntaxPath = appDir + 'test/__schemaMirror_fixture_brokenSyntax.ts';
 const brokenSyntaxSource = 'export interface Foo {\n\tbar: string\n'; // missing closing brace
+const nonExportedHelperPath = appDir + 'test/__schemaMirror_fixture_nonExportedHelper.ts';
+// NotATable is a local helper an interface author might add to model.ts for
+// its own sake (e.g. a shared shape used by more than one @table interface).
+// It is deliberately NOT exported, and deliberately has no same-named @table
+// in schema.graphql -- neither of which should make this guard's own loader
+// throw. Foo IS exported and stands in for a real table interface.
+const nonExportedHelperSource = 'interface NotATable {\n\thelper: string;\n}\nexport interface Foo {\n\tbar: string;\n}\n';
 
 const api = new API({ cwd: appDir });
 const fixtureApi = new API({
@@ -88,6 +105,7 @@ const fixtureApi = new API({
 	fs: createVirtualFileSystem({
 		[unsupportedMemberPath]: unsupportedMemberSource,
 		[brokenSyntaxPath]: brokenSyntaxSource,
+		[nonExportedHelperPath]: nonExportedHelperSource,
 	}),
 });
 after(() => {
@@ -95,7 +113,9 @@ after(() => {
 	fixtureApi.close();
 });
 const snapshot = api.updateSnapshot({ openFiles: [modelPath] });
-const fixtureSnapshot = fixtureApi.updateSnapshot({ openFiles: [unsupportedMemberPath, brokenSyntaxPath] });
+const fixtureSnapshot = fixtureApi.updateSnapshot({
+	openFiles: [unsupportedMemberPath, brokenSyntaxPath, nonExportedHelperPath],
+});
 
 // ─── schema.graphql side: a small hand-written SDL parser ─────────────────
 
@@ -229,6 +249,12 @@ function loadModelInterfaces(
 	const interfaces = new Map<string, Map<string, ModelField>>();
 	for (const statement of sourceFile.statements) {
 		if (!isInterfaceDeclaration(statement)) continue;
+		// A non-exported interface is a local helper, not part of the mirror this
+		// guard checks -- it has no reason to have a same-named `@table` in
+		// schema.graphql, and the comparison in diffSchemaAndModel() would
+		// otherwise force one into existence. Skipping it here is what makes the
+		// header comment above ("Loads every top-level `export interface`") true.
+		if (!statement.modifiers?.some(isExportKeyword)) continue;
 		const interfaceName = statement.name.text;
 		const fields = new Map<string, ModelField>();
 		for (const member of statement.members) {
@@ -356,6 +382,21 @@ test('a TypeScript interface member this guard cannot classify fails loudly rath
 	const project = fixtureSnapshot.getDefaultProjectForFile(unsupportedMemberPath);
 	assert.ok(project, 'could not resolve a TypeScript project for the fixture');
 	assert.throws(() => loadModelInterfaces(project, unsupportedMemberPath, 'inline-fixture'), /non-property member/);
+});
+
+test('a non-exported interface in model.ts is not loaded, and does not need a matching @table', () => {
+	// Before this guard skipped non-exported interfaces, NotATable's presence
+	// alone made loadModelInterfaces() return it as if it were a table mirror,
+	// and diffSchemaAndModel() then demanded a @table NotATable in
+	// schema.graphql that has no reason to exist. Asserting the returned map's
+	// contents (not just that this doesn't throw) is what makes this test able
+	// to fail: a version that loaded NotATable but never diffed it against the
+	// schema would pass a throws-only check but is still the bug.
+	const project = fixtureSnapshot.getDefaultProjectForFile(nonExportedHelperPath);
+	assert.ok(project, 'could not resolve a TypeScript project for the fixture');
+	const interfaces = loadModelInterfaces(project, nonExportedHelperPath, 'inline-fixture');
+	assert.ok(interfaces.has('Foo'), 'the exported interface must still be loaded');
+	assert.ok(!interfaces.has('NotATable'), 'a non-exported interface must not be loaded');
 });
 
 test('a syntactically broken TypeScript file fails loudly rather than passing silently', () => {
