@@ -1319,6 +1319,18 @@ test('the screen states plainly, in its own banner, that digests are stored (for
 	// including the longest-waiting order list — is what survives that long.
 	assert.match(banner![0], /counts and subject line/i);
 	assert.match(banner![0], /never an order name or customer data/i);
+	// The "What a digest contains" section below the banner lists the order-name
+	// bullet ("The orders that have been waiting longest, by order name"), which
+	// is true of the eventual SENT message but not of the record this banner
+	// just described — the only digest artifact that exists today holds no order
+	// name. A present-tense heading over that list would tell a merchant the
+	// opposite of what the banner above it says, 16 lines apart on the same
+	// screen. Anchored to the section's own heading text, not a bullet's wording,
+	// so a revert to the present-tense heading fails here rather than shipping.
+	const heading = html.match(/<s-section heading="(What a digest[^"]*)">/i)?.[1];
+	assert.ok(heading, 'the digest-contents section heading must be present');
+	assert.match(heading!, /will contain/i);
+	assert.doesNotMatch(heading!, /^What a digest contains$/i);
 });
 
 // Pinned to the instruction paragraph, not the page. Matching /clear|remove|empty/

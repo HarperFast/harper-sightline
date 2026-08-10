@@ -1259,7 +1259,7 @@ export function notificationsView(settings: DigestSettings, now: number, strip: 
 			</s-stack>
 			<s-paragraph><s-text color="subdued">Clear the field and save to remove your address and stop preparing digests. The address is stored with your shop's Sightline data and is erased when you uninstall.</s-text></s-paragraph>
 		</s-section>
-		<s-section heading="What a digest contains">
+		<s-section heading="What a digest message will contain, once delivery ships">
 			${bullets([
 				'How many orders are awaiting fulfillment confirmation',
 				'How many fulfillment attempts Shopify recorded as unsuccessful',
