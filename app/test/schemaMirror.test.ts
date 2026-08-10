@@ -30,6 +30,9 @@
 //   - the set of `@table` type names in the schema matches the set of
 //     top-level `export interface` names in model.ts (catches a table
 //     added or removed on only one side)
+//   - a field name appears at most once per `@table` body -- a duplicate
+//     throws rather than the parser silently keeping the last one and
+//     comparing that
 //
 // WHAT IS DELIBERATELY NOT COMPARED, and why:
 //   - GraphQL Int vs Float. Both erase to TypeScript's `number` -- nothing
@@ -143,6 +146,9 @@ function parseSchemaTables(sdl: string, sourceLabel: string): Map<string, Schema
 				throw new Error(`schemaMirror: could not parse a field declaration in type "${typeName}" (${sourceLabel}): "${line}"`);
 			}
 			const [, fieldName, typeToken, bang] = m;
+			if (fields.has(fieldName)) {
+				throw new Error(`schemaMirror: duplicate field "${fieldName}" in type "${typeName}" (${sourceLabel})`);
+			}
 			const isList = typeToken.startsWith('[');
 			const base = isList ? typeToken.slice(1, -1) : typeToken;
 			const scalar = GRAPHQL_SCALAR_TO_KIND[base];
@@ -339,6 +345,11 @@ test('an unparseable field declaration in the SDL fails loudly rather than passi
 test('an unrecognized scalar type in the SDL fails loudly rather than passing silently', () => {
 	const badSdl = 'type Foo @table(database: "x") @sealed {\n\tbar: SomeMadeUpScalar\n}\n';
 	assert.throws(() => parseSchemaTables(badSdl, 'inline-fixture'), /schemaMirror: unrecognized scalar type/);
+});
+
+test('a duplicate field name within one @table type fails loudly rather than silently keeping the last one', () => {
+	const badSdl = 'type Foo @table(database: "x") @sealed {\n\tbar: String\n\tbar: Int\n}\n';
+	assert.throws(() => parseSchemaTables(badSdl, 'inline-fixture'), /schemaMirror: duplicate field "bar" in type "Foo"/);
 });
 
 test('a TypeScript interface member this guard cannot classify fails loudly rather than passing silently', () => {
