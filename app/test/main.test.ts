@@ -41,6 +41,21 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
 	}
 }
 
+// Every save-error outcome (reauthorize, validation banner, success banner)
+// renders a NEW <s-banner> that is never tone="info" — the one banner already
+// on screen before any click, from notificationsView()'s permanent "digests
+// are being prepared" notice. So "a non-info banner exists" is true the
+// instant ANY of the three outcomes lands, regardless of which one — unlike
+// polling for the specific tone a test expects, which cannot tell a slow
+// correct render from a wrong one and degrades a tone regression (the exact
+// bug class this harness exists for) into a silent multi-second timeout
+// instead of a fast, readable diff. The strength belongs in the assertion
+// that follows, not in what the poll waits for.
+async function waitForOutcomeBanner(win: Window): Promise<Element> {
+	await waitFor(() => Boolean(win.document.querySelector('s-banner:not([tone="info"])')));
+	return win.document.querySelector('s-banner:not([tone="info"])') as unknown as Element;
+}
+
 let instanceCounter = 0;
 
 // Boots main.ts on the Notifications screen. `putDigestResponse` stands in for
@@ -86,12 +101,12 @@ test('a save that 401s renders the reauthorization view, not a banner containing
 	const win = await bootNotifications(() => jsonResponse(401, {}));
 
 	click(win, win.document.querySelector('[data-save-digest]') as unknown as Element);
-	await waitFor(() => Boolean(win.document.querySelector('s-banner[tone="warning"]')));
+	const banner = await waitForOutcomeBanner(win);
 
-	const banner = win.document.querySelector('s-banner[tone="warning"]');
-	assert.equal(banner?.getAttribute('heading'), 'Session expired');
+	assert.equal(banner.getAttribute('tone'), 'warning', `expected the reauthorization banner but got: ${banner.outerHTML}`);
+	assert.equal(banner.getAttribute('heading'), 'Session expired');
 	assert.equal(
-		banner?.querySelector('s-paragraph')?.textContent?.trim(),
+		banner.querySelector('s-paragraph')?.textContent?.trim(),
 		'Your Shopify session timed out. Reload Sightline in Shopify Admin to reconnect — recording continued in the background the whole time.',
 	);
 	// The bug this harness exists to catch: a banner reading the bare status
@@ -106,10 +121,10 @@ test('a save that 400s with a validation reason shows that reason', async () => 
 	const win = await bootNotifications(() => jsonResponse(400, { error: 'Enter a valid email address.' }));
 
 	click(win, win.document.querySelector('[data-save-digest]') as unknown as Element);
-	await waitFor(() => Boolean(win.document.querySelector('s-banner[tone="critical"]')));
+	const banner = await waitForOutcomeBanner(win);
 
-	const banner = win.document.querySelector('s-banner[tone="critical"]');
-	assert.equal(banner?.querySelector('s-paragraph')?.textContent?.trim(), 'Enter a valid email address.');
+	assert.equal(banner.getAttribute('tone'), 'critical', `expected the validation banner but got: ${banner.outerHTML}`);
+	assert.equal(banner.querySelector('s-paragraph')?.textContent?.trim(), 'Enter a valid email address.');
 	// The screen re-rendered the form, not the reauthorization view.
 	assert.ok(win.document.querySelector('[data-save-digest]'));
 });
@@ -118,9 +133,9 @@ test('a successful save re-renders with the confirmation', async () => {
 	const win = await bootNotifications(() => jsonResponse(200, { cadence: 'daily', status: 'active' }));
 
 	click(win, win.document.querySelector('[data-save-digest]') as unknown as Element);
-	await waitFor(() => Boolean(win.document.querySelector('s-banner[tone="success"]')));
+	const banner = await waitForOutcomeBanner(win);
 
-	const banner = win.document.querySelector('s-banner[tone="success"]');
-	assert.equal(banner?.querySelector('s-paragraph')?.textContent?.trim(), 'Saved.');
+	assert.equal(banner.getAttribute('tone'), 'success', `expected the confirmation banner but got: ${banner.outerHTML}`);
+	assert.equal(banner.querySelector('s-paragraph')?.textContent?.trim(), 'Saved.');
 	assert.ok(win.document.querySelector('[data-save-digest]'));
 });
