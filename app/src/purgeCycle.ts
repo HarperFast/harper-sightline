@@ -38,10 +38,16 @@ export interface PurgeCycleResult {
 // both sweeps, rather than each of `deps.purge`/`deps.outboxPurge` defaulting
 // to its own `Date.now()` as they do when called directly. Deliberate: one
 // clock reading makes a tick deterministic and lets a test drive both sweeps
-// from a single fixed `now`. The only observable cost is that the outbox
-// sweep's cutoff is computed at the instant the ledger sweep started, a few
-// milliseconds earlier than an independent `Date.now()` inside it would have
-// read — never enough to move a row across a day-boundary retention cutoff.
+// from a single fixed `now`. The cost is that the outbox sweep's cutoff is
+// computed at the instant the ledger sweep STARTED, not when the outbox sweep
+// itself runs — and the ledger sweep does real work first (up to
+// MAX_DELETES_PER_RUN deletes per table across all of RETENTION_TARGETS), so
+// that skew can be seconds, not milliseconds, on a capped run. This is safe
+// regardless of size, not just when it happens to be small: cutoffMs() is a
+// continuous instant with no boundary to cross, and any row whose expiry
+// falls inside the skew is simply picked up on the next tick — the purge is
+// idempotent and runs hourly (jobs.ts), and retention.ts already documents
+// leftover ("residue") rows as self-healing on the next scheduled run.
 export async function runPurgeCycle(deps: PurgeCycleDeps, now: number): Promise<PurgeCycleResult> {
 	let ledger: PurgeResult | undefined;
 	try {

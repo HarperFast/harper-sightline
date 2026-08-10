@@ -212,7 +212,7 @@ test('the html body escapes hostile order names', () => {
 });
 
 // Previously asserted bodyText/bodyHtml were non-empty. The row no longer
-// renders a body at all (Task 3) — subject and counts are the whole row, kept
+// renders a body at all — subject and counts are the whole row, kept
 // for 30 days as a record of what the period looked like, never the message —
 // so the assertions below are inverted: absence of the columns is now the
 // correct shape, not a value inside them.
