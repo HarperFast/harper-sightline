@@ -7,6 +7,15 @@
 export const DAY_MS = 86_400_000;
 export const RETENTION_DAYS = 7;
 
+// The digest outbox's own retention window (src/ledgerTargets.ts's
+// OUTBOX_RETENTION_TARGETS) — longer than, and swept separately from, the
+// seven-day ledger purge above: a digest is a record of what the merchant was
+// told, worth keeping after the events it described have been purged. Lives
+// here, not in ledgerTargets.ts, so queries.ts and privacyPolicy.ts (which
+// disclose it to the merchant) can import it without pulling in db.ts — this
+// module has no imports of its own.
+export const OUTBOX_RETENTION_DAYS = 30;
+
 // Bounds records deleted per table per run so one run can't monopolize a worker
 // thread; residue beyond this is cleared by the next scheduled run (self-healing).
 export const MAX_DELETES_PER_RUN = 10_000;

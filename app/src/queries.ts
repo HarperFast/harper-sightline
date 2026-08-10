@@ -1,5 +1,5 @@
 import type { EventDomain, Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
-import { eventKind } from './eventKind.ts';
+import { eventKind, MATCH_MARGIN_MS } from './eventKind.ts';
 import {
 	clampLimit,
 	decodeCursor,
@@ -18,6 +18,7 @@ import {
 } from './apiContract.ts';
 import { describeFinding, detectorKey, DETECTOR_FAILED } from './detector.ts';
 import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from './orders.ts';
+import { OUTBOX_RETENTION_DAYS } from './retention.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every
@@ -607,21 +608,27 @@ export async function getSummary(
 	// see src/eventKind.ts for how "kind" is derived and why that comparison is
 	// the safe one.
 	//
-	// Matching is BEST-EFFORT within the window, not a guarantee. The two paths read
-	// `occurredAt` from DIFFERENT fields for every one of the four kinds — webhook
+	// Matching is BEST-EFFORT, not a guarantee. The two paths read `occurredAt`
+	// from DIFFERENT fields for every one of the four kinds — webhook
 	// `paid`/`cancelled` from the order's updated_at against reconciliation's
 	// createdAt and cancelledAt, webhook `fulfilled` from the fulfillment's
 	// updated_at against the order's fulfilledAt, webhook `refunded` from the
 	// refund's processed_at against the order's updatedAt (src/normalize.ts vs
 	// src/reconcile.ts). So one real change is observed at two different instants,
-	// and a pair whose two timestamps straddle `windowStart` is not found: the
-	// in-window reconciliation row is counted as a gap even though its webhook twin
-	// exists, just outside. That over-counts rather than under-counts, which is the
-	// wrong direction for this product's safety bias, so it is a known residual
-	// worth closing — src/digestData.ts widens its match window by a day on each
-	// side for exactly this reason, and this rolling 7-day window can do the same
-	// when someone is willing to re-verify the three other tallies that share this
-	// loop (eventsTotal, the activity buckets, and webhookEvents).
+	// and a pair whose two timestamps straddle `windowStart` would otherwise not be
+	// found: the in-window reconciliation row would be counted as a gap even
+	// though its webhook twin exists, just outside.
+	//
+	// The fix is the same one src/digestData.ts already uses: widen the QUERY below
+	// windowStart by MATCH_MARGIN_MS, so a webhook row just outside the window is
+	// still fetched and can still populate `webhookKeys`. That set exists ONLY to
+	// recognise a twin — a margin row must never be counted as an event that
+	// happened in this window. So every tally below (`eventsTotal`, `webhookEvents`,
+	// the activity buckets, and `reconciliationCandidates`) is gated back to
+	// `occurredAt >= windowStart` before it runs; only `webhookKeys` sees the full
+	// widened fetch. Unlike src/digestData.ts, there is no upper-edge margin here:
+	// this window's upper edge is `now`, not a fixed boundary in the past, so there
+	// is no future-dated twin to widen for.
 	//
 	// Consequence: `webhookEvents` and `reconciliationOnlyEvents` no longer sum to
 	// `eventsTotal` — a matched reconciliation event is counted in neither. That
@@ -639,23 +646,36 @@ export async function getSummary(
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
+			// Widened below windowStart by MATCH_MARGIN_MS (src/eventKind.ts, imported
+			// rather than redeclared) — see the comment above for why, and why every
+			// tally but `webhookKeys` below still gates back to the real windowStart.
+			{ attribute: 'occurredAt', value: windowStart - MATCH_MARGIN_MS, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
 		select: ['occurredAt', 'domain', 'source', 'resourceId', 'state', 'topic'],
 	})) {
-		eventsTotal++;
+		const occurredAt = Number(e.occurredAt);
 		const resourceId = typeof e.resourceId === 'string' ? e.resourceId : undefined;
 		const kind = eventKind({ domain: e.domain as EventDomain, state: e.state as string | undefined, topic: e.topic as string | undefined });
-		if (String(e.source) === 'reconciliation') {
+		const isReconciliation = String(e.source) === 'reconciliation';
+		// Built from the FULL widened fetch, margin rows included: recognising a twin
+		// just outside the window is the entire reason for widening the query. This
+		// set is a recognise-only index, never a tally — nothing below adds to it.
+		if (!isReconciliation && resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
+		// Everything from here down IS a tally, so a margin row (occurredAt before
+		// the real windowStart) is skipped rather than counted as this window's
+		// activity — it was fetched only to be recognisable above, not to be part of
+		// eventsTotal, webhookEvents, or a bucket it does not actually belong to.
+		if (occurredAt < windowStart) continue;
+		eventsTotal++;
+		if (isReconciliation) {
 			// Safety bias: a reconciliation event whose kind cannot be determined is
 			// never treated as a capture gap candidate — see eventKind.ts.
 			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
 		} else {
 			webhookEvents++;
-			if (resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
 		}
-		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((Number(e.occurredAt) - windowStart) / DAY_MS)));
+		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((occurredAt - windowStart) / DAY_MS)));
 		const bucket = buckets[index];
 		bucket.total++;
 		const domain = String(e.domain);
@@ -781,15 +801,6 @@ export const EXCLUDED_CUSTOMER_FIELDS = ['customer name', 'customer email', 'cus
 // auditable (screen spec §5). Deliberately returns NO secrets, token material,
 // internal host/cluster names, or cross-tenant metrics: scopes are the granted
 // OAuth scope strings, and every count is constrained to this shop.
-// The outbox keeps a longer, separate retention than the seven-day ledger purge
-// (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts) — duplicated here as a literal
-// rather than an import, because ledgerTargets.ts pulls in db.ts's `import {
-// databases } from 'harper'`, a module with no resolvable file under plain node
-// (see test/ledgerTargets.test.ts, which hits the same wall). A test in
-// queries.test.ts reads that file's source and pins this literal against the
-// real constant, so the two numbers cannot silently drift apart.
-const DIGEST_OUTBOX_RETENTION_DAYS = 30;
-
 export async function getPrivacy(
 	tables: {
 		events: QueryTable;
@@ -859,6 +870,12 @@ export async function getPrivacy(
 			'refund status',
 			'SKUs, product & variant titles & quantities',
 			'notification email you supply for digests (merchant contact, not customer data)',
+			// A separate, real category from the email above: the record kept once a
+			// digest is built (DigestOutbox, which has no bodyText/bodyHtml column), not
+			// the address used to prepare it. It carries only the period's counts and
+			// its subject line, so it can be stated as holding no order and no
+			// customer data — the reason it can outlive the seven-day ledger.
+			'digest record: counts and subject line only, kept 30 days (no order names or customer data)',
 		],
 		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
 		deletion: {
@@ -868,7 +885,7 @@ export async function getPrivacy(
 			// digest outbox's own, independently-tracked 30-day purge (it outlives the
 			// ledger on purpose — see DigestOutbox in docs/data-inventory.md). Stating
 			// only one would understate retention for the other.
-			automatic: `${WINDOW_DAYS}-day retention purge; digest outbox rows are kept separately for ${DIGEST_OUTBOX_RETENTION_DAYS} days, then removed`,
+			automatic: `${WINDOW_DAYS}-day retention purge; digest records (counts and subject line only, no order names or customer data) are kept separately for ${OUTBOX_RETENTION_DAYS} days, then removed`,
 		},
 		notifications,
 		footprint,

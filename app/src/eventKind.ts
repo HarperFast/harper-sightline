@@ -68,3 +68,25 @@ export function eventKind(event: EventKindFields): EventKind | undefined {
 
 	return undefined;
 }
+
+// How far outside a webhook/reconciliation comparison window to look for the
+// OTHER side of a match. Both callers below build a (resourceId, kind) key from
+// this function's output to decide whether a webhook row and a reconciliation
+// row describe the same real change; this is the tolerance on WHEN, once that
+// decision needs one. One day: large enough to cover the ordinary near-boundary
+// case (an order created late one day and paid early the next — see the two
+// call sites for why the two paths never share an `occurredAt` field for the
+// same change), small enough that the extra rows scanned stay proportional to a
+// day of traffic. This only ever widens MATCHING; it never widens what either
+// caller reports as this window's own activity.
+//
+// The two callers apply it asymmetrically, and that asymmetry is a property of
+// each caller's window shape, not an inconsistency:
+//   - src/digestData.ts's gatherDigestInput describes a CLOSED period —
+//     `periodStart` and `periodEnd` are both real elapsed instants a matching
+//     event could land just outside of — so it widens both edges.
+//   - src/queries.ts's getSummary describes a window whose upper edge is `now`,
+//     the instant the query itself runs. An event's `occurredAt` cannot be in
+//     the future, so there is no twin to find past that edge; only the lower
+//     edge (`windowStart`) is ever widened.
+export const MATCH_MARGIN_MS = 86_400_000;

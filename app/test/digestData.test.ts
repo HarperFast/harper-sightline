@@ -53,6 +53,54 @@ function tables() {
 				requiresFulfillment: true,
 				lastEventAt: NOW - 50 * HOUR,
 			},
+			// The three rows below are awaiting-negative for a reason OTHER than
+			// "not paid" or "already fulfilled" — the reasons `isAwaitingConfirmation`
+			// (src/orders.ts) has its own clauses for. Without them, a predicate change
+			// on either surface that drops one of those clauses but keeps `paidAt !==
+			// undefined && fulfilledAt === undefined` is count-preserving on this
+			// fixture and slips past the equality assertion below undetected. They must
+			// not change any expected count in this file: all three fail
+			// `isAwaitingConfirmation` for the same reason they fail the naive
+			// "paid and not fulfilled" stand-in, so `ordersAwaiting` /
+			// `awaitingConfirmation` stay 2 either way.
+			{
+				// Paid, then called off. `requiresFulfillment: true` so the ONLY reason
+				// this is not awaiting is `cancelledAt`, not a missing eligibility latch.
+				id: 's1:oCancelled',
+				shopId: 's1',
+				orderId: 'oCancelled',
+				orderName: '#1004',
+				paidAt: NOW - 20 * HOUR,
+				requiresFulfillment: true,
+				cancelledAt: NOW - 10 * HOUR,
+				lastEventAt: NOW - 10 * HOUR,
+			},
+			{
+				// A digital order: zero fulfillable units observed, so the
+				// `requiresFulfillment` latch never fires and the field is left
+				// `undefined` — exactly as test/orders.test.ts documents the reducer
+				// actually producing it. This is the `no_fulfillment_expected` lane, and
+				// it must not be mistaken for "fulfilled" or for "awaiting".
+				id: 's1:oDigital',
+				shopId: 's1',
+				orderId: 'oDigital',
+				orderName: '#1005',
+				paidAt: NOW - 15 * HOUR,
+				lastEventAt: NOW - 15 * HOUR,
+			},
+			{
+				// Paid, then fully refunded before any fulfillment was observed.
+				// `requiresFulfillment: true` so the ONLY reason this is not awaiting is
+				// `fullyRefundedAt`.
+				id: 's1:oRefunded',
+				shopId: 's1',
+				orderId: 'oRefunded',
+				orderName: '#1006',
+				paidAt: NOW - 25 * HOUR,
+				requiresFulfillment: true,
+				fullyRefundedAt: NOW - 8 * HOUR,
+				lastEventAt: NOW - 8 * HOUR,
+			},
 		]),
 		findings: new FakeTable('id', [
 			{

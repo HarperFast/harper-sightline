@@ -64,9 +64,13 @@ export interface DigestSubscription {
 	lastBuiltAt?: number;
 }
 
-// No `email` field, deliberately — see schema.graphql's DigestOutbox comment. The
-// address lives on DigestSubscription only, so clearing it or uninstalling really
-// does erase it, as the policy and the Notifications screen both promise.
+// No `email`, `bodyText`, or `bodyHtml` field, deliberately — see schema.graphql's
+// DigestOutbox comment. This is a durable RECORD of a period (subject + counts),
+// not the message: the address lives on DigestSubscription only, so clearing it
+// or uninstalling really does erase it, as the policy and the Notifications
+// screen both promise, and the body is rendered fresh by a future sender
+// (digestText/digestHtml in src/digest.ts) rather than read back from a row that
+// outlives the ledger for 30 days.
 export interface DigestOutbox {
 	id: string; // `${shopId}:${periodStart}`
 	shopId: string;
@@ -74,8 +78,6 @@ export interface DigestOutbox {
 	periodStart: number;
 	periodEnd?: number;
 	subject?: string;
-	bodyText?: string;
-	bodyHtml?: string;
 	// Current-state, and a count of ORDERS: how many were awaiting fulfillment
 	// confirmation when the digest was built (isAwaitingConfirmation, src/orders.ts —
 	// the Overview's awaiting tile, same population). Not period-scoped, and not a

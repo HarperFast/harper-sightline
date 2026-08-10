@@ -211,16 +211,35 @@ test('the html body escapes hostile order names', () => {
 	assert.match(html, /&lt;script&gt;/);
 });
 
+// Previously asserted bodyText/bodyHtml were non-empty. The row no longer
+// renders a body at all — subject and counts are the whole row, kept
+// for 30 days as a record of what the period looked like, never the message —
+// so the assertions below are inverted: absence of the columns is now the
+// correct shape, not a value inside them.
 test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
-	const row = outboxRow(input({ ordersAwaiting: 2, failedAttemptsInPeriod: 1, deliveryGaps: 3 }), NOW);
+	const row = outboxRow(
+		input({
+			ordersAwaiting: 2,
+			failedAttemptsInPeriod: 1,
+			deliveryGaps: 3,
+			topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 30 }],
+		}),
+		NOW,
+	);
 	assert.equal(row.id, `s1.myshopify.com:${Date.parse('2026-08-04T00:00:00Z')}`);
 	assert.equal(row.status, 'pending');
 	assert.equal(row.ordersAwaiting, 2);
 	assert.equal(row.failedAttemptsInPeriod, 1);
 	assert.equal(row.deliveryGaps, 3);
 	assert.equal(row.createdAt, NOW);
-	assert.ok((row.bodyText ?? '').length > 0);
-	assert.ok((row.bodyHtml ?? '').length > 0);
+	assert.ok((row.subject ?? '').length > 0);
+	assert.equal(Object.hasOwn(row, 'bodyText'), false);
+	assert.equal(Object.hasOwn(row, 'bodyHtml'), false);
+	// The row previously carried the order name inside bodyText/bodyHtml. Guard
+	// the serialized row directly — the same shape of guard used below for the
+	// removed `email` field — so a body sneaking back in by any route is caught
+	// even where it would not show up as a `bodyText`/`bodyHtml` key.
+	assert.doesNotMatch(JSON.stringify(row), /#1001/);
 });
 
 // The row previously carried an `email` column, and this test previously asserted

@@ -1304,7 +1304,7 @@ test('the screen states plainly, in its own banner, that digests are stored (for
 	const banner = html.match(/<s-banner tone="info" heading="Digests are being prepared[^"]*">[\s\S]*?<\/s-banner>/);
 	assert.ok(banner, 'the delivery-status banner must be present');
 	assert.match(banner![0], /not yet|will not be sent/i);
-	// The outbox's 30-day retention (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts)
+	// The outbox's 30-day retention (OUTBOX_RETENTION_DAYS, src/retention.ts)
 	// purges a pending, unsent row exactly like a sent one — there is no sender, so
 	// every digest built today is deleted, unsent, in 30 days. The banner must say
 	// so, or a merchant is left assuming a stored digest is kept indefinitely and
@@ -1312,6 +1312,25 @@ test('the screen states plainly, in its own banner, that digests are stored (for
 	// the fix-round report) and must not quietly come back as a softer rewrite.
 	assert.match(banner![0], /30 days/);
 	assert.doesNotMatch(banner![0], /ready when delivery ships|waiting for you/i);
+	// The record kept for those 30 days is not the message (DigestOutbox has no
+	// bodyText/bodyHtml column): it holds only counts and a subject line, never
+	// an order name or customer data. Without this the banner's
+	// "kept for 30 days" would leave a merchant assuming the full message —
+	// including the longest-waiting order list — is what survives that long.
+	assert.match(banner![0], /counts and subject line/i);
+	assert.match(banner![0], /never an order name or customer data/i);
+	// The "What a digest contains" section below the banner lists the order-name
+	// bullet ("The orders that have been waiting longest, by order name"), which
+	// is true of the eventual SENT message but not of the record this banner
+	// just described — the only digest artifact that exists today holds no order
+	// name. A present-tense heading over that list would tell a merchant the
+	// opposite of what the banner above it says, 16 lines apart on the same
+	// screen. Anchored to the section's own heading text, not a bullet's wording,
+	// so a revert to the present-tense heading fails here rather than shipping.
+	const heading = html.match(/<s-section heading="(What a digest[^"]*)">/i)?.[1];
+	assert.ok(heading, 'the digest-contents section heading must be present');
+	assert.match(heading!, /will contain/i);
+	assert.doesNotMatch(heading!, /^What a digest contains$/i);
 });
 
 // Pinned to the instruction paragraph, not the page. Matching /clear|remove|empty/

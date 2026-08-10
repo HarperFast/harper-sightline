@@ -183,6 +183,15 @@ export function digestSubject(input: DigestInput): string {
 const BOUNDARY =
 	'These are observations of your Shopify data. An order with no observed confirmation does not prove that a warehouse or carrier failed — it means Shopify has not shown the expected fulfillment confirmation yet.';
 
+// Intentionally uncalled outside its own tests. `outboxRow` (below) stores only
+// `subject` and the count columns — never a rendered body: the ledger
+// purges at seven days, so a stored digest outliving that window is worth
+// keeping, but a stored MESSAGE naming orders for 30 days is not. This
+// function's caller is the sender that does not exist yet; when one ships, it
+// renders the body fresh from a `DigestInput` rather than reading one back from
+// a row. Its tests in test/digest.test.ts are what keep this copy — the
+// boundary paragraph, the presence/absence split, the escaping — from rotting
+// while it waits for that caller. Do not delete it as dead code.
 export function digestText(input: DigestInput): string {
 	const lines: string[] = [];
 	lines.push(`Sightline digest for ${input.shopId}`);
@@ -222,6 +231,11 @@ export function digestText(input: DigestInput): string {
 	return lines.join('\n');
 }
 
+// Intentionally uncalled outside its own tests, for the same reason as
+// `digestText` immediately above: `outboxRow` stores no body, so this is the
+// HTML half of the copy waiting for a sender that does not exist yet. Do not
+// delete it as dead code — its tests are what keep the escaping and the copy
+// from rotting until that caller arrives.
 export function digestHtml(input: DigestInput): string {
 	const rows = input.topAwaiting
 		.map((order) => `<tr><td>${esc(label(order))}</td><td>waiting ${esc(age(order.ageHours))}</td></tr>`)
@@ -255,6 +269,12 @@ export function digestHtml(input: DigestInput): string {
 // deletes the subscription, and copies on outbox rows would have outlived that
 // promise until the 30-day purge. A sender, when one exists, reads the address
 // from the subscription at the moment it sends — the only moment it needs it.
+//
+// Also renders NO body, by design. `subject` and the counts below are the whole
+// row: they are derived from the period and its counts only, so the row can
+// outlive the seven-day ledger for 30 days without naming an order or holding
+// customer data. `digestText`/`digestHtml` still exist for a future sender to
+// call at send time — see the comments above them.
 export function outboxRow(input: DigestInput, now: number): DigestOutbox {
 	return {
 		id: `${input.shopId}:${input.periodStart}`,
@@ -263,8 +283,6 @@ export function outboxRow(input: DigestInput, now: number): DigestOutbox {
 		periodStart: input.periodStart,
 		periodEnd: input.periodEnd,
 		subject: digestSubject(input),
-		bodyText: digestText(input),
-		bodyHtml: digestHtml(input),
 		ordersAwaiting: input.ordersAwaiting,
 		failedAttemptsInPeriod: input.failedAttemptsInPeriod,
 		deliveryGaps: input.deliveryGaps,

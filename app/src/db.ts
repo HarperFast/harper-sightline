@@ -1,4 +1,4 @@
-import { databases, type Table } from 'harper';
+import { databases, type Table } from '#harper';
 import type {
 	Shop,
 	ShopCredential,

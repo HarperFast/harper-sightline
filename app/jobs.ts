@@ -20,8 +20,9 @@ import { writeEventWithSkus } from './src/eventSkus.ts';
 import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/detector.ts';
-import { purgeExpired, type PurgeResult } from './src/retention.ts';
-import { RETENTION_TARGETS, OUTBOX_RETENTION_DAYS, OUTBOX_RETENTION_TARGETS } from './src/ledgerTargets.ts';
+import { purgeExpired, OUTBOX_RETENTION_DAYS, type PurgeResult } from './src/retention.ts';
+import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/ledgerTargets.ts';
+import { runPurgeCycle } from './src/purgeCycle.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
 import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
@@ -236,53 +237,13 @@ export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
 	return purgeExpired(OUTBOX_RETENTION_TARGETS, now, OUTBOX_RETENTION_DAYS);
 }
 
+// The two sweeps' independence (a ledger-purge failure must never stop the
+// outbox sweep, and vice versa) lives in src/purgeCycle.ts, deps-injected so it
+// is unit-testable without the Harper runtime — jobs.ts just wires the real
+// purge functions, log, and metrics, and keeps the ticker.
 function purgeTick(): void {
 	void purgeTicker.run(async () => {
-		try {
-			const r = await runPurge();
-			metrics.inc(M.purgeDeleted, r.deleted);
-			if (r.failures.length) metrics.inc(M.purgeFailure, r.failures.length);
-			if (r.deleted) {
-				const perTable = Object.fromEntries(
-					Object.entries(r.byTable)
-						.filter(([, x]) => x.deleted)
-						.map(([t, x]) => [t, x.deleted]),
-				);
-				log('trace', 'purge.tick', { deleted: r.deleted, perTable });
-			}
-			// Residue = expired rows still present after a run (purge lag). Alertable
-			// via this warn line; the ops.snapshot also reflects it via backlog/age.
-			if (r.residue) log('warn', 'purge.residue', { residue: r.residue });
-			if (r.failures.length) log('warn', 'purge.failures', { count: r.failures.length, failures: r.failures });
-		} catch (e: unknown) {
-			metrics.inc(M.purgeError);
-			log('error', 'purge.error', { message: (e as Error).message });
-		}
-
-		// The outbox sweep gets its OWN try/catch rather than sharing the ledger
-		// purge's. Sharing one meant a ledger-purge failure skipped the outbox
-		// entirely on that tick — and since a persistent ledger failure repeats
-		// every tick, the 30-day digest retention this app discloses publicly
-		// would quietly stop running while the only symptom logged was
-		// `purge.error` about a different table. The two sweeps are independent
-		// (different tables, different cutoffs), so a failure in one must not
-		// decide whether the other runs. Same metrics as the ledger purge: the
-		// counters are per-purge-activity, not per-table, so ops.snapshot's tally
-		// reflects outbox work instead of showing nothing for it.
-		try {
-			const outbox = await runOutboxPurge();
-			metrics.inc(M.purgeDeleted, outbox.deleted);
-			if (outbox.failures.length) metrics.inc(M.purgeFailure, outbox.failures.length);
-			if (outbox.deleted) log('trace', 'purge.outbox', { deleted: outbox.deleted });
-			// Residue on the outbox means the same thing it means for the ledger —
-			// expired rows still present after a run (purge lag) — and was the one
-			// signal of the two sweeps that had no log line at all.
-			if (outbox.residue) log('warn', 'purge.outbox.residue', { residue: outbox.residue });
-			if (outbox.failures.length) log('warn', 'purge.outbox.failures', { count: outbox.failures.length, failures: outbox.failures });
-		} catch (e: unknown) {
-			metrics.inc(M.purgeError);
-			log('error', 'purge.outbox.error', { message: (e as Error).message });
-		}
+		await runPurgeCycle({ purge: runPurge, outboxPurge: runOutboxPurge, log, metrics }, Date.now());
 	});
 }
 
