@@ -97,9 +97,17 @@ function tables() {
 				receivedAt: PERIOD_START + HOUR,
 			},
 			{
+				// resourceId/topic/state are what eventKind reads to determine a kind
+				// (and what the caller needs to build a (resourceId, kind) key) — every
+				// real reconciliation row carries them (src/reconcile.ts's reconEvent
+				// always sets resourceId), so a fixture row without them is not a
+				// realistic "no matching webhook" gap, it is an untestable one.
 				eventId: 'recon:s1:o9:paid',
 				shopId: 's1',
 				domain: 'order',
+				topic: 'orders/paid',
+				resourceId: 'o9',
+				state: 'paid',
 				source: 'reconciliation',
 				occurredAt: PERIOD_START + 2 * HOUR,
 				receivedAt: PERIOD_START + 2 * HOUR,
@@ -108,6 +116,9 @@ function tables() {
 				eventId: 'recon:s1:oOut:paid',
 				shopId: 's1',
 				domain: 'order',
+				topic: 'orders/paid',
+				resourceId: 'oOut',
+				state: 'paid',
 				source: 'reconciliation',
 				occurredAt: PERIOD_START - 5 * DAY,
 				receivedAt: PERIOD_START - 5 * DAY,
@@ -116,6 +127,9 @@ function tables() {
 				eventId: 'recon:s2:o9:paid',
 				shopId: 's2',
 				domain: 'order',
+				topic: 'orders/paid',
+				resourceId: 'o9',
+				state: 'paid',
 				source: 'reconciliation',
 				occurredAt: PERIOD_START + 2 * HOUR,
 				receivedAt: PERIOD_START + 2 * HOUR,
@@ -182,6 +196,61 @@ test('dead-lettered deliveries make the recorder unhealthy', async () => {
 	// 1, not 2: the fixture's other dead letter belongs to s2 and must not be
 	// counted into this shop's total.
 	assert.equal(input.deadLettered, 1);
+});
+
+test('a webhook event and its reconciliation twin for the same order and change are not a delivery gap', async () => {
+	// This is the exact defect a reviewer proved empirically: a healthy webhook
+	// delivery followed by the next reconcile sweep's synthesized event for the
+	// SAME change used to count as "the webhook never arrived". It must count 0.
+	const t = tables();
+	await t.events.put({
+		eventId: 's1:webhook-o10',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o10',
+		state: 'paid',
+		source: 'webhook',
+		occurredAt: PERIOD_START + HOUR,
+		receivedAt: PERIOD_START + HOUR,
+	});
+	await t.events.put({
+		eventId: 'recon:s1:o10:paid',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o10',
+		state: 'paid',
+		source: 'reconciliation',
+		// The order's own timestamp, not the sweep time — this is what keeps a
+		// matching pair in the same period without any special-casing.
+		occurredAt: PERIOD_START + 2 * HOUR,
+		receivedAt: PERIOD_START + 2 * HOUR,
+	});
+	const input = await gatherDigestInput(t, 's1', 'daily', PERIOD_START, PERIOD_END, NOW);
+	// 1, not 2: o10's reconciliation event is matched by its webhook twin, so only
+	// o9 (fixture, no webhook counterpart) remains a gap.
+	assert.equal(input.deliveryGaps, 1, 'a matched reconciliation event is not counted alongside the genuine o9 gap');
+});
+
+test('a reconciliation event with no matching webhook event is still counted as a delivery gap', async () => {
+	// Proves the fix did not simply zero the number out: a genuine gap (no
+	// webhook counterpart at all) must still be reported.
+	const t = tables();
+	await t.events.put({
+		eventId: 'recon:s1:o11:cancelled',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/cancelled',
+		resourceId: 'o11',
+		state: 'voided',
+		source: 'reconciliation',
+		occurredAt: PERIOD_START + 3 * HOUR,
+		receivedAt: PERIOD_START + 3 * HOUR,
+	});
+	const input = await gatherDigestInput(t, 's1', 'daily', PERIOD_START, PERIOD_END, NOW);
+	// 2: the fixture's o9 gap plus this new o11 gap, neither matched by a webhook.
+	assert.equal(input.deliveryGaps, 2);
 });
 
 test('a shop with nothing at all gathers a clean, zeroed input', async () => {

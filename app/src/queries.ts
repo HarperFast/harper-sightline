@@ -1,4 +1,5 @@
-import type { Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
+import type { EventDomain, Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
+import { eventKind } from './eventKind.ts';
 import {
 	clampLimit,
 	decodeCursor,
@@ -592,37 +593,67 @@ export async function getSummary(
 	const windowStart = now - WINDOW_MS;
 	const buckets = emptyBuckets(windowStart);
 	let eventsTotal = 0;
-	// Capture-integrity tally. An event whose only source is a reconciliation sweep
-	// is one that did NOT arrive as a webhook — the failure class merchants cannot
-	// otherwise see. It is evidence about OUR capture path, not proof about anyone
-	// else's: every app's subscription is independent, and our own downtime is an
-	// alternative explanation. The UI copy carries that boundary.
+	// Capture-integrity tally. `webhookEvents` is a plain source tally — every row
+	// whose `source` is not 'reconciliation' — and is evidence about what arrived.
+	// `reconciliationOnlyEvents` used to be the mirror-image tally (every row WITH
+	// source 'reconciliation'), but that is not evidence a webhook failed: the
+	// reconcile sweep (jobs.ts reconcileShopWithToken) is a rolling resync that
+	// writes a synthesized event for every order it touches unconditionally, so a
+	// healthy webhook delivery is routinely followed by a reconciliation event for
+	// the SAME change on the next sweep — both rows persist (their event ids can
+	// never collide) and the old tally counted that as a capture gap every time.
+	// `reconciliationOnlyEvents` now counts only a reconciliation event whose
+	// (resourceId, kind) has NO webhook-sourced counterpart in this same window —
+	// see src/eventKind.ts for how "kind" is derived and why that comparison is
+	// the safe one. A matching pair falls in the same window naturally: both a
+	// webhook event and its reconciliation twin carry the order's OWN timestamp as
+	// occurredAt (synthesizeEvents uses the order's created/updated/cancelled time,
+	// never the sweep time), so they cannot be pulled apart by drifting into
+	// different windows.
+	//
+	// Consequence: `webhookEvents` and `reconciliationOnlyEvents` no longer sum to
+	// `eventsTotal` — a matched reconciliation event is counted in neither. That
+	// is intentional: it is real evidence the webhook path DID work, so it must
+	// not inflate the gap count, and it is not itself a webhook-sourced row, so it
+	// must not inflate that count either. `webhookEvents` remains a CATCH-ALL over
+	// `source` (anything not 'reconciliation'), not a test for the literal
+	// 'webhook' value, for the same reason as before: EventSource has exactly two
+	// values today, so it is a harmless simplification while this number links
+	// nowhere. Give it a link into a filtered event list and this becomes a real
+	// defect — add the explicit `=== 'webhook'` branch and a third bucket then.
 	let webhookEvents = 0;
-	let reconciliationOnlyEvents = 0;
+	const webhookKeys = new Set<string>();
+	const reconciliationCandidates: Array<{ resourceId: string; kind: ReturnType<typeof eventKind> }> = [];
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
 			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
-		select: ['occurredAt', 'domain', 'source'],
+		select: ['occurredAt', 'domain', 'source', 'resourceId', 'state', 'topic'],
 	})) {
 		eventsTotal++;
-		// `else` is a CATCH-ALL, not a test for 'webhook': any future `source` value
-		// would be silently counted as webhook-observed. That is tolerable only while
-		// this number is a denominator on the integrity panel and links nowhere —
-		// EventSource has exactly two values today, and the two counts sum to the
-		// total, which is the property the panel relies on. Give `webhookEvents` a link
-		// into a filtered event list and this becomes a real defect (a count that
-		// opens a smaller set than it claims): add the explicit `=== 'webhook'` branch
-		// and a third bucket at that point, not after.
-		if (String(e.source) === 'reconciliation') reconciliationOnlyEvents++;
-		else webhookEvents++;
+		const resourceId = typeof e.resourceId === 'string' ? e.resourceId : undefined;
+		const kind = eventKind({ domain: e.domain as EventDomain, state: e.state as string | undefined, topic: e.topic as string | undefined });
+		if (String(e.source) === 'reconciliation') {
+			// Safety bias: a reconciliation event whose kind cannot be determined is
+			// never treated as a capture gap candidate — see eventKind.ts.
+			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
+		} else {
+			webhookEvents++;
+			if (resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
+		}
 		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((Number(e.occurredAt) - windowStart) / DAY_MS)));
 		const bucket = buckets[index];
 		bucket.total++;
 		const domain = String(e.domain);
 		if (domain in bucket) bucket[domain]++;
+	}
+	// Second pass over the already-fetched candidates, not a second query: counts
+	// only a reconciliation kind absent from the webhook set built above.
+	let reconciliationOnlyEvents = 0;
+	for (const c of reconciliationCandidates) {
+		if (!webhookKeys.has(`${c.resourceId}:${c.kind}`)) reconciliationOnlyEvents++;
 	}
 	const deadLettered = await countWhere(tables.deliveries, [
 		{ attribute: 'shopId', value: shopId },

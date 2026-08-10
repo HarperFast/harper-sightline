@@ -1127,6 +1127,63 @@ test('the summary counts events observed by direct check rather than by webhook'
 	assert.ok(integrity.webhookEvents >= 1);
 });
 
+test('a webhook event and its reconciliation twin for the same order and change are not counted as reconciliation-only', async () => {
+	// This is the exact defect a reviewer proved empirically: reconcileShopWithToken
+	// is a rolling resync, so a healthy webhook delivery is routinely followed by a
+	// matching reconciliation event for the SAME change on the next sweep. Webhook
+	// and reconciliation event ids can never collide, so both rows persist — and the
+	// old tally (source === 'reconciliation') counted the reconciliation twin as a
+	// capture failure even though the webhook plainly arrived. This test is the one
+	// that returns 1 (wrongly) on the pre-fix implementation.
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	await events.put({
+		eventId: 's1:webhook-o10',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o10',
+		state: 'paid',
+		source: 'webhook',
+		occurredAt: NOW - 3000,
+		receivedAt: NOW - 3000,
+	});
+	await events.put({
+		eventId: 'recon:s1:o10:paid',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o10',
+		state: 'paid',
+		source: 'reconciliation',
+		// The order's own timestamp, not the sweep time — the reason a matching
+		// pair lands in the same window without any special-casing.
+		occurredAt: NOW - 2000,
+		receivedAt: NOW - 2000,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 0);
+});
+
+test('a reconciliation event with no matching webhook event is still counted as reconciliation-only', async () => {
+	// Proves the fix did not simply zero the number out: a genuine capture gap (no
+	// webhook counterpart at all, for a different order/kind than any webhook row)
+	// must still be reported.
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	await events.put({
+		eventId: 'recon:s1:o11:cancelled',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/cancelled',
+		resourceId: 'o11',
+		state: 'voided',
+		source: 'reconciliation',
+		occurredAt: NOW - 3000,
+		receivedAt: NOW - 3000,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 1);
+});
+
 test('integrity counts are scoped to the shop', async () => {
 	const { events, projections, findings, deliveries, shops } = fixtures();
 	await events.put({

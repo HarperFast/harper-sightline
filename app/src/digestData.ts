@@ -1,7 +1,8 @@
-import type { DigestCadence, GapFinding, OrderProjection } from './model.ts';
+import type { DigestCadence, EventDomain, GapFinding, OrderProjection } from './model.ts';
 import type { QueryTable } from './queries.ts';
 import type { DigestInput, DigestOrderRef } from './digest.ts';
 import { DETECTOR_FAILED } from './detector.ts';
+import { eventKind } from './eventKind.ts';
 import { ageHours, isAwaitingConfirmation } from './orders.ts';
 
 // Gathering the digest's inputs. Split from digest.ts because rendering changes
@@ -39,18 +40,48 @@ export async function gatherDigestInput(
 
 	// Changes that reached us only through a direct Admin API check — the webhook
 	// never arrived. Evidence about OUR capture path only (see the integrity copy).
-	let deliveryGaps = 0;
-	for await (const _row of tables.events.search({
+	//
+	// A reconciliation-sourced row alone is NOT that evidence: reconcileShopWithToken
+	// (jobs.ts) is a rolling resync, not a gap detector — it writes a synthesized
+	// event for every order it touches on every sweep, unconditionally. Webhook and
+	// reconciliation event ids can never collide, so a healthy webhook delivery is
+	// routinely followed by a matching reconciliation event for the SAME change on
+	// the next sweep, and both rows persist. Counting that pair as a gap would tell
+	// a merchant their webhook failed when it did not — the exact false alarm the
+	// safety bias forbids (see src/eventKind.ts). A reconciliation event counts as a
+	// gap only when no webhook-sourced event for the same (resourceId, kind) also
+	// landed in this period. The two fall in the same period naturally: both carry
+	// the order's OWN occurredAt (synthesizeEvents uses the order's created/
+	// updated/cancelled time, never the sweep time), never the moment the sweep ran.
+	const webhookKeys = new Set<string>();
+	const reconciliationCandidates: Array<{ resourceId: string; kind: ReturnType<typeof eventKind> }> = [];
+	for await (const row of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'source', value: 'reconciliation' },
 			{ attribute: 'occurredAt', value: periodStart, comparator: 'greater_than_equal' },
 			{ attribute: 'occurredAt', value: periodEnd, comparator: 'less_than' },
 		],
 		operator: 'and',
-		select: ['eventId'],
+		select: ['resourceId', 'domain', 'state', 'topic', 'source'],
 	})) {
-		deliveryGaps++;
+		const resourceId = typeof row.resourceId === 'string' ? row.resourceId : undefined;
+		const kind = eventKind({
+			domain: row.domain as EventDomain,
+			state: row.state as string | undefined,
+			topic: row.topic as string | undefined,
+		});
+		if (String(row.source) === 'reconciliation') {
+			// Safety bias: a reconciliation event whose kind cannot be determined is
+			// never treated as a capture-gap candidate.
+			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
+		} else if (resourceId !== undefined && kind !== undefined) {
+			webhookKeys.add(`${resourceId}:${kind}`);
+		}
+	}
+	// Second pass over the already-fetched candidates, not a second query.
+	let deliveryGaps = 0;
+	for (const c of reconciliationCandidates) {
+		if (!webhookKeys.has(`${c.resourceId}:${c.kind}`)) deliveryGaps++;
 	}
 
 	// Recorder health, so a digest can never report "all quiet" from an incomplete
