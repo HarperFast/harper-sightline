@@ -253,6 +253,92 @@ test('a reconciliation event with no matching webhook event is still counted as 
 	assert.equal(input.deliveryGaps, 2);
 });
 
+// A pair whose two observations carry timestamps from different moments, straddling
+// a period edge. Only the events table matters here, so the other three are empty:
+// an isolated pair with nothing else in scope means the asserted 0 is about this
+// pair and nothing else.
+function eventsOnly(rows: Array<Record<string, unknown>>) {
+	return {
+		projections: new FakeTable('id', []),
+		findings: new FakeTable('id', []),
+		events: new FakeTable('eventId', rows),
+		deliveries: new FakeTable('id', []),
+	};
+}
+
+function paidPair(resourceId: string, reconAt: number, webhookAt: number): Array<Record<string, unknown>> {
+	return [
+		{
+			// synthesizeEvents (src/reconcile.ts) dates a `paid` event from the order's
+			// createdAt, not from the payment.
+			eventId: `recon:s1:${resourceId}:paid`,
+			shopId: 's1',
+			domain: 'order',
+			topic: 'orders/paid',
+			resourceId,
+			state: 'paid',
+			source: 'reconciliation',
+			occurredAt: reconAt,
+			receivedAt: reconAt,
+		},
+		{
+			// normalizeOrder dates it from the payload's updated_at — the payment.
+			eventId: `s1:webhook-${resourceId}`,
+			shopId: 's1',
+			domain: 'order',
+			topic: 'orders/paid',
+			resourceId,
+			state: 'paid',
+			source: 'webhook',
+			occurredAt: webhookAt,
+			receivedAt: webhookAt,
+		},
+	];
+}
+
+// The concrete case: an order CREATED 2026-08-03T23:55Z and PAID 2026-08-04T00:05Z,
+// webhook delivered normally. The reconciliation twin carries the creation time, so
+// it lands in the 08-03 period while its webhook twin lands ten minutes into 08-04.
+// Before the match margin the pair never collided, and the 08-03 digest existed
+// solely to tell the merchant a webhook had not arrived when it had.
+test('a pair split across the END of the period still collides, so a normal delivery is not reported as a gap', async () => {
+	const periodStart = Date.parse('2026-08-03T00:00:00Z');
+	const periodEnd = Date.parse('2026-08-04T00:00:00Z');
+	const t = eventsOnly(paidPair('o20', Date.parse('2026-08-03T23:55:00Z'), Date.parse('2026-08-04T00:05:00Z')));
+	const input = await gatherDigestInput(t, 's1', 'daily', periodStart, periodEnd, NOW);
+	assert.equal(input.deliveryGaps, 0, 'the webhook twin is ten minutes past periodEnd, not missing');
+});
+
+// The mirror case, which `refunded` produces routinely: the reconciliation twin is
+// dated from the order's updatedAt and so lands LATER than the webhook's
+// processed_at. Same defect, other edge.
+test('a pair split across the START of the period still collides', async () => {
+	const periodStart = Date.parse('2026-08-04T00:00:00Z');
+	const periodEnd = Date.parse('2026-08-05T00:00:00Z');
+	const t = eventsOnly(paidPair('o21', Date.parse('2026-08-04T00:05:00Z'), Date.parse('2026-08-03T23:55:00Z')));
+	const input = await gatherDigestInput(t, 's1', 'daily', periodStart, periodEnd, NOW);
+	assert.equal(input.deliveryGaps, 0, 'the webhook twin is ten minutes before periodStart, not missing');
+});
+
+// The margin widens MATCHING only. A reconciliation event that is itself outside the
+// period — but now inside the widened query — must not be reported: before the
+// widening the query excluded it, so this is the property the code, not the query,
+// has to enforce from here on.
+test('a reconciliation event inside the match margin but outside the period is not reported as a gap', async () => {
+	const periodStart = Date.parse('2026-08-04T00:00:00Z');
+	const periodEnd = Date.parse('2026-08-05T00:00:00Z');
+	const t = eventsOnly([
+		// Two hours BEFORE the period, unmatched. And two hours after it, likewise.
+		...paidPair('oBefore', Date.parse('2026-08-03T22:00:00Z'), Date.parse('2026-08-03T22:00:00Z')).slice(0, 1),
+		...paidPair('oAfter', Date.parse('2026-08-05T02:00:00Z'), Date.parse('2026-08-05T02:00:00Z')).slice(0, 1),
+		// One genuinely in-period unmatched reconciliation event, so the assertion
+		// below distinguishes "the margin is excluded" from "nothing counts at all".
+		...paidPair('oIn', Date.parse('2026-08-04T12:00:00Z'), Date.parse('2026-08-04T12:00:00Z')).slice(0, 1),
+	]);
+	const input = await gatherDigestInput(t, 's1', 'daily', periodStart, periodEnd, NOW);
+	assert.equal(input.deliveryGaps, 1, 'only the in-period reconciliation event, not the two in the margin');
+});
+
 test('a shop with nothing at all gathers a clean, zeroed input', async () => {
 	const input = await gatherDigestInput(tables(), 'unknown.myshopify.com', 'daily', PERIOD_START, PERIOD_END, NOW);
 	assert.equal(input.unconfirmed, 0);

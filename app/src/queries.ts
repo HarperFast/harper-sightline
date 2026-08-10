@@ -605,11 +605,23 @@ export async function getSummary(
 	// `reconciliationOnlyEvents` now counts only a reconciliation event whose
 	// (resourceId, kind) has NO webhook-sourced counterpart in this same window —
 	// see src/eventKind.ts for how "kind" is derived and why that comparison is
-	// the safe one. A matching pair falls in the same window naturally: both a
-	// webhook event and its reconciliation twin carry the order's OWN timestamp as
-	// occurredAt (synthesizeEvents uses the order's created/updated/cancelled time,
-	// never the sweep time), so they cannot be pulled apart by drifting into
-	// different windows.
+	// the safe one.
+	//
+	// Matching is BEST-EFFORT within the window, not a guarantee. The two paths read
+	// `occurredAt` from DIFFERENT fields for every one of the four kinds — webhook
+	// `paid`/`cancelled` from the order's updated_at against reconciliation's
+	// createdAt and cancelledAt, webhook `fulfilled` from the fulfillment's
+	// updated_at against the order's fulfilledAt, webhook `refunded` from the
+	// refund's processed_at against the order's updatedAt (src/normalize.ts vs
+	// src/reconcile.ts). So one real change is observed at two different instants,
+	// and a pair whose two timestamps straddle `windowStart` is not found: the
+	// in-window reconciliation row is counted as a gap even though its webhook twin
+	// exists, just outside. That over-counts rather than under-counts, which is the
+	// wrong direction for this product's safety bias, so it is a known residual
+	// worth closing — src/digestData.ts widens its match window by a day on each
+	// side for exactly this reason, and this rolling 7-day window can do the same
+	// when someone is willing to re-verify the three other tallies that share this
+	// loop (eventsTotal, the activity buckets, and webhookEvents).
 	//
 	// Consequence: `webhookEvents` and `reconciliationOnlyEvents` no longer sum to
 	// `eventsTotal` — a matched reconciliation event is counted in neither. That
