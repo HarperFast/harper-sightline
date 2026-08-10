@@ -76,9 +76,18 @@ export interface DigestOutbox {
 	subject?: string;
 	bodyText?: string;
 	bodyHtml?: string;
-	unconfirmed?: number;
+	// Current-state, and a count of ORDERS: how many were awaiting fulfillment
+	// confirmation when the digest was built (isAwaitingConfirmation, src/orders.ts —
+	// the Overview's awaiting tile, same population). Not period-scoped, and not a
+	// findings tally: the name is deliberately not `unconfirmed`, which in this
+	// codebase means a GapFinding STATUS (see FindingStatus above, and
+	// getSummary's findings.unconfirmed) — a different population in a different
+	// tense, and one order can produce two findings.
+	ordersAwaiting?: number;
+	// Scoped to this row's period, [periodStart, periodEnd).
 	failedAttempts?: number;
 	deliveryGaps?: number;
+	// Recorder health at build time, current-state like ordersAwaiting.
 	recorderHealthy?: boolean;
 	status: DigestStatus;
 	createdAt: number;

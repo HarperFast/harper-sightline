@@ -62,16 +62,27 @@ export interface DigestOrderRef {
 	ageHours: number;
 }
 
+// Field names carry the tense, because these numbers do not share one. `outboxRow`
+// copies them onto the row unchanged — the interface and the DigestOutbox column
+// have the SAME name on purpose, so there is no translation step in the middle for
+// someone to reconnect wrongly later.
 export interface DigestInput {
 	shopId: string;
 	cadence: DigestCadence;
 	periodStart: number;
 	periodEnd: number;
-	unconfirmed: number;
+	// CURRENT-STATE, and a count of ORDERS awaiting fulfillment confirmation
+	// (isAwaitingConfirmation, src/orders.ts) — every entry of which is in
+	// `topAwaiting` before it is capped. Not `unconfirmed`: that name means a
+	// GapFinding status elsewhere in this codebase, and one order can carry two
+	// findings, so the two are different populations in different tenses.
+	ordersAwaiting: number;
+	// Scoped to [periodStart, periodEnd).
 	failedAttempts: number;
 	deliveryGaps: number;
 	recorderHealthy: boolean;
 	deadLettered: number;
+	// Current-state, like `ordersAwaiting`, and drawn from the same iteration.
 	topAwaiting: DigestOrderRef[];
 }
 
@@ -79,7 +90,7 @@ export interface DigestInput {
 // trains people to ignore the channel, and the app itself is always available for
 // a health check.
 //
-// `unconfirmed` is now a current-state count of orders awaiting confirmation, not
+// `ordersAwaiting` is a current-state count of orders awaiting confirmation, not
 // a count of findings detected in the window, and that changes WHEN digests
 // appear: an order that stays awaiting for a fortnight makes every daily digest in
 // that fortnight non-empty. That is the right behavior — an order still waiting is
@@ -89,7 +100,7 @@ export interface DigestInput {
 // digest that says "nothing is wrong"; it was never "do not mention an unresolved
 // problem twice".
 export function hasSomethingToSay(input: DigestInput): boolean {
-	return input.unconfirmed > 0 || input.failedAttempts > 0 || input.deliveryGaps > 0 || !input.recorderHealthy;
+	return input.ordersAwaiting > 0 || input.failedAttempts > 0 || input.deliveryGaps > 0 || !input.recorderHealthy;
 }
 
 function day(ms: number): string {
@@ -152,7 +163,7 @@ export function digestSubject(input: DigestInput): string {
 	if (!input.recorderHealthy) lead = 'Sightline needs attention';
 	else if (input.failedAttempts > 0)
 		lead = `${plural(input.failedAttempts, 'fulfillment attempt', 'fulfillment attempts')} did not succeed`;
-	else if (input.unconfirmed > 0) lead = `${plural(input.unconfirmed, 'order', 'orders')} awaiting confirmation now`;
+	else if (input.ordersAwaiting > 0) lead = `${plural(input.ordersAwaiting, 'order', 'orders')} awaiting confirmation now`;
 	else if (input.deliveryGaps > 0) lead = `${plural(input.deliveryGaps, 'change', 'changes')} found by direct check`;
 	else lead = 'Nothing to report';
 	return headerSafe(`Sightline: ${lead} (${window})`);
@@ -179,7 +190,7 @@ export function digestText(input: DigestInput): string {
 	// the window named above. Without the labels a reader would take all three for
 	// the same period, which is how a findings count came to be read as an orders
 	// count in the first place.
-	lines.push(`Orders awaiting fulfillment confirmation, as of now: ${input.unconfirmed}`);
+	lines.push(`Orders awaiting fulfillment confirmation, as of now: ${input.ordersAwaiting}`);
 	lines.push(`Fulfillment attempts Shopify recorded as unsuccessful in this window: ${input.failedAttempts}`);
 	lines.push(`Changes found by direct check rather than webhook, in this window: ${input.deliveryGaps}`);
 	if (input.topAwaiting.length > 0) {
@@ -209,7 +220,7 @@ export function digestHtml(input: DigestInput): string {
 			: `<p><strong>Recorder needs attention:</strong> ${esc(plural(input.deadLettered, 'delivery', 'deliveries'))} could not be processed, so the numbers below may be incomplete.</p>`,
 		'<ul>',
 		// Same tense labels as the text body — see digestText.
-		`<li>Orders awaiting fulfillment confirmation, as of now: ${input.unconfirmed}</li>`,
+		`<li>Orders awaiting fulfillment confirmation, as of now: ${input.ordersAwaiting}</li>`,
 		`<li>Fulfillment attempts Shopify recorded as unsuccessful in this window: ${input.failedAttempts}</li>`,
 		`<li>Changes found by direct check rather than webhook, in this window: ${input.deliveryGaps}</li>`,
 		'</ul>',
@@ -240,7 +251,7 @@ export function outboxRow(input: DigestInput, now: number): DigestOutbox {
 		subject: digestSubject(input),
 		bodyText: digestText(input),
 		bodyHtml: digestHtml(input),
-		unconfirmed: input.unconfirmed,
+		ordersAwaiting: input.ordersAwaiting,
 		failedAttempts: input.failedAttempts,
 		deliveryGaps: input.deliveryGaps,
 		recorderHealthy: input.recorderHealthy,

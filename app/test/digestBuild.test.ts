@@ -79,7 +79,7 @@ test('a subscription that should build, with something to report, does', async (
 	assert.equal(result.skippedQuiet, 0);
 	const row = await outboxes.get(`s1:${PERIOD_START}`);
 	assert.equal(row?.status, 'pending');
-	assert.equal(row?.unconfirmed, 1);
+	assert.equal(row?.ordersAwaiting, 1);
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, PERIOD_START);
 });
 
@@ -145,13 +145,13 @@ test('a rebuild of the same period upserts rather than duplicating', async () =>
 	const first = await runDigestBuild(NOW, deps);
 	assert.equal(first.built, 1);
 	assert.equal(outboxes.rows.size, 1);
-	assert.equal((await outboxes.get(`s1:${PERIOD_START}`))?.unconfirmed, 1);
+	assert.equal((await outboxes.get(`s1:${PERIOD_START}`))?.ordersAwaiting, 1);
 
 	// Simulate a second worker thread (or a manual rebuild) that reads the
 	// subscription before the first tick's patch lands — the realistic race the
 	// deterministic outbox id exists to make safe. A second awaiting order (with its
 	// own finding) changes what this period has to report, so the overwrite is
-	// observable: unconfirmed counts ORDERS awaiting, so a second finding on its own
+	// observable: ordersAwaiting counts ORDERS awaiting, so a second finding on its own
 	// would leave the number at 1 and prove nothing about the upsert.
 	await subscriptions.patch('s1', { lastBuiltAt: PERIOD_START - DAY });
 	await findings.put(unconfirmedFinding('s1', 'o2'));
@@ -161,7 +161,7 @@ test('a rebuild of the same period upserts rather than duplicating', async () =>
 	assert.equal(second.built, 1);
 	// Still exactly one row for this shop and period — overwritten, not appended.
 	assert.equal(outboxes.rows.size, 1);
-	assert.equal((await outboxes.get(`s1:${PERIOD_START}`))?.unconfirmed, 2);
+	assert.equal((await outboxes.get(`s1:${PERIOD_START}`))?.ordersAwaiting, 2);
 });
 
 // Edit that breaks this: removing the try/catch around one subscription's work

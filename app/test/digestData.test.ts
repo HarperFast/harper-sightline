@@ -170,8 +170,8 @@ test('counts are scoped to the shop and to the period', async () => {
 	// TWO awaiting orders (oA, oB), not the THREE unconfirmed findings detected in
 	// the period — oB carries both a confirmation finding and a failed-attempt
 	// finding, and counting findings would report it twice as an "order".
-	assert.equal(input.unconfirmed, 2, 'orders awaiting confirmation, one entry per order');
-	assert.equal(input.topAwaiting.length, input.unconfirmed, 'the headline count and the list beneath it are one population');
+	assert.equal(input.ordersAwaiting, 2, 'orders awaiting confirmation, one entry per order');
+	assert.equal(input.topAwaiting.length, input.ordersAwaiting, 'the headline count and the list beneath it are one population');
 	// Counted independently, not as a subset of the headline: this is a presence
 	// (Shopify recorded an attempt that did not succeed), scoped to the period.
 	assert.equal(input.failedAttempts, 1);
@@ -184,7 +184,7 @@ test('counts are scoped to the shop and to the period', async () => {
 	assert.equal(input.deadLettered, 0);
 });
 
-// THE structural guard for the headline count. The digest's `unconfirmed` and the
+// THE structural guard for the headline count. The digest's `ordersAwaiting` and the
 // Overview's `orders.awaitingConfirmation` must be the same number for the same
 // shop, because they are the same claim rendered on two surfaces — the
 // Notifications screen literally promises the digest reports "How many orders are
@@ -229,7 +229,7 @@ test('the digest reports the same awaiting count as the Overview tile, for the s
 		NOW,
 	);
 	const orders = summary.orders as { awaitingConfirmation: number };
-	assert.equal(input.unconfirmed, orders.awaitingConfirmation);
+	assert.equal(input.ordersAwaiting, orders.awaitingConfirmation);
 	// Not vacuously equal because both are zero, and not equal to the findings count
 	// either — the fixture has three in-period unconfirmed findings for s1.
 	assert.equal(orders.awaitingConfirmation, 2);
@@ -265,7 +265,7 @@ test('another tenant data never appears in a digest', async () => {
 		input.topAwaiting.some((o) => o.orderName === '#9999'),
 		false,
 	);
-	assert.equal(input.unconfirmed, 2);
+	assert.equal(input.ordersAwaiting, 2);
 });
 
 test('dead-lettered deliveries make the recorder unhealthy', async () => {
@@ -421,7 +421,7 @@ test('a reconciliation event inside the match margin but outside the period is n
 
 test('a shop with nothing at all gathers a clean, zeroed input', async () => {
 	const input = await gatherDigestInput(tables(), 'unknown.myshopify.com', 'daily', PERIOD_START, PERIOD_END, NOW);
-	assert.equal(input.unconfirmed, 0);
+	assert.equal(input.ordersAwaiting, 0);
 	assert.equal(input.failedAttempts, 0);
 	assert.equal(input.deliveryGaps, 0);
 	assert.equal(input.recorderHealthy, true);

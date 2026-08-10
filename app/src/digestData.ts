@@ -37,11 +37,11 @@ export async function gatherDigestInput(
 	// on its own terms and by detection time, which is what makes it a statement
 	// about this window.
 	//
-	// It is NOT a subset of `unconfirmed` below, and must not be presented as one.
-	// This count used to be taken inside a loop that incremented `unconfirmed` for
-	// every finding first, so the two figures were nested while the bodies printed
-	// them as two adjacent, disjoint-looking lines — and it filed a PRESENCE (an
-	// attempt Shopify recorded as failed) underneath an ABSENCE headline. The
+	// It is NOT a subset of `ordersAwaiting` below, and must not be presented as one.
+	// This count used to be taken inside a loop that incremented the headline count
+	// for every finding first, so the two figures were nested while the bodies
+	// printed them as two adjacent, disjoint-looking lines — and it filed a PRESENCE
+	// (an attempt Shopify recorded as failed) underneath an ABSENCE headline. The
 	// `status === 'unconfirmed'` gate is kept deliberately: it is the same
 	// definition getSummary's `findings.failedAttempts` uses, so the digest and the
 	// Overview cannot disagree about this number either.
@@ -199,7 +199,7 @@ export async function gatherDigestInput(
 		periodEnd,
 		// Orders, not findings — and every one of them is in `awaiting`, of which
 		// topAwaiting is the first TOP_AWAITING entries.
-		unconfirmed: awaiting.length,
+		ordersAwaiting: awaiting.length,
 		failedAttempts,
 		deliveryGaps,
 		recorderHealthy: deadLettered === 0,

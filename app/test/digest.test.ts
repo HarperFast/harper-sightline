@@ -24,7 +24,7 @@ function input(over: Partial<DigestInput> = {}): DigestInput {
 		cadence: 'daily',
 		periodStart: Date.parse('2026-08-04T00:00:00Z'),
 		periodEnd: Date.parse('2026-08-05T00:00:00Z'),
-		unconfirmed: 0,
+		ordersAwaiting: 0,
 		failedAttempts: 0,
 		deliveryGaps: 0,
 		recorderHealthy: true,
@@ -77,17 +77,17 @@ test('a quiet, healthy period has nothing to say', () => {
 });
 
 test('anything worth acting on means there is something to say', () => {
-	assert.equal(hasSomethingToSay(input({ unconfirmed: 1 })), true);
+	assert.equal(hasSomethingToSay(input({ ordersAwaiting: 1 })), true);
 	assert.equal(hasSomethingToSay(input({ failedAttempts: 1 })), true);
 	assert.equal(hasSomethingToSay(input({ deliveryGaps: 1 })), true);
 	assert.equal(hasSomethingToSay(input({ recorderHealthy: false, deadLettered: 2 })), true);
 });
 
 test('the subject leads with the most actionable number and never says failed about an absence', () => {
-	assert.match(digestSubject(input({ unconfirmed: 3 })), /3 orders? awaiting confirmation/i);
-	assert.match(digestSubject(input({ failedAttempts: 2, unconfirmed: 3 })), /2 fulfillment attempts? did not succeed/i);
+	assert.match(digestSubject(input({ ordersAwaiting: 3 })), /3 orders? awaiting confirmation/i);
+	assert.match(digestSubject(input({ failedAttempts: 2, ordersAwaiting: 3 })), /2 fulfillment attempts? did not succeed/i);
 	assert.match(digestSubject(input({ recorderHealthy: false, deadLettered: 5 })), /needs attention/i);
-	assert.doesNotMatch(digestSubject(input({ unconfirmed: 3 })), /failed/i);
+	assert.doesNotMatch(digestSubject(input({ ordersAwaiting: 3 })), /failed/i);
 });
 
 // The weekly branch had no coverage at all — every other subject test passes
@@ -95,7 +95,7 @@ test('the subject leads with the most actionable number and never says failed ab
 test('a weekly subject names the week, not the day, and marks it UTC', () => {
 	const weekStart = Date.parse('2026-07-27T00:00:00Z');
 	const subject = digestSubject(
-		input({ cadence: 'weekly', periodStart: weekStart, periodEnd: Date.parse('2026-08-03T00:00:00Z'), unconfirmed: 3 }),
+		input({ cadence: 'weekly', periodStart: weekStart, periodEnd: Date.parse('2026-08-03T00:00:00Z'), ordersAwaiting: 3 }),
 	);
 	assert.match(subject, /\(week of 2026-07-27 UTC\)/);
 	assert.doesNotMatch(subject, /\(2026-07-27/);
@@ -107,7 +107,7 @@ test('a weekly subject names the week, not the day, and marks it UTC', () => {
 // claim in this module's header comment false for the one surface most often read
 // without the rest of the message.
 test('a daily subject marks its window UTC, and separates it from the current-state count', () => {
-	const subject = digestSubject(input({ unconfirmed: 3 }));
+	const subject = digestSubject(input({ ordersAwaiting: 3 }));
 	assert.match(subject, /\(2026-08-04 UTC\)/);
 	// "now" belongs to the count, which is current-state; the parenthetical is the
 	// window. Without the marker a reader takes the 3 for the window's total.
@@ -116,7 +116,7 @@ test('a daily subject marks its window UTC, and separates it from the current-st
 
 test('the subject has no CR or LF, so it can never inject a mail header', () => {
 	for (const subject of [
-		digestSubject(input({ unconfirmed: 3 })),
+		digestSubject(input({ ordersAwaiting: 3 })),
 		digestSubject(input({ failedAttempts: 1 })),
 		digestSubject(input({ recorderHealthy: false, deadLettered: 1 })),
 	]) {
@@ -137,7 +137,7 @@ test('headerSafe collapses a hostile CRLF payload onto one line rather than drop
 });
 
 test('the text body states the window, the counts, and the claim boundary', () => {
-	const body = digestText(input({ unconfirmed: 2, topAwaiting: [{ orderName: '#1001', orderId: '7518851989809', ageHours: 80 }] }));
+	const body = digestText(input({ ordersAwaiting: 2, topAwaiting: [{ orderName: '#1001', orderId: '7518851989809', ageHours: 80 }] }));
 	assert.match(body, /2026-08-04/);
 	assert.match(body, /#1001/);
 	assert.match(body, /3d 8h/);
@@ -149,7 +149,7 @@ test('the text body states the window, the counts, and the claim boundary', () =
 // and hours, rather than leaking a fractional hour (`3d 8.5h`) into the render.
 // Math.round(80.5) = 81 (JS rounds .5 away from zero), so 81 hours = 3d 9h.
 test('a fractional age hour is rounded before rendering, never leaked as a decimal', () => {
-	const body = digestText(input({ unconfirmed: 1, topAwaiting: [{ orderName: '#2002', orderId: 'o2', ageHours: 80.5 }] }));
+	const body = digestText(input({ ordersAwaiting: 1, topAwaiting: [{ orderName: '#2002', orderId: 'o2', ageHours: 80.5 }] }));
 	assert.match(body, /3d 9h/);
 	assert.doesNotMatch(body, /\d+\.\d+h/);
 });
@@ -161,7 +161,7 @@ test('a fractional age hour is rounded before rendering, never leaked as a decim
 // reading exactly the wrong thing the old label invited.
 test('each rendered number says whether it is current-state or scoped to the window', () => {
 	const filled = input({
-		unconfirmed: 4,
+		ordersAwaiting: 4,
 		failedAttempts: 2,
 		deliveryGaps: 1,
 		topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 80 }],
@@ -186,23 +186,25 @@ test('each rendered number says whether it is current-state or scoped to the win
 });
 
 test('the body never contains customer data', () => {
-	const body = digestText(input({ unconfirmed: 1, topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 10 }] }));
+	const body = digestText(input({ ordersAwaiting: 1, topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 10 }] }));
 	for (const forbidden of ['@gmail', 'customer', 'phone', 'address', 'shipping_address']) {
 		assert.equal(body.toLowerCase().includes(forbidden), false, `digest must not contain ${forbidden}`);
 	}
 });
 
 test('the html body escapes hostile order names', () => {
-	const html = digestHtml(input({ unconfirmed: 1, topAwaiting: [{ orderName: '<script>alert(1)</script>', orderId: 'o1', ageHours: 5 }] }));
+	const html = digestHtml(
+		input({ ordersAwaiting: 1, topAwaiting: [{ orderName: '<script>alert(1)</script>', orderId: 'o1', ageHours: 5 }] }),
+	);
 	assert.doesNotMatch(html, /<script>alert/);
 	assert.match(html, /&lt;script&gt;/);
 });
 
 test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
-	const row = outboxRow(input({ unconfirmed: 2, failedAttempts: 1, deliveryGaps: 3 }), NOW);
+	const row = outboxRow(input({ ordersAwaiting: 2, failedAttempts: 1, deliveryGaps: 3 }), NOW);
 	assert.equal(row.id, `s1.myshopify.com:${Date.parse('2026-08-04T00:00:00Z')}`);
 	assert.equal(row.status, 'pending');
-	assert.equal(row.unconfirmed, 2);
+	assert.equal(row.ordersAwaiting, 2);
 	assert.equal(row.failedAttempts, 1);
 	assert.equal(row.deliveryGaps, 3);
 	assert.equal(row.createdAt, NOW);
@@ -217,7 +219,7 @@ test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
 // 30-day purge. The assertion is now the opposite one — no key, not merely an
 // empty value — because a row shape is the only thing that can guarantee it.
 test('an outbox row carries no address anywhere in it, so clearing or uninstalling really does erase it', () => {
-	const row = outboxRow(input({ unconfirmed: 2, topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 30 }] }), NOW);
+	const row = outboxRow(input({ ordersAwaiting: 2, topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 30 }] }), NOW);
 	assert.equal(Object.hasOwn(row, 'email'), false);
 	// Nothing address-shaped anywhere in the row, including the rendered bodies and
 	// the subject — an `@`-bearing order name is the realistic way one could return
@@ -229,8 +231,8 @@ test('an outbox row carries no address anywhere in it, so clearing or uninstalli
 // this is what makes an overlapping tick/thread/node upsert rather than duplicate.
 // Already implied by the previous test's `row.id` assertion.
 test('an outbox id is stable for a period, so a rebuild overwrites rather than duplicating', () => {
-	const first = outboxRow(input({ unconfirmed: 1 }), NOW);
-	const second = outboxRow(input({ unconfirmed: 5 }), NOW + 1000);
+	const first = outboxRow(input({ ordersAwaiting: 1 }), NOW);
+	const second = outboxRow(input({ ordersAwaiting: 5 }), NOW + 1000);
 	assert.equal(first.id, second.id);
-	assert.notEqual(first.unconfirmed, second.unconfirmed);
+	assert.notEqual(first.ordersAwaiting, second.ordersAwaiting);
 });

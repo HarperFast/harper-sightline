@@ -84,10 +84,25 @@ type DigestOutbox @table(database: "sightline_core") @sealed {
 	bodyText: String
 	bodyHtml: String
 	# The headline numbers, kept as columns so an operator can see what a digest
-	# said without parsing its body.
-	unconfirmed: Int
+	# said without parsing its body. They are NOT all in the same tense, and the
+	# names say which is which, because an operator comparing them against the
+	# Overview has nothing else to go on.
+	#
+	# `ordersAwaiting` is CURRENT-STATE and counts ORDERS: how many of this shop's
+	# orders were awaiting fulfillment confirmation at the moment the digest was
+	# built (isAwaitingConfirmation, src/orders.ts — the same population as the
+	# Overview's awaiting tile). It is deliberately NOT period-scoped, and it is not
+	# a count of findings: this column was called `unconfirmed` while it held a
+	# findings tally, which collides with GapFinding.status 'unconfirmed' — a
+	# different population in a different tense, rendered on the Overview as its own
+	# "Unconfirmed" findings tile. One order can carry two findings, so the two
+	# numbers legitimately differ and must never be read as the same figure.
+	ordersAwaiting: Int
+	# The two below ARE scoped to this row's period, [periodStart, periodEnd).
 	failedAttempts: Int
 	deliveryGaps: Int
+	# Recorder health at build time (current-state, like ordersAwaiting): false means
+	# the numbers above may be incomplete, and the bodies say so.
 	recorderHealthy: Boolean
 	status: String! @indexed # pending | sent | skipped
 	createdAt: Float! @indexed # retention key (30 days, not the ledger's 7)
