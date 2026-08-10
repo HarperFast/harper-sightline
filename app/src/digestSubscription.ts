@@ -15,7 +15,19 @@ export const MAX_EMAIL_LENGTH = 254;
 // in the domain. It rejects some exotic-but-legal addresses, which is the right
 // trade for a notification field a merchant can retype.
 const EMAIL_SHAPE = /^[^\s@,;:<>"'\\()[\]]+@[^\s@,;:<>"'\\()[\]]+\.[^\s@,;:<>"'\\()[\]]{2,}$/;
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+// C0 (\u0000-\u001f), DEL (\u007f) AND C1 (\u0080-\u009f). C1 matters because
+// U+009B is the single-byte ANSI escape introducer: the ASCII `ESC[` form is
+// already rejected by the C0 range, so accepting its one-byte equivalent would
+// let an address carry a terminal escape sequence into any raw-terminal render
+// (a support CLI, a future admin tool). Harmless in a mail header, which is why
+// it was missed; rejecting more is always safe for a field a merchant retypes.
+//
+// The lint rule exists to catch an UNINTENTIONAL control character in a regex.
+// This one is deliberate and is the entire point of the pattern, so it is
+// suppressed here rather than left as a standing warning that would mask the
+// next accidental case. (Same disable-comment style as test/retention.test.ts.)
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 
 export function normalizeEmail(raw: unknown): string | undefined {
 	if (typeof raw !== 'string') return undefined;
