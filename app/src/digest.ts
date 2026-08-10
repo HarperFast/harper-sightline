@@ -184,7 +184,7 @@ const BOUNDARY =
 	'These are observations of your Shopify data. An order with no observed confirmation does not prove that a warehouse or carrier failed — it means Shopify has not shown the expected fulfillment confirmation yet.';
 
 // Intentionally uncalled outside its own tests. `outboxRow` (below) stores only
-// `subject` and the count columns — never a rendered body (Task 3): the ledger
+// `subject` and the count columns — never a rendered body: the ledger
 // purges at seven days, so a stored digest outliving that window is worth
 // keeping, but a stored MESSAGE naming orders for 30 days is not. This
 // function's caller is the sender that does not exist yet; when one ships, it
@@ -270,7 +270,7 @@ export function digestHtml(input: DigestInput): string {
 // promise until the 30-day purge. A sender, when one exists, reads the address
 // from the subscription at the moment it sends — the only moment it needs it.
 //
-// Also renders NO body (Task 3). `subject` and the counts below are the whole
+// Also renders NO body, by design. `subject` and the counts below are the whole
 // row: they are derived from the period and its counts only, so the row can
 // outlive the seven-day ledger for 30 days without naming an order or holding
 // customer data. `digestText`/`digestHtml` still exist for a future sender to

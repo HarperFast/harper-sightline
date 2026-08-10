@@ -34,6 +34,14 @@ export interface PurgeCycleResult {
 	outbox: PurgeResult | undefined;
 }
 
+// `now` is captured ONCE by the caller (jobs.ts's purgeTick) and handed to
+// both sweeps, rather than each of `deps.purge`/`deps.outboxPurge` defaulting
+// to its own `Date.now()` as they do when called directly. Deliberate: one
+// clock reading makes a tick deterministic and lets a test drive both sweeps
+// from a single fixed `now`. The only observable cost is that the outbox
+// sweep's cutoff is computed at the instant the ledger sweep started, a few
+// milliseconds earlier than an independent `Date.now()` inside it would have
+// read — never enough to move a row across a day-boundary retention cutoff.
 export async function runPurgeCycle(deps: PurgeCycleDeps, now: number): Promise<PurgeCycleResult> {
 	let ledger: PurgeResult | undefined;
 	try {

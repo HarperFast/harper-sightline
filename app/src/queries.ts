@@ -871,7 +871,7 @@ export async function getPrivacy(
 			'SKUs, product & variant titles & quantities',
 			'notification email you supply for digests (merchant contact, not customer data)',
 			// A separate, real category from the email above: the record kept once a
-			// digest is built (DigestOutbox, no bodyText/bodyHtml since Task 3), not
+			// digest is built (DigestOutbox, which has no bodyText/bodyHtml column), not
 			// the address used to prepare it. It carries only the period's counts and
 			// its subject line, so it can be stated as holding no order and no
 			// customer data — the reason it can outlive the seven-day ledger.
