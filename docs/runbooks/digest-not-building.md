@@ -36,7 +36,8 @@ failed".
   any per-subscription scope; the whole tick for every shop that iteration is
   aborted).
 - `event="tick.stalled"` with `loop: "digest"` (a previous pass never returned;
-  the ticker's 30-minute stall budget let a new one start anyway).
+  the ticker's **180-minute (3-hour)** stall budget let a new one start anyway —
+  `ticker('digest', 180 * 60_000)` in `jobs.ts`, three times the hourly interval).
 - `event="digest.built"` — logged when `built > 0`, `skippedQuiet > 0`, **or
   `failed > 0`** (`jobs.ts`'s `digestTick`; the `failed` disjunct exists
   precisely so a sweep with per-shop failures is never mistaken for a quiet,
@@ -82,9 +83,11 @@ failed".
 - **Quiet period.** No action. Confirm by gathering the same window's numbers
   manually (`gatherDigestInput`, `src/digestData.ts`) and checking
   `hasSomethingToSay` would in fact be false.
-- **Wedged loop.** The ticker's 30-minute stall budget already lets the next
-  scheduled pass proceed; if `tick.stalled` keeps repeating, restart the
-  component and pull the stack trace from the paired `digest.error`.
+- **Wedged loop.** The ticker's **180-minute (3-hour)** stall budget eventually
+  lets the next scheduled pass proceed on its own — three hours, not thirty
+  minutes, so do not sit and wait it out on the shorter figure. If `tick.stalled`
+  keeps repeating, restart the component and pull the stack trace from the
+  paired `digest.error`.
 - **Subscription paused by uninstall.** `uninstallShop` deletes the
   subscription outright. Expected if the app was removed; nothing to fix.
 - **Purge removed the evidence.** Outbox rows are purged after 30 days
