@@ -3,9 +3,16 @@
 	"private": true,
 	"type": "module",
 	"version": "0.1.0",
+	"imports": {
+		"#harper": {
+			"types": "./types/harperImportsShim.d.ts",
+			"test": "./test/harperStub.ts",
+			"default": "harper"
+		}
+	},
 	"scripts": {
-		"test": "node --test 'test/*.test.ts'",
-		"coverage": "node --test --experimental-test-coverage 'test/*.test.ts'",
+		"test": "node --test --conditions=test 'test/*.test.ts'",
+		"coverage": "node --test --experimental-test-coverage --conditions=test 'test/*.test.ts'",
 		"dev": "vite web",
 		"build": "vite build web",
 		"typecheck": "tsc --noEmit",
