@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { FakeTable } from './fakeTable.ts';
 import {
 	listEvents,
@@ -950,22 +949,18 @@ test('the no-customer-PII promise is unchanged by the notification address', asy
 	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);
 });
 
-test('the deletion disclosure states the digest outbox retention alongside the ledger purge, and the two numbers cannot drift apart', async () => {
+test('the deletion disclosure states the digest outbox retention alongside the ledger purge', async () => {
+	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/ledgerTargets.ts directly
+	// (queries.ts used to hold its own duplicated `DIGEST_OUTBOX_RETENTION_DAYS`
+	// literal, checked against the real constant by reading ledgerTargets.ts as
+	// text — now that db.ts is importable under test, queries.ts imports the
+	// constant itself, so there is only one number to get right, not two to keep
+	// in sync).
 	const { events, findings, projections, deliveries, shops } = fixtures();
 	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
 	const automatic = (privacy.deletion as Record<string, string>).automatic;
 	assert.match(automatic, /7-day/);
 	assert.match(automatic, /30 days/);
-	// src/ledgerTargets.ts can't be imported here — it pulls in db.ts's `import {
-	// databases } from 'harper'`, unresolvable under plain node (see
-	// test/ledgerTargets.test.ts, which hits the same wall and reads source text
-	// instead). Reading the real OUTBOX_RETENTION_DAYS literal here means a future
-	// change to either number, made without the other, fails this test rather than
-	// silently leaving the privacy payload wrong.
-	const source = readFileSync(new URL('../src/ledgerTargets.ts', import.meta.url), 'utf8');
-	const outboxDays = source.match(/export const OUTBOX_RETENTION_DAYS = (\d+);/);
-	assert.ok(outboxDays, 'OUTBOX_RETENTION_DAYS not found in ledgerTargets.ts');
-	assert.match(automatic, new RegExp(`${outboxDays![1]} days`));
 });
 
 test('the privacy disclosure lists every category actually stored, and no more', async () => {

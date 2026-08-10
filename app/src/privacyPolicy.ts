@@ -1,24 +1,18 @@
 import { WINDOW_DAYS } from './apiContract.ts';
 import { EXCLUDED_CUSTOMER_FIELDS } from './queries.ts';
+import { OUTBOX_RETENTION_DAYS } from './ledgerTargets.ts';
 import type { SupportContact } from './support.ts';
-
-// The digest outbox's own retention window — separate from, and longer than,
-// WINDOW_DAYS above. Duplicated as a literal rather than imported from
-// src/ledgerTargets.ts because that file pulls in db.ts's `import { databases }
-// from 'harper'`, unresolvable outside the deployed Harper runtime; the app's
-// Notifications screen (web/src/view.ts) states the same "30 days" figure in the
-// same words, and test/privacyPolicy.test.ts pins this page to it.
-const DIGEST_OUTBOX_RETENTION_DAYS = 30;
 
 // The public privacy policy (#26). Served unauthenticated at /privacy-policy so
 // the App Store listing can link to it and a reviewer can read it WITHOUT
 // installing the app.
 //
 // Every factual claim here is traceable to something enforced in code, and the
-// two that could drift are imported rather than retyped: the retention window
-// (WINDOW_DAYS) and the excluded-field list (EXCLUDED_CUSTOMER_FIELDS, the same
-// constant the in-app Privacy screen renders). See docs/data-inventory.md for the
-// per-table behavior this summarises.
+// ones that could drift are imported rather than retyped: the retention window
+// (WINDOW_DAYS), the digest outbox's own retention (OUTBOX_RETENTION_DAYS,
+// src/ledgerTargets.ts), and the excluded-field list (EXCLUDED_CUSTOMER_FIELDS,
+// the same constant the in-app Privacy screen renders). See
+// docs/data-inventory.md for the per-table behavior this summarises.
 //
 // LEGAL REVIEW REQUIRED before submission — see docs/app-store-review-checklist.md.
 // This is an accurate engineering description of the app's data handling, which is
@@ -106,7 +100,7 @@ your store's operations contact, never a customer. It is used only to prepare an
 available) send your digest, and it is never shared or sold. Digests contain order names, counts, and
 timestamps only — never customer names, emails, phone numbers, or addresses. The address is deleted as
 soon as you clear it in the app or uninstall Sightline; each digest built from it is kept separately for
-${DIGEST_OUTBOX_RETENTION_DAYS} days and then removed, whether or not you have cleared the address.</p>
+${OUTBOX_RETENTION_DAYS} days and then removed, whether or not you have cleared the address.</p>
 
 <h2>How long we keep it</h2>
 <p>Operational records — the event log, order state, and findings — are <strong>permanently deleted
@@ -115,7 +109,7 @@ confirm nothing remains. This is deletion, not expiry or cache eviction.</p>
 <p>Installation records (your shop domain, granted scopes, and the encrypted access token) are kept
 while the app is installed.</p>
 <p>Digest messages built from your notification address are kept separately for
-<strong>${DIGEST_OUTBOX_RETENTION_DAYS} days</strong>, then removed — the same figure the Notifications
+<strong>${OUTBOX_RETENTION_DAYS} days</strong>, then removed — the same figure the Notifications
 screen states.</p>
 
 <h2>Deletion and your rights</h2>
@@ -130,7 +124,7 @@ screen states.</p>
 		record the request. As we store no personal data about your customers, there is no personal
 		data to return.</li>
 	<li><strong>Automatic:</strong> the ${WINDOW_DAYS}-day purge applies regardless of any request. Built
-		digest messages are purged separately on their own ${DIGEST_OUTBOX_RETENTION_DAYS}-day schedule.</li>
+		digest messages are purged separately on their own ${OUTBOX_RETENTION_DAYS}-day schedule.</li>
 </ul>
 
 <h2>Security</h2>

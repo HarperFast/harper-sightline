@@ -18,6 +18,7 @@ import {
 } from './apiContract.ts';
 import { describeFinding, detectorKey, DETECTOR_FAILED } from './detector.ts';
 import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from './orders.ts';
+import { OUTBOX_RETENTION_DAYS } from './ledgerTargets.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every
@@ -781,15 +782,6 @@ export const EXCLUDED_CUSTOMER_FIELDS = ['customer name', 'customer email', 'cus
 // auditable (screen spec §5). Deliberately returns NO secrets, token material,
 // internal host/cluster names, or cross-tenant metrics: scopes are the granted
 // OAuth scope strings, and every count is constrained to this shop.
-// The outbox keeps a longer, separate retention than the seven-day ledger purge
-// (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts) — duplicated here as a literal
-// rather than an import, because ledgerTargets.ts pulls in db.ts's `import {
-// databases } from 'harper'`, a module with no resolvable file under plain node
-// (see test/ledgerTargets.test.ts, which hits the same wall). A test in
-// queries.test.ts reads that file's source and pins this literal against the
-// real constant, so the two numbers cannot silently drift apart.
-const DIGEST_OUTBOX_RETENTION_DAYS = 30;
-
 export async function getPrivacy(
 	tables: {
 		events: QueryTable;
@@ -868,7 +860,7 @@ export async function getPrivacy(
 			// digest outbox's own, independently-tracked 30-day purge (it outlives the
 			// ledger on purpose — see DigestOutbox in docs/data-inventory.md). Stating
 			// only one would understate retention for the other.
-			automatic: `${WINDOW_DAYS}-day retention purge; digest outbox rows are kept separately for ${DIGEST_OUTBOX_RETENTION_DAYS} days, then removed`,
+			automatic: `${WINDOW_DAYS}-day retention purge; digest outbox rows are kept separately for ${OUTBOX_RETENTION_DAYS} days, then removed`,
 		},
 		notifications,
 		footprint,
