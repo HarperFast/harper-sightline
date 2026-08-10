@@ -97,10 +97,10 @@ profiles, and we do not sell or rent data to anyone.</p>
 <p>If you choose to receive an operations digest, Sightline stores the notification email address you
 enter and how often you asked for it. This is your own contact address, not customer data — it identifies
 your store's operations contact, never a customer. It is used only to prepare and (once delivery is
-available) send your digest, and it is never shared or sold. Digests contain order names, counts, and
-timestamps only — never customer names, emails, phone numbers, or addresses. The address is deleted as
-soon as you clear it in the app or uninstall Sightline; each digest built from it is kept separately for
-${OUTBOX_RETENTION_DAYS} days and then removed, whether or not you have cleared the address.</p>
+available) send your digest, and it is never shared or sold. The address is deleted as soon as you clear
+it in the app or uninstall Sightline. A record of each digest built from it — its counts and its subject
+line, nothing else — is kept separately for ${OUTBOX_RETENTION_DAYS} days and then removed, whether or not
+you have cleared the address; that record names no order and holds no customer data.</p>
 
 <h2>How long we keep it</h2>
 <p>Operational records — the event log, order state, and findings — are <strong>permanently deleted
@@ -108,7 +108,8 @@ after ${WINDOW_DAYS} days</strong> by a scheduled job that issues real deletes a
 confirm nothing remains. This is deletion, not expiry or cache eviction.</p>
 <p>Installation records (your shop domain, granted scopes, and the encrypted access token) are kept
 while the app is installed.</p>
-<p>Digest messages built from your notification address are kept separately for
+<p>A record of each digest built from your notification address — its counts and subject line, naming no
+order and holding no customer data — is kept separately for
 <strong>${OUTBOX_RETENTION_DAYS} days</strong>, then removed — the same figure the Notifications
 screen states.</p>
 
@@ -123,8 +124,9 @@ screen states.</p>
 	<li><strong>Data access requests:</strong> on Shopify's <code>customers/data_request</code> we
 		record the request. As we store no personal data about your customers, there is no personal
 		data to return.</li>
-	<li><strong>Automatic:</strong> the ${WINDOW_DAYS}-day purge applies regardless of any request. Built
-		digest messages are purged separately on their own ${OUTBOX_RETENTION_DAYS}-day schedule.</li>
+	<li><strong>Automatic:</strong> the ${WINDOW_DAYS}-day purge applies regardless of any request. Digest
+		records (counts and a subject line, no order names) are purged separately on their own
+		${OUTBOX_RETENTION_DAYS}-day schedule.</li>
 </ul>
 
 <h2>Security</h2>

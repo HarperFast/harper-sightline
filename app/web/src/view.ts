@@ -1249,7 +1249,7 @@ export function notificationsView(settings: DigestSettings, now: number, strip: 
 		${message ? `<s-section><s-banner tone="${esc(message.tone)}"><s-paragraph>${esc(message.text)}</s-paragraph></s-banner></s-section>` : ''}
 		<s-section heading="Operations digest">
 			<s-banner tone="info" heading="Digests are being prepared, not yet delivered">
-				<s-paragraph>Sightline builds your digest on schedule and stores it for 30 days, then removes it. Email delivery is not switched on yet, so nothing will be sent to this address for now — subscribing records that you want one.</s-paragraph>
+				<s-paragraph>Sightline builds your digest on schedule and keeps a record of it — its counts and subject line, never an order name or customer data — for 30 days, then removes it. Email delivery is not switched on yet, so nothing will be sent to this address for now — subscribing records that you want one.</s-paragraph>
 			</s-banner>
 			<s-stack direction="inline" gap="small-200" alignItems="center">${status}${lastChecked}</s-stack>
 			<s-stack id="digestForm" direction="inline" gap="base" alignItems="end">

@@ -15,7 +15,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 - **`sightline_ledger.*`** (WebhookDelivery, OperationalEvent, EventSku, OrderProjection, Expectation, GapFinding, FlowAggregate): purged after **7 days** by the explicit-DELETE retention job (ADR-003). `EventSku` shares its retention key (`receivedAt`) with the `OperationalEvent` it indexes.
 - **`sightline_core.*`** (Shop, ShopCredential, AppAuditEvent) and `WorkerCheckpoint`: install-time / operational state, retained while installed; erased on `shop/redact`.
 - **Admin API reference caches** (`InventoryItem`, `ShopLocation`): deliberately NOT part of the 7-day ledger purge — they carry no order or customer linkage and are useless once the shop is gone, so they are retained while installed and erased only on `shop/redact` (re-fetching them on a schedule would be pointless Admin API traffic).
-- **`sightline_core.DigestOutbox`**: a **separate, 30-day** purge, longer than the 7-day ledger cutoff on purpose — a digest is a record of what the merchant was told, worth keeping after the events it describes have already aged out of the ledger. `DigestSubscription` (the address itself) is not aged out at all; it is deleted only on clear, uninstall, or `shop/redact`. Both are erased by `shop/redact` regardless of age. See "Plan C additions" below.
+- **`sightline_core.DigestOutbox`**: a **separate, 30-day** purge, longer than the 7-day ledger cutoff on purpose — a row is a record of what a period looked like (its counts and subject line, never the message), worth keeping after the events it describes have already aged out of the ledger. It holds no order name and no customer data (Task 3 removed the rendered `bodyText`/`bodyHtml` from the row for exactly this reason). `DigestSubscription` (the address itself) is not aged out at all; it is deleted only on clear, uninstall, or `shop/redact`. Both are erased by `shop/redact` regardless of age. See "Plan C additions" below.
 
 ## Behavior per table
 
@@ -35,7 +35,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 | `InventoryItem` | No (reference cache, keyed by `inventory_item_id`) | — (not order-linked) | none | — (not order-linked) | delete by `shopId` |
 | `ShopLocation` | No (reference cache) | — (not order-linked) | none | — (not order-linked) | delete by `shopId` |
 | `DigestSubscription` | No (merchant's own contact address, not customer PII) | — (not order-linked) | none | — (not customer-linked) | delete by `shopId` |
-| `DigestOutbox` | No (order names/counts/timestamps only) | — (not order-linked; a digest spans a whole period, not one order) | none | — (not customer-linked) | delete by `shopId` |
+| `DigestOutbox` | No (counts and a subject line only — no order names, no message body) | — (not order-linked; a digest spans a whole period, not one order) | none | — (not customer-linked) | delete by `shopId` |
 
 ## Plan A additions (2026-08-07)
 
@@ -58,9 +58,9 @@ The operations digest (build-only; there is no sender yet — see the "digest-no
 | Table | Field(s) | Purpose | Retention |
 |---|---|---|---|
 | `DigestSubscription` | `email`, `cadence`, `status`, `lastBuiltAt` | Merchant-supplied notification address and frequency. **The only merchant-identifying string stored.** Not customer data. | Deleted on clear, uninstall, or shop-redact; not aged out |
-| `DigestOutbox` | `subject`, `bodyText`, `bodyHtml`, counts | Rendered digests awaiting a sender, addressed by `shopId` only. Bodies carry order names, counts, timestamps — no customer data, and **no copy of the notification address**: a sender reads that from the subscription when it sends, so clearing the address or uninstalling really does erase it rather than leaving copies to age out with the outbox. | 30-day purge; erased on uninstall/shop-redact |
+| `DigestOutbox` | `subject`, counts | A durable record of what a period looked like, addressed by `shopId` only, kept after the ledger purges the events it describes. Holds no body: **no `bodyText`/`bodyHtml` column exists** (Task 3 removed them — the message is rendered fresh by a future sender instead of read back from a row), so the row names no order and holds no customer data. Also **no copy of the notification address**: a sender reads that from the subscription when it sends, so clearing the address or uninstalling really does erase it rather than leaving copies to age out with the outbox. | 30-day purge; erased on uninstall/shop-redact |
 
-Two retention windows now apply, and both are disclosed everywhere retention is mentioned (the Privacy screen, the public policy, and this document): the ledger's 7-day purge, and the digest outbox's separate 30-day purge. The outbox deliberately outlives the ledger — a digest is a record of what the merchant was told, worth keeping after the events it describes have aged out.
+Two retention windows now apply, and both are disclosed everywhere retention is mentioned (the Privacy screen, the public policy, and this document): the ledger's 7-day purge, and the digest outbox's separate 30-day purge. The outbox deliberately outlives the ledger — a digest row is a record of what a period looked like, worth keeping after the events it describes have aged out, not a copy of the message that would have been sent.
 
 ## Guarantees
 

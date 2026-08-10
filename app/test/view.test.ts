@@ -1312,6 +1312,13 @@ test('the screen states plainly, in its own banner, that digests are stored (for
 	// the fix-round report) and must not quietly come back as a softer rewrite.
 	assert.match(banner![0], /30 days/);
 	assert.doesNotMatch(banner![0], /ready when delivery ships|waiting for you/i);
+	// The record kept for those 30 days is not the message (Task 3 removed
+	// bodyText/bodyHtml from DigestOutbox): it holds only counts and a subject
+	// line, never an order name or customer data. Without this the banner's
+	// "kept for 30 days" would leave a merchant assuming the full message —
+	// including the longest-waiting order list — is what survives that long.
+	assert.match(banner![0], /counts and subject line/i);
+	assert.match(banner![0], /never an order name or customer data/i);
 });
 
 // Pinned to the instruction paragraph, not the page. Matching /clear|remove|empty/

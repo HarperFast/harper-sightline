@@ -64,25 +64,31 @@ type DigestSubscription @table(database: "sightline_core") @sealed {
 }
 
 type DigestOutbox @table(database: "sightline_core") @sealed {
-	# A fully-rendered digest, ready for a sender that does not exist yet. Keyed
-	# `${shopId}:${periodStart}` so rebuilding a period upserts one row rather than
-	# duplicating it. Bodies contain order names, counts and timestamps only — never
-	# customer data.
+	# A durable RECORD of what a period looked like, kept because the ledger
+	# purges at seven days and a digest about a purged period is not
+	# recomputable after that. It is not the message: no sender exists yet, and
+	# when one ships it renders its own body (src/digest.ts's digestText /
+	# digestHtml) from freshly-gathered input rather than reading one back from
+	# here. Keyed `${shopId}:${periodStart}` so rebuilding a period upserts one
+	# row rather than duplicating it.
 	#
-	# Deliberately NO `email` column. The privacy policy and the Notifications
-	# screen both tell merchants the address is deleted when they clear it or
-	# uninstall, and uninstallShop deletes only DigestSubscriptions — so a copy on
-	# every outbox row would have survived that promise until the 30-day purge. No
-	# sender exists to need it here, and a future sender can read the address from
-	# the subscription at send time, which is the only moment it is actually needed.
+	# Deliberately NO `bodyText`/`bodyHtml` and NO `email` column. `subject` and
+	# the count columns below are derived from the period and its counts only —
+	# they name no order and no customer, which is what lets this row outlive
+	# the seven-day ledger for 30 days without becoming a second place merchant
+	# data can leak from. The address itself lives only on DigestSubscription:
+	# the privacy policy and the Notifications screen both tell merchants the
+	# address is deleted when they clear it or uninstall, and uninstallShop
+	# deletes only DigestSubscriptions — so a copy on every outbox row would
+	# have survived that promise until the 30-day purge. A future sender reads
+	# the address from the subscription at send time, which is the only moment
+	# it is actually needed.
 	id: ID! @primaryKey
 	shopId: String! @indexed
 	cadence: String
 	periodStart: Float! @indexed
 	periodEnd: Float
 	subject: String
-	bodyText: String
-	bodyHtml: String
 	# The headline numbers, kept as columns so an operator can see what a digest
 	# said without parsing its body. They are NOT all in the same tense, and the
 	# names say which is which, because an operator comparing them against the
@@ -112,7 +118,8 @@ type DigestOutbox @table(database: "sightline_core") @sealed {
 	# gatherDigestInput for why matching is best-effort and uses a one-day margin.
 	deliveryGaps: Int
 	# Recorder health at build time (current-state, like ordersAwaiting): false means
-	# the numbers above may be incomplete, and the bodies say so.
+	# the numbers above may be incomplete, and the rendered digest (src/digest.ts's
+	# digestText/digestHtml) says so.
 	recorderHealthy: Boolean
 	status: String! @indexed # pending | sent | skipped
 	createdAt: Float! @indexed # retention key (30 days, not the ledger's 7)

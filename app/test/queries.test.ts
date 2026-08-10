@@ -980,6 +980,10 @@ test('the privacy disclosure lists every category actually stored, and no more',
 		'refund status',
 		'SKUs, product & variant titles & quantities',
 		'notification email you supply for digests (merchant contact, not customer data)',
+		// Added by Task 3: DigestOutbox is a real, independently-retained data
+		// category (30 days, not the 7-day ledger) once its rows hold no body —
+		// leaving it off this disclosure would understate what is stored.
+		'digest record: counts and subject line only, kept 30 days (no order names or customer data)',
 	]);
 	// The exclusion list is the load-bearing promise and must not have widened.
 	assert.deepEqual(privacy.excludedFields, ['customer name', 'customer email', 'customer phone', 'shipping & billing address']);

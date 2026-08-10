@@ -851,6 +851,12 @@ export async function getPrivacy(
 			'refund status',
 			'SKUs, product & variant titles & quantities',
 			'notification email you supply for digests (merchant contact, not customer data)',
+			// A separate, real category from the email above: the record kept once a
+			// digest is built (DigestOutbox, no bodyText/bodyHtml since Task 3), not
+			// the address used to prepare it. It carries only the period's counts and
+			// its subject line, so it can be stated as holding no order and no
+			// customer data — the reason it can outlive the seven-day ledger.
+			'digest record: counts and subject line only, kept 30 days (no order names or customer data)',
 		],
 		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
 		deletion: {
@@ -860,7 +866,7 @@ export async function getPrivacy(
 			// digest outbox's own, independently-tracked 30-day purge (it outlives the
 			// ledger on purpose — see DigestOutbox in docs/data-inventory.md). Stating
 			// only one would understate retention for the other.
-			automatic: `${WINDOW_DAYS}-day retention purge; digest outbox rows are kept separately for ${OUTBOX_RETENTION_DAYS} days, then removed`,
+			automatic: `${WINDOW_DAYS}-day retention purge; digest records (counts and subject line only, no order names or customer data) are kept separately for ${OUTBOX_RETENTION_DAYS} days, then removed`,
 		},
 		notifications,
 		footprint,
