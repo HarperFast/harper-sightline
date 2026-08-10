@@ -762,6 +762,66 @@ test('getSummary activity buckets the window by day and reconciles to the total'
 	assert.equal(newest.inventory, 0, 'the out-of-window inventory event is excluded');
 });
 
+test('getSummary pins eventsTotal, webhookEvents and the activity buckets ahead of the margin change', async () => {
+	// The regression net for widening the event query's lower bound: eventsTotal,
+	// webhookEvents and the activity buckets share the loop that produces
+	// reconciliationOnlyEvents, so a margin added to find a twin outside the window
+	// must not also let this fixture's out-of-window row leak into any of the
+	// three. Both rows here are named for what they must do to each tally.
+	const windowStart = NOW - 7 * DAY;
+	const events = new FakeTable('eventId', [
+		{
+			eventId: 'pin-in-order',
+			shopId: 's1',
+			domain: 'order',
+			topic: 'orders/paid',
+			resourceId: 'pin-o1',
+			state: 'paid',
+			source: 'webhook',
+			occurredAt: NOW - HOUR,
+			receivedAt: NOW - HOUR,
+		},
+		{
+			eventId: 'pin-in-fulfillment',
+			shopId: 's1',
+			domain: 'fulfillment',
+			topic: 'fulfillments/create',
+			resourceId: 'pin-o2',
+			state: 'success',
+			source: 'webhook',
+			occurredAt: NOW - HOUR,
+			receivedAt: NOW - HOUR,
+		},
+		// Just outside the window, and well inside the digest's one-day match
+		// margin — exactly the row that must NOT count once the query widens.
+		{
+			eventId: 'pin-out-order',
+			shopId: 's1',
+			domain: 'order',
+			topic: 'orders/paid',
+			resourceId: 'pin-o3',
+			state: 'paid',
+			source: 'webhook',
+			occurredAt: windowStart - 1000,
+			receivedAt: windowStart - 1000,
+		},
+	]);
+	const empty = { projections: new FakeTable('id', []), findings: new FakeTable('id', []), deliveries: new FakeTable('id', []) };
+	const shops = new FakeTable('shopId', []);
+	const summary = await getSummary({ events, ...empty, shops }, 's1', NOW);
+	assert.equal((summary.events as { total: number }).total, 2, 'the out-of-window row is not part of the total');
+	assert.equal((summary.integrity as { webhookEvents: number }).webhookEvents, 2, 'the out-of-window row is not part of this tally either');
+	const activity = summary.activity as { buckets: Array<Record<string, number>> };
+	assert.equal(
+		activity.buckets.reduce((n, b) => n + b.total, 0),
+		2,
+		'the out-of-window row must not appear in any bucket',
+	);
+	const newest = activity.buckets[activity.buckets.length - 1];
+	assert.equal(newest.order, 1, 'only the in-window order event');
+	assert.equal(newest.fulfillment, 1, 'only the in-window fulfillment event');
+});
+
 test('computeFlows lane counts reconcile and are rebuildable from projections', async () => {
 	const { projections } = fixtures();
 	const flows = await computeFlows(projections, 's1', NOW);
@@ -1180,6 +1240,62 @@ test('a reconciliation event with no matching webhook event is still counted as 
 		source: 'reconciliation',
 		occurredAt: NOW - 3000,
 		receivedAt: NOW - 3000,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 1);
+});
+
+test('a webhook event just before windowStart still matches its reconciliation twin just inside it', async () => {
+	// The concrete failing case this task exists to fix: the webhook and its
+	// reconciliation twin timestamp the SAME real change from different fields
+	// (see the comment in getSummary), so a pair can straddle windowStart even
+	// though nothing actually went missing. Before the margin, the in-window
+	// reconciliation row here would have reported a phantom capture gap.
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	const windowStart = NOW - 7 * DAY;
+	await events.put({
+		eventId: 's1:webhook-o20',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o20',
+		state: 'paid',
+		source: 'webhook',
+		occurredAt: windowStart - 500, // just before the window
+		receivedAt: windowStart - 500,
+	});
+	await events.put({
+		eventId: 'recon:s1:o20:paid',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o20',
+		state: 'paid',
+		source: 'reconciliation',
+		occurredAt: windowStart + 500, // just inside the window
+		receivedAt: windowStart + 500,
+	});
+	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
+	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 0);
+});
+
+test('a reconciliation event with no twin anywhere in the margin is still counted, not zeroed by the fix', async () => {
+	// Without this, a change that simply always returns 0 for reconciliationOnlyEvents
+	// would pass the test above. This reconciliation row has no webhook counterpart
+	// at all — not in the window, not in the margin either side — so it is a real,
+	// reportable capture gap.
+	const { events, projections, findings, deliveries, shops } = fixtures();
+	const windowStart = NOW - 7 * DAY;
+	await events.put({
+		eventId: 'recon:s1:o21:paid',
+		shopId: 's1',
+		domain: 'order',
+		topic: 'orders/paid',
+		resourceId: 'o21',
+		state: 'paid',
+		source: 'reconciliation',
+		occurredAt: windowStart + 500,
+		receivedAt: windowStart + 500,
 	});
 	const summary = await getSummary({ events, projections, findings, deliveries, shops }, 's1', NOW);
 	assert.equal((summary.integrity as { reconciliationOnlyEvents: number }).reconciliationOnlyEvents, 1);

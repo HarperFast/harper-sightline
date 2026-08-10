@@ -1,5 +1,6 @@
 import type { EventDomain, Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
 import { eventKind } from './eventKind.ts';
+import { MATCH_MARGIN_MS } from './digestData.ts';
 import {
 	clampLimit,
 	decodeCursor,
@@ -608,21 +609,27 @@ export async function getSummary(
 	// see src/eventKind.ts for how "kind" is derived and why that comparison is
 	// the safe one.
 	//
-	// Matching is BEST-EFFORT within the window, not a guarantee. The two paths read
-	// `occurredAt` from DIFFERENT fields for every one of the four kinds — webhook
+	// Matching is BEST-EFFORT, not a guarantee. The two paths read `occurredAt`
+	// from DIFFERENT fields for every one of the four kinds — webhook
 	// `paid`/`cancelled` from the order's updated_at against reconciliation's
 	// createdAt and cancelledAt, webhook `fulfilled` from the fulfillment's
 	// updated_at against the order's fulfilledAt, webhook `refunded` from the
 	// refund's processed_at against the order's updatedAt (src/normalize.ts vs
 	// src/reconcile.ts). So one real change is observed at two different instants,
-	// and a pair whose two timestamps straddle `windowStart` is not found: the
-	// in-window reconciliation row is counted as a gap even though its webhook twin
-	// exists, just outside. That over-counts rather than under-counts, which is the
-	// wrong direction for this product's safety bias, so it is a known residual
-	// worth closing — src/digestData.ts widens its match window by a day on each
-	// side for exactly this reason, and this rolling 7-day window can do the same
-	// when someone is willing to re-verify the three other tallies that share this
-	// loop (eventsTotal, the activity buckets, and webhookEvents).
+	// and a pair whose two timestamps straddle `windowStart` would otherwise not be
+	// found: the in-window reconciliation row would be counted as a gap even
+	// though its webhook twin exists, just outside.
+	//
+	// The fix is the same one src/digestData.ts already uses: widen the QUERY below
+	// windowStart by MATCH_MARGIN_MS, so a webhook row just outside the window is
+	// still fetched and can still populate `webhookKeys`. That set exists ONLY to
+	// recognise a twin — a margin row must never be counted as an event that
+	// happened in this window. So every tally below (`eventsTotal`, `webhookEvents`,
+	// the activity buckets, and `reconciliationCandidates`) is gated back to
+	// `occurredAt >= windowStart` before it runs; only `webhookKeys` sees the full
+	// widened fetch. Unlike src/digestData.ts, there is no upper-edge margin here:
+	// this window's upper edge is `now`, not a fixed boundary in the past, so there
+	// is no future-dated twin to widen for.
 	//
 	// Consequence: `webhookEvents` and `reconciliationOnlyEvents` no longer sum to
 	// `eventsTotal` — a matched reconciliation event is counted in neither. That
@@ -640,23 +647,36 @@ export async function getSummary(
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
+			// Widened below windowStart by the digest's own match margin (imported, not
+			// redeclared) — see the comment above for why, and why every tally but
+			// `webhookKeys` below still gates back to the real windowStart.
+			{ attribute: 'occurredAt', value: windowStart - MATCH_MARGIN_MS, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
 		select: ['occurredAt', 'domain', 'source', 'resourceId', 'state', 'topic'],
 	})) {
-		eventsTotal++;
+		const occurredAt = Number(e.occurredAt);
 		const resourceId = typeof e.resourceId === 'string' ? e.resourceId : undefined;
 		const kind = eventKind({ domain: e.domain as EventDomain, state: e.state as string | undefined, topic: e.topic as string | undefined });
-		if (String(e.source) === 'reconciliation') {
+		const isReconciliation = String(e.source) === 'reconciliation';
+		// Built from the FULL widened fetch, margin rows included: recognising a twin
+		// just outside the window is the entire reason for widening the query. This
+		// set is a recognise-only index, never a tally — nothing below adds to it.
+		if (!isReconciliation && resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
+		// Everything from here down IS a tally, so a margin row (occurredAt before
+		// the real windowStart) is skipped rather than counted as this window's
+		// activity — it was fetched only to be recognisable above, not to be part of
+		// eventsTotal, webhookEvents, or a bucket it does not actually belong to.
+		if (occurredAt < windowStart) continue;
+		eventsTotal++;
+		if (isReconciliation) {
 			// Safety bias: a reconciliation event whose kind cannot be determined is
 			// never treated as a capture gap candidate — see eventKind.ts.
 			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
 		} else {
 			webhookEvents++;
-			if (resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
 		}
-		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((Number(e.occurredAt) - windowStart) / DAY_MS)));
+		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((occurredAt - windowStart) / DAY_MS)));
 		const bucket = buckets[index];
 		bucket.total++;
 		const domain = String(e.domain);
