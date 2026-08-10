@@ -68,9 +68,15 @@ type DigestOutbox @table(database: "sightline_core") @sealed {
 	# `${shopId}:${periodStart}` so rebuilding a period upserts one row rather than
 	# duplicating it. Bodies contain order names, counts and timestamps only — never
 	# customer data.
+	#
+	# Deliberately NO `email` column. The privacy policy and the Notifications
+	# screen both tell merchants the address is deleted when they clear it or
+	# uninstall, and uninstallShop deletes only DigestSubscriptions — so a copy on
+	# every outbox row would have survived that promise until the 30-day purge. No
+	# sender exists to need it here, and a future sender can read the address from
+	# the subscription at send time, which is the only moment it is actually needed.
 	id: ID! @primaryKey
 	shopId: String! @indexed
-	email: String
 	cadence: String
 	periodStart: Float! @indexed
 	periodEnd: Float

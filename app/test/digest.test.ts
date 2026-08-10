@@ -144,10 +144,9 @@ test('the html body escapes hostile order names', () => {
 });
 
 test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
-	const row = outboxRow(input({ unconfirmed: 2, failedAttempts: 1, deliveryGaps: 3 }), 'ops@merchant.example', NOW);
+	const row = outboxRow(input({ unconfirmed: 2, failedAttempts: 1, deliveryGaps: 3 }), NOW);
 	assert.equal(row.id, `s1.myshopify.com:${Date.parse('2026-08-04T00:00:00Z')}`);
 	assert.equal(row.status, 'pending');
-	assert.equal(row.email, 'ops@merchant.example');
 	assert.equal(row.unconfirmed, 2);
 	assert.equal(row.failedAttempts, 1);
 	assert.equal(row.deliveryGaps, 3);
@@ -156,12 +155,27 @@ test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
 	assert.ok((row.bodyHtml ?? '').length > 0);
 });
 
+// The row previously carried an `email` column, and this test previously asserted
+// its value. That copy is what made the privacy policy's and the Notifications
+// screen's "deleted as soon as you clear it or uninstall" untrue: uninstallShop
+// deletes only DigestSubscriptions, so every outbox row's copy survived until the
+// 30-day purge. The assertion is now the opposite one — no key, not merely an
+// empty value — because a row shape is the only thing that can guarantee it.
+test('an outbox row carries no address anywhere in it, so clearing or uninstalling really does erase it', () => {
+	const row = outboxRow(input({ unconfirmed: 2, topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 30 }] }), NOW);
+	assert.equal(Object.hasOwn(row, 'email'), false);
+	// Nothing address-shaped anywhere in the row, including the rendered bodies and
+	// the subject — an `@`-bearing order name is the realistic way one could return
+	// by the back door.
+	assert.doesNotMatch(JSON.stringify(row), /[^\s"@]+@[^\s"@]+\.[^\s"@]+/);
+});
+
 // Restates the id's determinism for the build loop's benefit (src/digestBuild.ts):
 // this is what makes an overlapping tick/thread/node upsert rather than duplicate.
 // Already implied by the previous test's `row.id` assertion.
 test('an outbox id is stable for a period, so a rebuild overwrites rather than duplicating', () => {
-	const first = outboxRow(input({ unconfirmed: 1 }), 'a@b.example', NOW);
-	const second = outboxRow(input({ unconfirmed: 5 }), 'a@b.example', NOW + 1000);
+	const first = outboxRow(input({ unconfirmed: 1 }), NOW);
+	const second = outboxRow(input({ unconfirmed: 5 }), NOW + 1000);
 	assert.equal(first.id, second.id);
 	assert.notEqual(first.unconfirmed, second.unconfirmed);
 });

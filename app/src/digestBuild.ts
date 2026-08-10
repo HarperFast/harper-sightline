@@ -63,11 +63,13 @@ export interface DigestBuildResult {
 }
 
 // The address is the only merchant-identifying string this app stores, and
-// this is the first background loop whose per-item data (the subscription's
-// email, embedded in the outbox row by outboxRow) is at risk of reaching a log
-// line through something OTHER than a field named `email` — namely an error
-// message that happens to echo the value it choked on, which is ordinary
-// behavior for many data layers. `redactFields` (src/observe.ts) only redacts
+// this is the first background loop whose per-item data includes it: the
+// subscription row this loop reads and patches carries the address, so it is at
+// risk of reaching a log line through something OTHER than a field named
+// `email` — namely an error message that happens to echo the value it choked
+// on, which is ordinary behavior for many data layers. (The outbox row it
+// WRITES no longer carries the address at all — see outboxRow in src/digest.ts
+// — which removes one path but not this one.) `redactFields` (src/observe.ts) only redacts
 // by KEY name, so a `message` field is not covered by it at all. These two
 // scrubbers are a second, value-level line of defense scoped to this loop,
 // not a change to that shared, key-based mechanism.
@@ -138,8 +140,11 @@ export async function runDigestBuild(now: number, deps: DigestBuildDeps): Promis
 
 			// A quiet, healthy period produces no digest, but the period is still
 			// marked built below so the next tick does not re-gather it.
+			// The address is still REQUIRED to build — a digest with nobody to send it
+			// to is not worth writing — but it is not written INTO the row (outboxRow
+			// takes no address); it stays on the subscription alone.
 			if (hasSomethingToSay(input) && subscription.email) {
-				await deps.outboxes.put(outboxRow(input, subscription.email, now));
+				await deps.outboxes.put(outboxRow(input, now));
 				built++;
 			} else {
 				skippedQuiet++;

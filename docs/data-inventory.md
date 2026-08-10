@@ -58,7 +58,7 @@ The operations digest (build-only; there is no sender yet — see the "digest-no
 | Table | Field(s) | Purpose | Retention |
 |---|---|---|---|
 | `DigestSubscription` | `email`, `cadence`, `status`, `lastBuiltAt` | Merchant-supplied notification address and frequency. **The only merchant-identifying string stored.** Not customer data. | Deleted on clear, uninstall, or shop-redact; not aged out |
-| `DigestOutbox` | `email`, `subject`, `bodyText`, `bodyHtml`, counts | Rendered digests awaiting a sender. Bodies carry order names, counts, timestamps — no customer data. | 30-day purge; erased on uninstall/shop-redact |
+| `DigestOutbox` | `subject`, `bodyText`, `bodyHtml`, counts | Rendered digests awaiting a sender, addressed by `shopId` only. Bodies carry order names, counts, timestamps — no customer data, and **no copy of the notification address**: a sender reads that from the subscription when it sends, so clearing the address or uninstalling really does erase it rather than leaving copies to age out with the outbox. | 30-day purge; erased on uninstall/shop-redact |
 
 Two retention windows now apply, and both are disclosed everywhere retention is mentioned (the Privacy screen, the public policy, and this document): the ledger's 7-day purge, and the digest outbox's separate 30-day purge. The outbox deliberately outlives the ledger — a digest is a record of what the merchant was told, worth keeping after the events it describes have aged out.
 

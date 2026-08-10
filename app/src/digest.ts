@@ -181,11 +181,17 @@ export function digestHtml(input: DigestInput): string {
 
 // One row per shop per period — a rebuild of the same period upserts rather than
 // duplicating, which is what makes the loop safe to run from several threads.
-export function outboxRow(input: DigestInput, email: string, now: number): DigestOutbox {
+//
+// Takes NO address, and writes none. A digest row is addressed by shop, and the
+// address itself lives only on DigestSubscription, which is what makes the
+// policy's "deleted as soon as you clear it or uninstall" true: uninstallShop
+// deletes the subscription, and copies on outbox rows would have outlived that
+// promise until the 30-day purge. A sender, when one exists, reads the address
+// from the subscription at the moment it sends — the only moment it needs it.
+export function outboxRow(input: DigestInput, now: number): DigestOutbox {
 	return {
 		id: `${input.shopId}:${input.periodStart}`,
 		shopId: input.shopId,
-		email,
 		cadence: input.cadence,
 		periodStart: input.periodStart,
 		periodEnd: input.periodEnd,

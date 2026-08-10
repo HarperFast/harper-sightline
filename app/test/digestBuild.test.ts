@@ -148,10 +148,15 @@ test('a failure building one subscription does not starve subscriptions after it
 	// subscription's happens to fail).
 	// The thrown message deliberately echoes the address at risk — the exact
 	// shape of failure this loop must survive without leaking it (e.g. a data
-	// layer's write-conflict error quoting the offending row).
+	// layer's write-conflict error quoting the offending row). The address is
+	// written literally rather than read off `row`, because a DigestOutbox row no
+	// longer HAS an email column; the live leak path is now a layer that quotes
+	// the subscription row (which does hold the address) or any other
+	// address-bearing message thrown inside the per-subscription try block. Either
+	// way the catch must scrub it, which is what the log assertions below prove.
 	const outboxes = {
 		async put(row: DigestOutbox) {
-			if (row.shopId === 's1') throw new Error(`write conflict for ${row.email}`);
+			if (row.shopId === 's1') throw new Error('write conflict for bad@b.example');
 			outboxRows.set(row.id, row);
 		},
 		async get(id: string) {

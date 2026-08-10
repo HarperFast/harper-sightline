@@ -64,10 +64,12 @@ export interface DigestSubscription {
 	lastBuiltAt?: number;
 }
 
+// No `email` field, deliberately — see schema.graphql's DigestOutbox comment. The
+// address lives on DigestSubscription only, so clearing it or uninstalling really
+// does erase it, as the policy and the Notifications screen both promise.
 export interface DigestOutbox {
 	id: string; // `${shopId}:${periodStart}`
 	shopId: string;
-	email?: string;
 	cadence?: DigestCadence;
 	periodStart: number;
 	periodEnd?: number;
