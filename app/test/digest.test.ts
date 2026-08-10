@@ -90,6 +90,30 @@ test('the subject leads with the most actionable number and never says failed ab
 	assert.doesNotMatch(digestSubject(input({ unconfirmed: 3 })), /failed/i);
 });
 
+// The weekly branch had no coverage at all — every other subject test passes
+// cadence: 'daily', so `week of ${day(periodStart)}` was rendered by nothing.
+test('a weekly subject names the week, not the day, and marks it UTC', () => {
+	const weekStart = Date.parse('2026-07-27T00:00:00Z');
+	const subject = digestSubject(
+		input({ cadence: 'weekly', periodStart: weekStart, periodEnd: Date.parse('2026-08-03T00:00:00Z'), unconfirmed: 3 }),
+	);
+	assert.match(subject, /\(week of 2026-07-27 UTC\)/);
+	assert.doesNotMatch(subject, /\(2026-07-27/);
+});
+
+// A subject is read on its own — an inbox list, a mobile notification, a forwarded
+// preview — where a bare date reads as the reader's own calendar day. The bodies
+// have always tagged their window (UTC); the subject did not, which made the UTC
+// claim in this module's header comment false for the one surface most often read
+// without the rest of the message.
+test('a daily subject marks its window UTC, and separates it from the current-state count', () => {
+	const subject = digestSubject(input({ unconfirmed: 3 }));
+	assert.match(subject, /\(2026-08-04 UTC\)/);
+	// "now" belongs to the count, which is current-state; the parenthetical is the
+	// window. Without the marker a reader takes the 3 for the window's total.
+	assert.match(subject, /3 orders awaiting confirmation now \(/);
+});
+
 test('the subject has no CR or LF, so it can never inject a mail header', () => {
 	for (const subject of [
 		digestSubject(input({ unconfirmed: 3 })),
@@ -128,6 +152,37 @@ test('a fractional age hour is rounded before rendering, never leaked as a decim
 	const body = digestText(input({ unconfirmed: 1, topAwaiting: [{ orderName: '#2002', orderId: 'o2', ageHours: 80.5 }] }));
 	assert.match(body, /3d 9h/);
 	assert.doesNotMatch(body, /\d+\.\d+h/);
+});
+
+// Three numbers, two tenses. The awaiting count is current-state (it is the
+// Overview's tile and the population the list below it is drawn from); the other
+// two are scoped to the closed window named at the top. Each line must say which,
+// in BOTH bodies — a reader who takes the awaiting count for a window total is
+// reading exactly the wrong thing the old label invited.
+test('each rendered number says whether it is current-state or scoped to the window', () => {
+	const filled = input({
+		unconfirmed: 4,
+		failedAttempts: 2,
+		deliveryGaps: 1,
+		topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 80 }],
+	});
+	for (const body of [digestText(filled), digestHtml(filled)]) {
+		assert.match(body, /Orders awaiting fulfillment confirmation, as of now: 4/);
+		assert.match(body, /Fulfillment attempts Shopify recorded as unsuccessful in this window: 2/);
+		assert.match(body, /Changes found by direct check rather than webhook, in this window: 1/);
+		// The list is the same current-state population as the first number, so its
+		// heading must not read as window-scoped either.
+		assert.match(body, /Longest waiting, as of now/);
+	}
+	// And the relabelled lines blame nobody. Checked against the reported numbers
+	// only, not the whole body: the boundary paragraph says the words "warehouse or
+	// carrier failed" on purpose, inside the sentence that DENIES the inference, and
+	// it is asserted separately below.
+	const text = digestText(filled);
+	const reported = text.slice(0, text.indexOf('These are observations'));
+	assert.ok(reported.includes('as of now: 4'), 'the slice must actually contain the reported numbers');
+	assert.doesNotMatch(reported, /warehouse|carrier|3pl|vendor|supplier/i);
+	assert.match(text, /does not prove that a warehouse or carrier failed/i);
 });
 
 test('the body never contains customer data', () => {

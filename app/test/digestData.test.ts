@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
 import { gatherDigestInput, TOP_AWAITING } from '../src/digestData.ts';
+import { getSummary, type QueryTable } from '../src/queries.ts';
 
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -67,6 +68,22 @@ function tables() {
 				shopId: 's1',
 				orderId: 'oB',
 				detector: 'fulfillment_attempt_failed',
+				status: 'unconfirmed',
+				detectedAt: PERIOD_START + 2 * HOUR,
+			},
+			{
+				// The SAME order as the failed-attempt finding above. Both detectors run
+				// per order independently (detectorKey is
+				// `${detector}:${shopId}:${orderId}:${ruleVersion}`), so an order past its
+				// deadline that also had a failed attempt produces two findings — which is
+				// exactly why a findings count cannot be labelled as an orders count. With
+				// this row the fixture has THREE in-period unconfirmed findings across TWO
+				// awaiting orders, so the two numbers are distinguishable and the
+				// assertions below can tell which one the code is reporting.
+				id: 'fulfillment_confirmation:s1:oB:1',
+				shopId: 's1',
+				orderId: 'oB',
+				detector: 'fulfillment_confirmation',
 				status: 'unconfirmed',
 				detectedAt: PERIOD_START + 2 * HOUR,
 			},
@@ -150,7 +167,13 @@ function tables() {
 
 test('counts are scoped to the shop and to the period', async () => {
 	const input = await gatherDigestInput(tables(), 's1', 'daily', PERIOD_START, PERIOD_END, NOW);
-	assert.equal(input.unconfirmed, 2, 'both unconfirmed findings, absence and failed-attempt');
+	// TWO awaiting orders (oA, oB), not the THREE unconfirmed findings detected in
+	// the period — oB carries both a confirmation finding and a failed-attempt
+	// finding, and counting findings would report it twice as an "order".
+	assert.equal(input.unconfirmed, 2, 'orders awaiting confirmation, one entry per order');
+	assert.equal(input.topAwaiting.length, input.unconfirmed, 'the headline count and the list beneath it are one population');
+	// Counted independently, not as a subset of the headline: this is a presence
+	// (Shopify recorded an attempt that did not succeed), scoped to the period.
 	assert.equal(input.failedAttempts, 1);
 	assert.equal(input.deliveryGaps, 1, 'only the in-period reconciliation-only event');
 	assert.equal(input.shopId, 's1');
@@ -159,6 +182,51 @@ test('counts are scoped to the shop and to the period', async () => {
 	assert.equal(input.periodEnd, PERIOD_END);
 	assert.equal(input.recorderHealthy, true, "another tenant's dead letter must not make this shop's recorder look unhealthy");
 	assert.equal(input.deadLettered, 0);
+});
+
+// THE structural guard for the headline count. The digest's `unconfirmed` and the
+// Overview's `orders.awaitingConfirmation` must be the same number for the same
+// shop, because they are the same claim rendered on two surfaces — the
+// Notifications screen literally promises the digest reports "How many orders are
+// awaiting fulfillment confirmation", which is the Overview's tile.
+//
+// This is the assertion that would have caught the original defect: the digest
+// counted GapFinding rows while the tile counted orders, so on this fixture the
+// digest said 3 and the tile said 2. It fails if EITHER side drifts — a
+// reintroduced findings count on the digest side, or a changed predicate on the
+// Overview side — which is why it derives both numbers rather than hardcoding one.
+//
+// Both are computed over the same fixture. Note the one legitimate divergence,
+// avoided here on purpose: getSummary bounds its projection scan to the 7-day read
+// window on `lastEventAt`, while the digest does not, so a fixture row older than
+// that would make the two differ for a reason that is not a defect (see the
+// comment in gatherDigestInput). Every projection in `tables()` is inside the
+// window, so this equality is honest rather than accidental.
+test('the digest reports the same awaiting count as the Overview tile, for the same shop', async () => {
+	const t = tables();
+	const input = await gatherDigestInput(t, 's1', 'daily', PERIOD_START, PERIOD_END, NOW);
+	const summary = await getSummary(
+		{
+			events: t.events as unknown as QueryTable,
+			projections: t.projections as unknown as QueryTable,
+			findings: t.findings as unknown as QueryTable,
+			deliveries: t.deliveries as unknown as QueryTable,
+			shops: new FakeTable('shopId', [{ shopId: 's1' }]) as unknown as QueryTable,
+		},
+		's1',
+		NOW,
+	);
+	const orders = summary.orders as { awaitingConfirmation: number };
+	assert.equal(input.unconfirmed, orders.awaitingConfirmation);
+	// Not vacuously equal because both are zero, and not equal to the findings count
+	// either — the fixture has three in-period unconfirmed findings for s1.
+	assert.equal(orders.awaitingConfirmation, 2);
+	// The same agreement for the failed-attempt figure, which the two surfaces also
+	// both publish. getSummary's is unbounded in time and the digest's is scoped to
+	// the period; they coincide here because the fixture's only failed-attempt
+	// finding falls inside the period, and that is asserted rather than assumed.
+	const findings = summary.findings as { failedAttempts: number };
+	assert.equal(input.failedAttempts, findings.failedAttempts);
 });
 
 test('the longest-waiting orders are listed oldest first and capped', async () => {

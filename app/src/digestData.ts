@@ -32,17 +32,25 @@ export async function gatherDigestInput(
 	periodEnd: number,
 	now: number,
 ): Promise<DigestInput> {
-	// Findings DETECTED in the period. Counting by detection time (rather than
-	// current state) is what makes the digest a report about that window instead of
-	// a snapshot that happens to be sent on a schedule.
-	let unconfirmed = 0;
+	// Failed fulfillment attempts DETECTED in the period — Shopify recorded an
+	// attempt that did not succeed. Direct evidence of a presence, so it is counted
+	// on its own terms and by detection time, which is what makes it a statement
+	// about this window.
+	//
+	// It is NOT a subset of `unconfirmed` below, and must not be presented as one.
+	// This count used to be taken inside a loop that incremented `unconfirmed` for
+	// every finding first, so the two figures were nested while the bodies printed
+	// them as two adjacent, disjoint-looking lines — and it filed a PRESENCE (an
+	// attempt Shopify recorded as failed) underneath an ABSENCE headline. The
+	// `status === 'unconfirmed'` gate is kept deliberately: it is the same
+	// definition getSummary's `findings.failedAttempts` uses, so the digest and the
+	// Overview cannot disagree about this number either.
 	let failedAttempts = 0;
 	for await (const row of tables.findings.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const finding = row as unknown as GapFinding;
 		const detectedAt = finding.detectedAt ?? 0;
 		if (detectedAt < periodStart || detectedAt >= periodEnd) continue;
 		if (finding.status !== 'unconfirmed') continue;
-		unconfirmed++;
 		if (finding.detector === DETECTOR_FAILED) failedAttempts++;
 	}
 
@@ -137,11 +145,33 @@ export async function gatherDigestInput(
 		deadLettered++;
 	}
 
-	// The orders that have been waiting longest, as of NOW rather than as of the
+	// The orders awaiting fulfillment confirmation, as of NOW rather than as of the
 	// period end: a merchant acting on this message needs the current wait.
 	// `isAwaitingConfirmation` / `ageHours` come from src/orders.ts — the single
 	// definition the Overview and the worklist also use, so a digest can never
 	// name a different set of orders, or a different age for one, than the app.
+	//
+	// This ONE loop produces both the headline count and the list beneath it, which
+	// is the point. The headline used to be a count of unconfirmed GapFinding rows
+	// detected in the period, rendered under an "orders awaiting" label — three
+	// defects at once. Findings are not orders: `detectorKey()` is
+	// `${detector}:${shopId}:${orderId}:${ruleVersion}` and both detectors run per
+	// order independently, so one order past its deadline that ALSO had a failed
+	// attempt produced two findings and was counted as two "orders". And the number
+	// disagreed with the list printed directly below it, and with the Overview tile
+	// — three populations, one label. Deriving the count from the same iteration
+	// that builds the list makes number-equals-list true by construction rather
+	// than by agreement, and `isAwaitingConfirmation` is what makes it agree with
+	// getSummary's `orders.awaitingConfirmation` (pinned by a test that asserts the
+	// two are equal on one fixture).
+	//
+	// One divergence from that tile remains, and it is deliberate: getSummary also
+	// bounds its projection scan to the 7-day read window (`windowCondition`),
+	// while this scan does not. An order still awaiting past that window — purge
+	// residue, since retention normally removes it — is counted and named here but
+	// absent from the Overview. Bounding it identically would mean silently
+	// dropping the oldest, most overdue orders from the one message whose job is to
+	// surface them, so the digest keeps the wider set.
 	const awaiting: DigestOrderRef[] = [];
 	for await (const row of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const p = row as unknown as OrderProjection;
@@ -160,7 +190,9 @@ export async function gatherDigestInput(
 		cadence,
 		periodStart,
 		periodEnd,
-		unconfirmed,
+		// Orders, not findings — and every one of them is in `awaiting`, of which
+		// topAwaiting is the first TOP_AWAITING entries.
+		unconfirmed: awaiting.length,
 		failedAttempts,
 		deliveryGaps,
 		recorderHealthy: deadLettered === 0,

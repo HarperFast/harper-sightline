@@ -12,14 +12,27 @@ import type { DigestCadence, DigestOutbox } from './model.ts';
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
 
-// Periods are UTC and always CLOSED: the digest describes the last complete day
-// or week, never a partial one in progress. A merchant reading "3 orders awaiting"
-// for a window that is still open would have no way to know the number will move.
+// Periods are UTC and always CLOSED: the window a digest describes is the last
+// complete day or week, never a partial one in progress. A merchant reading a
+// window-scoped number for a window still open would have no way to know it will
+// move.
+//
+// Two figures in the message are deliberately CURRENT-STATE rather than
+// window-scoped, and both say so where they are rendered: the count of orders
+// awaiting fulfillment confirmation, and the longest-waiting list. They answer
+// "what is outstanding right now", which is what a merchant reading the message
+// can act on, and they are the same population the Overview's awaiting tile shows
+// (`isAwaitingConfirmation`, src/orders.ts) — a digest that named a different set
+// of orders than the app would be worse than one that mixes tenses. So the rule
+// is not "a digest never reports the present": it is that every number states
+// which of the two it is, and the closed window is what the WINDOW-scoped numbers
+// are scoped to.
 //
 // UTC rather than the store's timezone is a deliberate simplification: it keeps
 // the boundary arithmetic trivial and identical across cluster nodes, and every
-// message names its window explicitly, so nothing is ambiguous even when the
-// store's day differs.
+// message names its window explicitly AND marks it UTC — including the subject,
+// which is often the only part read (inbox list, mobile notification, forward
+// preview) — so nothing is ambiguous even when the store's day differs.
 export function periodStartFor(cadence: DigestCadence, now: number): number {
 	const midnight = Math.floor(now / DAY_MS) * DAY_MS;
 	if (cadence === 'weekly') {
@@ -65,6 +78,16 @@ export interface DigestInput {
 // A digest with nothing to report is not sent. A recurring "all clear" email
 // trains people to ignore the channel, and the app itself is always available for
 // a health check.
+//
+// `unconfirmed` is now a current-state count of orders awaiting confirmation, not
+// a count of findings detected in the window, and that changes WHEN digests
+// appear: an order that stays awaiting for a fortnight makes every daily digest in
+// that fortnight non-empty. That is the right behavior — an order still waiting is
+// an open, actionable item, and the message leads with how long the oldest ones
+// have waited, so each digest carries new information (a growing age) rather than
+// repeating an all-clear. The failure mode this function guards against is the
+// digest that says "nothing is wrong"; it was never "do not mention an unresolved
+// problem twice".
 export function hasSomethingToSay(input: DigestInput): boolean {
 	return input.unconfirmed > 0 || input.failedAttempts > 0 || input.deliveryGaps > 0 || !input.recorderHealthy;
 }
@@ -112,14 +135,24 @@ export function headerSafe(value: string): string {
 
 // The subject leads with the most actionable fact. A failed attempt outranks an
 // absence (it is direct evidence), and a broken recorder outranks both, because
-// while the recorder is unhealthy the other numbers may be incomplete.
+// while the recorder is unhealthy the other numbers may be incomplete. The ladder
+// is unchanged by the awaiting recount: it orders by kind of evidence, not by
+// which tense a number is in, and `hasSomethingToSay` still fires on exactly the
+// complement of the "Nothing to report" branch.
+//
+// The parenthetical names the digest's WINDOW, marked UTC because a subject line
+// is read on its own — in an inbox list, a notification, a forwarded preview —
+// where a bare date would read as the reader's own calendar day. The awaiting lead
+// says "now" for the same reason: it is the one lead whose number is current-state
+// rather than scoped to that window, and the subject is exactly where the two
+// would otherwise be conflated.
 export function digestSubject(input: DigestInput): string {
-	const window = input.cadence === 'weekly' ? `week of ${day(input.periodStart)}` : day(input.periodStart);
+	const window = input.cadence === 'weekly' ? `week of ${day(input.periodStart)} UTC` : `${day(input.periodStart)} UTC`;
 	let lead: string;
 	if (!input.recorderHealthy) lead = 'Sightline needs attention';
 	else if (input.failedAttempts > 0)
 		lead = `${plural(input.failedAttempts, 'fulfillment attempt', 'fulfillment attempts')} did not succeed`;
-	else if (input.unconfirmed > 0) lead = `${plural(input.unconfirmed, 'order', 'orders')} awaiting confirmation`;
+	else if (input.unconfirmed > 0) lead = `${plural(input.unconfirmed, 'order', 'orders')} awaiting confirmation now`;
 	else if (input.deliveryGaps > 0) lead = `${plural(input.deliveryGaps, 'change', 'changes')} found by direct check`;
 	else lead = 'Nothing to report';
 	return headerSafe(`Sightline: ${lead} (${window})`);
@@ -141,12 +174,20 @@ export function digestText(input: DigestInput): string {
 		);
 		lines.push('');
 	}
-	lines.push(`Orders awaiting fulfillment confirmation: ${input.unconfirmed}`);
-	lines.push(`Fulfillment attempts that did not succeed: ${input.failedAttempts}`);
-	lines.push(`Changes found by direct check rather than webhook: ${input.deliveryGaps}`);
+	// Each line states its own tense. The first is current-state and matches the
+	// Overview's awaiting tile and the list below it; the other two are scoped to
+	// the window named above. Without the labels a reader would take all three for
+	// the same period, which is how a findings count came to be read as an orders
+	// count in the first place.
+	lines.push(`Orders awaiting fulfillment confirmation, as of now: ${input.unconfirmed}`);
+	lines.push(`Fulfillment attempts Shopify recorded as unsuccessful in this window: ${input.failedAttempts}`);
+	lines.push(`Changes found by direct check rather than webhook, in this window: ${input.deliveryGaps}`);
 	if (input.topAwaiting.length > 0) {
 		lines.push('');
-		lines.push('Longest waiting:');
+		// "as of now" again, because this list is the same current-state population
+		// as the first line — not the window's — and a heading under a
+		// window-stamped message would otherwise be read as window-scoped.
+		lines.push('Longest waiting, as of now:');
 		for (const order of input.topAwaiting) lines.push(`  ${label(order)} — waiting ${age(order.ageHours)}`);
 	}
 	lines.push('');
@@ -167,11 +208,12 @@ export function digestHtml(input: DigestInput): string {
 			? ''
 			: `<p><strong>Recorder needs attention:</strong> ${esc(plural(input.deadLettered, 'delivery', 'deliveries'))} could not be processed, so the numbers below may be incomplete.</p>`,
 		'<ul>',
-		`<li>Orders awaiting fulfillment confirmation: ${input.unconfirmed}</li>`,
-		`<li>Fulfillment attempts that did not succeed: ${input.failedAttempts}</li>`,
-		`<li>Changes found by direct check rather than webhook: ${input.deliveryGaps}</li>`,
+		// Same tense labels as the text body — see digestText.
+		`<li>Orders awaiting fulfillment confirmation, as of now: ${input.unconfirmed}</li>`,
+		`<li>Fulfillment attempts Shopify recorded as unsuccessful in this window: ${input.failedAttempts}</li>`,
+		`<li>Changes found by direct check rather than webhook, in this window: ${input.deliveryGaps}</li>`,
 		'</ul>',
-		rows ? `<h3>Longest waiting</h3><table>${rows}</table>` : '',
+		rows ? `<h3>Longest waiting, as of now</h3><table>${rows}</table>` : '',
 		`<p>${esc(BOUNDARY)}</p>`,
 		'<p>Sightline is read-only and never sits in your fulfillment path.</p>',
 	]

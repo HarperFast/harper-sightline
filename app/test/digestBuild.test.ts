@@ -18,23 +18,30 @@ const DAY = 86_400_000;
 const NOW = Date.parse('2026-08-05T14:30:00Z');
 const PERIOD_START = periodStartFor('daily', NOW);
 
-function buildDeps(overrides: Partial<{ subscriptions: FakeTable; outboxes: FakeTable; findings: FakeTable }> = {}) {
+function buildDeps(
+	overrides: Partial<{ subscriptions: FakeTable; outboxes: FakeTable; findings: FakeTable; projections: FakeTable }> = {},
+) {
 	const subscriptions = overrides.subscriptions ?? new FakeTable('shopId', []);
 	const outboxes = overrides.outboxes ?? new FakeTable('id', []);
 	const findings = overrides.findings ?? new FakeTable('id', []);
+	const projections = overrides.projections ?? new FakeTable('id', []);
 	const deps: DigestBuildDeps = {
 		subscriptions: subscriptions as unknown as DigestBuildDeps['subscriptions'],
 		outboxes: outboxes as unknown as DigestBuildDeps['outboxes'],
-		projections: new FakeTable('id', []) as unknown as DigestBuildDeps['projections'],
+		projections: projections as unknown as DigestBuildDeps['projections'],
 		findings: findings as unknown as DigestBuildDeps['findings'],
 		events: new FakeTable('eventId', []) as unknown as DigestBuildDeps['events'],
 		deliveries: new FakeTable('id', []) as unknown as DigestBuildDeps['deliveries'],
 	};
-	return { deps, subscriptions, outboxes, findings };
+	return { deps, subscriptions, outboxes, findings, projections };
 }
 
-// An unconfirmed finding detected inside the period, so gatherDigestInput
-// reports something actionable and hasSomethingToSay is true.
+// An unconfirmed finding detected inside the period, and the awaiting order it is
+// ABOUT. The two go together: a `fulfillment_confirmation` finding for an order
+// with no projection is a self-contradictory fixture, and it stopped being an
+// invisible one when the digest's headline count moved off findings and onto
+// isAwaitingConfirmation (src/orders.ts) — which is the population these tests
+// need non-empty for hasSomethingToSay to be true.
 function unconfirmedFinding(shopId: string, orderId: string): Record<string, unknown> {
 	return {
 		id: `fulfillment_confirmation:${shopId}:${orderId}:1`,
@@ -45,10 +52,26 @@ function unconfirmedFinding(shopId: string, orderId: string): Record<string, unk
 	};
 }
 
+// Paid, needs shipping, no fulfillment observed, not called off — awaiting, by
+// src/orders.ts's single definition. Paid four days before NOW, so it is past the
+// 72-hour deadline the finding above represents.
+function awaitingOrder(shopId: string, orderId: string): Record<string, unknown> {
+	return {
+		id: `${shopId}:${orderId}`,
+		shopId,
+		orderId,
+		orderName: `#${orderId}`,
+		paidAt: NOW - 4 * DAY,
+		requiresFulfillment: true,
+		lastEventAt: NOW - 4 * DAY,
+	};
+}
+
 test('a subscription that should build, with something to report, does', async () => {
 	const { deps, subscriptions, outboxes } = buildDeps({
 		subscriptions: new FakeTable('shopId', [{ shopId: 's1', email: 'a@b.example', status: 'active' }]),
 		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1')]),
 	});
 	const result = await runDigestBuild(NOW, deps);
 	assert.equal(result.built, 1);
@@ -66,6 +89,7 @@ test('a subscription already built for this period is not rebuilt', async () => 
 	const { deps, subscriptions, outboxes } = buildDeps({
 		subscriptions: new FakeTable('shopId', [{ shopId: 's1', email: 'a@b.example', status: 'active', lastBuiltAt: PERIOD_START }]),
 		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1')]),
 	});
 	const result = await runDigestBuild(NOW, deps);
 	assert.equal(result.built, 0);
@@ -99,6 +123,7 @@ test('a subscription with no address never builds', async () => {
 	const { deps, subscriptions, outboxes } = buildDeps({
 		subscriptions: new FakeTable('shopId', [{ shopId: 's1', status: 'active' }]),
 		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1')]),
 	});
 	const result = await runDigestBuild(NOW, deps);
 	assert.equal(result.built, 0);
@@ -112,9 +137,10 @@ test('a subscription with no address never builds', async () => {
 // second put would then land at a different key and the table would hold two
 // rows for the same shop and period instead of one.
 test('a rebuild of the same period upserts rather than duplicating', async () => {
-	const { deps, subscriptions, outboxes, findings } = buildDeps({
+	const { deps, subscriptions, outboxes, findings, projections } = buildDeps({
 		subscriptions: new FakeTable('shopId', [{ shopId: 's1', email: 'a@b.example', status: 'active' }]),
 		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1')]),
 	});
 	const first = await runDigestBuild(NOW, deps);
 	assert.equal(first.built, 1);
@@ -123,10 +149,13 @@ test('a rebuild of the same period upserts rather than duplicating', async () =>
 
 	// Simulate a second worker thread (or a manual rebuild) that reads the
 	// subscription before the first tick's patch lands — the realistic race the
-	// deterministic outbox id exists to make safe. A second, distinct finding
-	// changes what this period has to report.
+	// deterministic outbox id exists to make safe. A second awaiting order (with its
+	// own finding) changes what this period has to report, so the overwrite is
+	// observable: unconfirmed counts ORDERS awaiting, so a second finding on its own
+	// would leave the number at 1 and prove nothing about the upsert.
 	await subscriptions.patch('s1', { lastBuiltAt: PERIOD_START - DAY });
 	await findings.put(unconfirmedFinding('s1', 'o2'));
+	await projections.put(awaitingOrder('s1', 'o2'));
 
 	const second = await runDigestBuild(NOW, deps);
 	assert.equal(second.built, 1);
@@ -169,6 +198,7 @@ test('a failure building one subscription does not starve subscriptions after it
 			{ shopId: 's2', email: 'good@b.example', status: 'active' },
 		]),
 		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1'), unconfirmedFinding('s2', 'o2')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1'), awaitingOrder('s2', 'o2')]),
 	});
 	deps.outboxes = outboxes as unknown as DigestBuildDeps['outboxes'];
 
