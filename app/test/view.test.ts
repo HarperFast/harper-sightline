@@ -802,12 +802,24 @@ test('a shop with no scopes recorded says so rather than showing an empty list',
 	assert.ok(privacyView(privacy({ scopes: [] }), NOW, '').includes('read-only scopes pending confirmation'));
 });
 
+// Pinned to the badge, and asserted in BOTH directions. `/Notification email[\s\S]*stored/`
+// was satisfied by the no-address rendering too, because "none stored" contains
+// "stored" — so an inverted badge (claiming an address is held when none is, or the
+// reverse) read as correct. That is the one thing this row exists to get right.
 test('the privacy screen states whether a notification address is stored', () => {
-	assert.match(
-		privacyView(privacy({ notifications: { emailStored: true, status: 'active' } }), NOW, ''),
-		/Notification email[\s\S]*stored/,
-	);
-	assert.match(privacyView(privacy({ notifications: { emailStored: false, status: 'paused' } }), NOW, ''), /none stored/);
+	const stored = privacyView(privacy({ notifications: { emailStored: true, status: 'active' } }), NOW, '');
+	assert.match(stored, /<s-badge tone="info">stored<\/s-badge>/);
+	assert.doesNotMatch(stored, /none stored/);
+
+	const absent = privacyView(privacy({ notifications: { emailStored: false, status: 'paused' } }), NOW, '');
+	assert.match(absent, /<s-text color="subdued">none stored<\/s-text>/);
+	assert.doesNotMatch(absent, /<s-badge tone="info">stored(, paused)?<\/s-badge>/);
+
+	// A paused subscription still HOLDS the address, and says so distinctly — the
+	// row must not report a paused-but-stored address as no address at all.
+	const paused = privacyView(privacy({ notifications: { emailStored: true, status: 'paused' } }), NOW, '');
+	assert.match(paused, /<s-badge tone="info">stored, paused<\/s-badge>/);
+	assert.doesNotMatch(paused, /none stored/);
 });
 
 // ── shell states ─────────────────────────────────────────────────────────────
@@ -1295,10 +1307,19 @@ test('the screen states plainly, in its own banner, that digests are stored (for
 	assert.doesNotMatch(banner![0], /ready when delivery ships|waiting for you/i);
 });
 
+// Pinned to the instruction paragraph, not the page. Matching /clear|remove|empty/
+// against the whole page was satisfied by the banner's own "then removes it", so
+// deleting the sentence that tells a merchant HOW to unsubscribe — the only place
+// the app says it — left this test green. It is the disclosure that matters, so it
+// has to be the disclosure that is asserted.
 test('the screen discloses that the address is stored and how to remove it', () => {
 	const html = notificationsView(digestSettings({ email: 'ops@merchant.example', status: 'active' }), NOW, '');
-	assert.match(html, /stored/i);
-	assert.match(html, /clear|remove|empty/i);
+	const instruction = html.match(/<s-paragraph><s-text color="subdued">Clear the field[\s\S]*?<\/s-paragraph>/);
+	assert.ok(instruction, 'the address-disclosure paragraph must be present');
+	// Both halves in the paragraph itself: how to remove the address, and that it is
+	// stored with the shop's data until then.
+	assert.match(instruction![0], /clear the field and save to remove your address/i);
+	assert.match(instruction![0], /stored/i);
 });
 
 test('a save error is shown to the merchant rather than swallowed', () => {
