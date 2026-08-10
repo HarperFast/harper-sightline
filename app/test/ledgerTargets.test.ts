@@ -2,8 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { REDACT_TARGETS, RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from '../src/ledgerTargets.ts';
 import { OUTBOX_RETENTION_DAYS } from '../src/retention.ts';
-import type { RedactTarget } from '../src/redaction.ts';
-import type { RetentionTarget } from '../src/retention.ts';
 
 // ledgerTargets.ts wires DigestSubscription/DigestOutbox into REDACT_TARGETS,
 // RETENTION_TARGETS, and OUTBOX_RETENTION_TARGETS by hand. Their correctness is
@@ -26,20 +24,20 @@ test('DigestSubscription and DigestOutbox are shop-redact targets with no orderF
 	// No orderField is what makes redaction.ts's `if (!target.orderField)
 	// continue;` skip these tables on customers/redact. An orderField here would
 	// silently let customer redaction reach a table it must never touch.
-	const subscription = findEntry(REDACT_TARGETS as RedactTarget[], 'DigestSubscription');
-	const outbox = findEntry(REDACT_TARGETS as RedactTarget[], 'DigestOutbox');
+	const subscription = findEntry(REDACT_TARGETS, 'DigestSubscription');
+	const outbox = findEntry(REDACT_TARGETS, 'DigestOutbox');
 	assert.equal(subscription.orderField, undefined);
 	assert.equal(outbox.orderField, undefined);
 });
 
 test('digest tables are absent from the seven-day RETENTION_TARGETS', () => {
-	const names = (RETENTION_TARGETS as RetentionTarget[]).map((t) => t.name);
+	const names = RETENTION_TARGETS.map((t) => t.name);
 	assert.ok(!names.includes('DigestSubscription'), 'the subscription is core config, not a purge target at all');
 	assert.ok(!names.includes('DigestOutbox'), 'the outbox keeps 30 days — it must not be swept by the 7-day cutoff');
 });
 
 test('DigestOutbox has its own 30-day entry in OUTBOX_RETENTION_TARGETS', () => {
-	const outboxEntry = findEntry(OUTBOX_RETENTION_TARGETS as RetentionTarget[], 'DigestOutbox');
+	const outboxEntry = findEntry(OUTBOX_RETENTION_TARGETS, 'DigestOutbox');
 	assert.equal(outboxEntry.tsField, 'createdAt');
 	assert.equal(OUTBOX_RETENTION_DAYS, 30);
 });
