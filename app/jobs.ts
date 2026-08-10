@@ -10,6 +10,8 @@ import {
 	EventSkus,
 	InventoryItems,
 	ShopLocations,
+	DigestSubscriptions,
+	DigestOutboxes,
 } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
 import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
@@ -19,12 +21,19 @@ import { isOrderLinked, rebuildProjection } from './src/projection.ts';
 import { uninstallShop } from './src/lifecycle.ts';
 import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/detector.ts';
 import { purgeExpired, type PurgeResult } from './src/retention.ts';
-import { RETENTION_TARGETS } from './src/ledgerTargets.ts';
+import { RETENTION_TARGETS, OUTBOX_RETENTION_DAYS, OUTBOX_RETENTION_TARGETS } from './src/ledgerTargets.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
 import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
 import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
+import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/stateBackfill.ts';
+import {
+	runDigestBuild as runDigestBuildSweep,
+	scrubEmailShaped,
+	type DigestBuildDeps,
+	type DigestBuildResult,
+} from './src/digestBuild.ts';
 import { log, metrics, M } from './src/observe.ts';
 import { computeOpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
@@ -221,6 +230,12 @@ export function runPurge(now = Date.now()): Promise<PurgeResult> {
 	return purgeExpired(RETENTION_TARGETS, now);
 }
 
+// The digest outbox keeps 30 days, not the ledger's 7: a digest is a record of
+// what the merchant was told, worth keeping after the events it described expire.
+export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
+	return purgeExpired(OUTBOX_RETENTION_TARGETS, now, OUTBOX_RETENTION_DAYS);
+}
+
 function purgeTick(): void {
 	void purgeTicker.run(async () => {
 		try {
@@ -242,6 +257,31 @@ function purgeTick(): void {
 		} catch (e: unknown) {
 			metrics.inc(M.purgeError);
 			log('error', 'purge.error', { message: (e as Error).message });
+		}
+
+		// The outbox sweep gets its OWN try/catch rather than sharing the ledger
+		// purge's. Sharing one meant a ledger-purge failure skipped the outbox
+		// entirely on that tick — and since a persistent ledger failure repeats
+		// every tick, the 30-day digest retention this app discloses publicly
+		// would quietly stop running while the only symptom logged was
+		// `purge.error` about a different table. The two sweeps are independent
+		// (different tables, different cutoffs), so a failure in one must not
+		// decide whether the other runs. Same metrics as the ledger purge: the
+		// counters are per-purge-activity, not per-table, so ops.snapshot's tally
+		// reflects outbox work instead of showing nothing for it.
+		try {
+			const outbox = await runOutboxPurge();
+			metrics.inc(M.purgeDeleted, outbox.deleted);
+			if (outbox.failures.length) metrics.inc(M.purgeFailure, outbox.failures.length);
+			if (outbox.deleted) log('trace', 'purge.outbox', { deleted: outbox.deleted });
+			// Residue on the outbox means the same thing it means for the ledger —
+			// expired rows still present after a run (purge lag) — and was the one
+			// signal of the two sweeps that had no log line at all.
+			if (outbox.residue) log('warn', 'purge.outbox.residue', { residue: outbox.residue });
+			if (outbox.failures.length) log('warn', 'purge.outbox.failures', { count: outbox.failures.length, failures: outbox.failures });
+		} catch (e: unknown) {
+			metrics.inc(M.purgeError);
+			log('error', 'purge.outbox.error', { message: (e as Error).message });
 		}
 	});
 }
@@ -459,6 +499,113 @@ export function startInventoryEnrichmentLoop(): void {
 	setInterval(enrichTick, ENRICH_INTERVAL_MS);
 }
 
+// One-time backfill of the derived `state` column on order projections written
+// before that column existed. Without it, every lane count on the Overview
+// disagrees with the list it links to — getSummary/computeFlows derive the lane
+// live, listOrders filters the stored column — and the worst-affected population
+// is the one the worklist exists for: a paid, unfulfilled, QUIET order gets no
+// further events by definition, so it never rebuilds, and reconciliation's
+// cursor-scoped sweep never re-fetches it either.
+//
+// Runs on a short interval so a deploy converges quickly, then goes quiet: rows
+// written after the deploy always carry `state`, so once the checkpoint's
+// frontier reaches the present each tick reads one small batch and writes
+// nothing. The sweep itself is deps-injected in src/stateBackfill.ts (same split
+// as inventoryEnrich.ts) so it is unit-testable without the Harper runtime.
+const BACKFILL_INTERVAL_MS = 60_000;
+const BACKFILL_INITIAL_DELAY_MS = 15_000;
+const backfillTicker = ticker('state.backfill', 10 * 60_000);
+
+const backfillDeps: BackfillDeps = {
+	projections: Projections as unknown as BackfillDeps['projections'],
+	checkpoints: Checkpoints as unknown as BackfillDeps['checkpoints'],
+};
+
+export function runProjectionStateBackfill(now = Date.now()): Promise<BackfillResult> {
+	return runStateBackfill(now, backfillDeps);
+}
+
+function backfillTick(): void {
+	void backfillTicker.run(async () => {
+		try {
+			const r = await runProjectionStateBackfill();
+			metrics.inc(M.stateBackfillScanned, r.scanned);
+			metrics.inc(M.stateBackfillFixed, r.fixed);
+			// Only speaks up while there is something to do — a converged sweep is
+			// silent, which is how an operator can tell it converged.
+			if (r.fixed) log('info', 'state.backfill.tick', { scanned: r.scanned, fixed: r.fixed, cursor: r.cursor });
+		} catch (e: unknown) {
+			metrics.inc(M.stateBackfillError);
+			log('error', 'state.backfill.error', { message: (e as Error).message });
+		}
+	});
+}
+
+export function startProjectionStateBackfillLoop(): void {
+	setTimeout(backfillTick, BACKFILL_INITIAL_DELAY_MS);
+	setInterval(backfillTick, BACKFILL_INTERVAL_MS);
+}
+
+// Digest build (Plan C). Builds each subscriber's digest for the last COMPLETE
+// period and writes it to the outbox with status 'pending'. THERE IS NO
+// SENDER — delivery is a separate decision with its own compliance surface, so
+// this loop deliberately stops at a persisted, ready-to-send message.
+//
+// Idempotent by construction: the outbox id is `${shopId}:${periodStart}` and
+// the build decision keys on the subscription's lastBuiltAt, so overlapping
+// ticks across threads and cluster nodes converge on one row per period. The
+// orchestration itself is deps-injected and lives in src/digestBuild.ts (same
+// split as inventoryEnrich.ts/stateBackfill.ts) so it is unit-testable without
+// the Harper runtime. This section only wires the real tables and the tick.
+const DIGEST_INTERVAL_MS = 3_600_000; // hourly; the period check does the real gating
+const DIGEST_INITIAL_DELAY_MS = 90_000;
+// 180 minutes = 3x the hourly interval, matching reconcile's margin (also 3x its
+// own interval): both sweep every active shop and do several full-table reads
+// per shop, so a moderately slow pass should be tolerated before being flagged
+// as stalled, not treated as unconditionally wedged at half the interval.
+const digestTicker = ticker('digest', 180 * 60_000);
+
+const digestBuildDeps: DigestBuildDeps = {
+	subscriptions: DigestSubscriptions as unknown as DigestBuildDeps['subscriptions'],
+	outboxes: DigestOutboxes,
+	projections: Projections as unknown as QueryTable,
+	findings: Findings as unknown as QueryTable,
+	events: Events as unknown as QueryTable,
+	deliveries: Deliveries as unknown as QueryTable,
+};
+
+export function runDigestBuild(now = Date.now()): Promise<DigestBuildResult> {
+	return runDigestBuildSweep(now, digestBuildDeps);
+}
+
+function digestTick(): void {
+	void digestTicker.run(async () => {
+		try {
+			const r = await runDigestBuild();
+			// Never log the address — it is the one merchant-identifying string held.
+			// notDue and quiet are logged separately (not combined into one
+			// "skipped" figure): they answer different questions when digests seem
+			// absent — were subscriptions even due, or did they build but decide not
+			// to send? `failed` (per-subscription failures, already logged with their
+			// own shopId inside runDigestBuildSweep) surfaces here too, so a sweep
+			// with failures is never mistaken for a quiet, healthy one.
+			if (r.built || r.skippedQuiet || r.failed)
+				log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue, failed: r.failed });
+		} catch (e: unknown) {
+			// This catch is outside any per-subscription scope, so — unlike the
+			// per-subscription failure log inside runDigestBuildSweep, which knows
+			// the exact address to scrub — there is no specific address in hand
+			// here. Scrub anything email-shaped rather than logging the message raw.
+			log('error', 'digest.error', { message: scrubEmailShaped((e as Error).message) });
+		}
+	});
+}
+
+export function startDigestLoop(): void {
+	setTimeout(digestTick, DIGEST_INITIAL_DELAY_MS);
+	setInterval(digestTick, DIGEST_INTERVAL_MS);
+}
+
 // Observability heartbeat (#22). Periodically derives the aggregate ops-health
 // (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
 // and emits it — with the cumulative metrics tally — as a single structured line.
@@ -500,4 +647,6 @@ startPurgeLoop();
 startDetectorLoop();
 startReconcileLoop();
 startInventoryEnrichmentLoop();
+startProjectionStateBackfillLoop();
+startDigestLoop();
 startOpsSnapshotLoop();

@@ -34,10 +34,12 @@
 				"windowDays",
 				"events",
 				"orders",
+				"aging",
 				"findings",
 				"recorder",
 				"reconciliation",
-				"activity"
+				"activity",
+				"integrity"
 			]
 		},
 		"events": {
@@ -60,7 +62,8 @@
 				"state",
 				"source",
 				"occurredAt",
-				"receivedAt"
+				"receivedAt",
+				"skus"
 			],
 			"paginated": true,
 			"filters": [
@@ -69,6 +72,7 @@
 				"resourceId",
 				"sku",
 				"source",
+				"state",
 				"since",
 				"until",
 				"cursor",
@@ -96,6 +100,7 @@
 				"source",
 				"occurredAt",
 				"receivedAt",
+				"skus",
 				"relatedEventIds",
 				"affectedProjection",
 				"affectedFinding",
@@ -124,7 +129,8 @@
 				"resolvedAt",
 				"evidenceEventIds",
 				"paidAt",
-				"deadline"
+				"deadline",
+				"orderName"
 			],
 			"paginated": true,
 			"filters": [
@@ -150,6 +156,66 @@
 				"expectation"
 			]
 		},
+		"orders": {
+			"path": "/api/v1/orders",
+			"item": [
+				"orderId",
+				"orderName",
+				"state",
+				"paidAt",
+				"fulfilledAt",
+				"cancelledAt",
+				"fullyRefundedAt",
+				"fulfillmentFailedAt",
+				"hasTracking",
+				"trackingCompany",
+				"orderTotal",
+				"currency",
+				"lastEventAt",
+				"ageHours"
+			],
+			"paginated": true,
+			"filters": [
+				"state",
+				"minAgeHours",
+				"maxAgeHours",
+				"sort",
+				"cursor",
+				"limit"
+			]
+		},
+		"orderDetail": {
+			"path": "/api/v1/orders/:orderId",
+			"fields": [
+				"orderId",
+				"orderName",
+				"state",
+				"paidAt",
+				"fulfilledAt",
+				"cancelledAt",
+				"fullyRefundedAt",
+				"fulfillmentFailedAt",
+				"hasTracking",
+				"trackingCompany",
+				"orderTotal",
+				"currency",
+				"lastEventAt",
+				"ageHours",
+				"requiresFulfillment",
+				"events",
+				"findings"
+			]
+		},
+		"export": {
+			"path": "/api/v1/export/:kind.csv",
+			"kinds": [
+				"events",
+				"findings",
+				"orders"
+			],
+			"format": "text/csv",
+			"maxRows": 5000
+		},
 		"privacy": {
 			"path": "/api/v1/privacy",
 			"fields": [
@@ -160,9 +226,23 @@
 				"dataCategories",
 				"excludedFields",
 				"deletion",
+				"notifications",
 				"footprint",
 				"webhooks",
 				"reconciliation"
+			]
+		},
+		"digest": {
+			"path": "/api/v1/digest",
+			"fields": [
+				"email",
+				"cadence",
+				"status",
+				"lastBuiltAt"
+			],
+			"methods": [
+				"GET",
+				"PUT"
 			]
 		}
 	}

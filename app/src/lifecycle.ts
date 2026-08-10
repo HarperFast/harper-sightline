@@ -1,6 +1,6 @@
 import { exchangeOfflineToken } from './exchangeToken.ts';
 import { saveCredential, deleteCredential, markCredentialStatus } from './credentialStore.ts';
-import { Shops, Credentials } from './db.ts';
+import { Shops, Credentials, DigestSubscriptions } from './db.ts';
 
 // Managed install: exchange the verified session token for an offline token,
 // create/update the Shop record, store the encrypted credential. (The live
@@ -18,6 +18,13 @@ export async function uninstallShop(shopId: string): Promise<void> {
 	const shop = await Shops.get(shopId);
 	if (shop) await Shops.patch(shopId, { status: 'uninstalled', uninstalledAt: Date.now() });
 	await deleteCredential(shopId);
+	// Stop notifying an uninstalled shop at once. Deleting (not pausing) is right:
+	// the address is merchant data we no longer have a reason to hold.
+	try {
+		await DigestSubscriptions.delete(shopId);
+	} catch {
+		// no subscription — nothing to clear
+	}
 }
 
 // Refresh failure → stop Admin API jobs, surface reauthorization_required.

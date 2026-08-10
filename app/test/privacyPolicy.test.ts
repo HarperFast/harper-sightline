@@ -141,6 +141,58 @@ test('a hostile support value cannot inject markup into a public page', () => {
 	assert.ok(html.includes('&lt;script&gt;'));
 });
 
+test('the public policy discloses the notification address, its purpose, and its own deletion claim', () => {
+	const html = privacyPolicyHtml({ email: 'support@harperdb.io' }, '2026-08-07');
+	// Pinned to the notification-email section itself, not "appears anywhere on
+	// the page": /uninstall/i already matches twice today (install/uninstall
+	// timestamps in "What we store"; the Uninstall bullet under "Deletion and
+	// your rights"), so a bare page-wide match would pass even if this new
+	// section shipped with no deletion promise of its own.
+	const section = html.match(/<h2>Notification email<\/h2>\s*<p>([\s\S]*?)<\/p>/);
+	assert.ok(section, 'the "Notification email" section must exist');
+	const paragraph = section[1];
+	assert.match(paragraph, /notification email/i);
+	assert.match(paragraph, /not customer data/i);
+	// The deletion claim must live IN this paragraph — removing it here (leaving
+	// it only in the page's other, pre-existing uninstall bullets) must fail.
+	assert.match(paragraph, /deleted|removed|purged/i);
+	assert.match(paragraph, /clear|uninstall/i);
+});
+
+test('the notification-email retention figure matches the digest outbox retention stated elsewhere on the page', () => {
+	const html = privacyPolicyHtml({});
+	const section = html.match(/<h2>Notification email<\/h2>\s*<p>([\s\S]*?)<\/p>/);
+	assert.ok(section, 'the "Notification email" section must exist');
+	// "30 days" is Notifications screen wording (web/src/view.ts's "stores it for
+	// 30 days, then removes it") — the policy must agree with it in substance and
+	// in number, not just gesture at "a while". This is an internal-consistency
+	// check ONLY (the page agreeing with itself) — it would stay green even if
+	// BOTH mentions drifted away from the real retention together, which is
+	// exactly the gap the next test closes.
+	assert.match(section[1], /30 days/);
+	assert.match(html, /30 days/, 'the "How long we keep it" section states the same figure');
+});
+
+test('the policy retention figure is anchored to the real OUTBOX_RETENTION_DAYS, not just to itself', () => {
+	const html = privacyPolicyHtml({});
+	// src/ledgerTargets.ts can't be imported here — it pulls in db.ts's `import {
+	// databases } from 'harper'`, unresolvable under plain node (see
+	// test/ledgerTargets.test.ts and test/queries.test.ts's equivalent guard,
+	// which hit the same wall and read source text instead). Without this, the
+	// test above only proves the policy's two mentions agree WITH EACH OTHER —
+	// a real retention change could ship, the policy could be left at the old
+	// number, and nothing here would catch it, because "30 days" would still
+	// match "30 days". Reading the actual constant closes that gap.
+	const source = readFileSync(new URL('../src/ledgerTargets.ts', import.meta.url), 'utf8');
+	const outboxDays = source.match(/export const OUTBOX_RETENTION_DAYS = (\d+);/);
+	assert.ok(outboxDays, 'OUTBOX_RETENTION_DAYS not found in ledgerTargets.ts');
+	const expected = new RegExp(`${outboxDays![1]} days`);
+	const section = html.match(/<h2>Notification email<\/h2>\s*<p>([\s\S]*?)<\/p>/);
+	assert.ok(section, 'the "Notification email" section must exist');
+	assert.match(section[1], expected, 'the notification-email paragraph must state the REAL outbox retention');
+	assert.match(html, expected, 'the "How long we keep it" section must state the REAL outbox retention too');
+});
+
 test('the policy is a standalone document, not the embedded app shell', () => {
 	const html = privacyPolicyHtml({ email: 'help@example.com' });
 	assert.ok(html.startsWith('<!doctype html>'));

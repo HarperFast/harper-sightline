@@ -189,6 +189,30 @@ test('order name is carried onto the projection', () => {
 	assert.equal(p?.orderName, '#1001');
 });
 
+test('the reducer writes the derived lane', () => {
+	assert.equal(
+		rebuildProjection([ev('order', 100, { eventId: 'e1', topic: 'orders/paid', state: 'paid', fulfillableItemCount: 2 })])?.state,
+		'awaiting',
+	);
+	assert.equal(
+		rebuildProjection([
+			ev('order', 100, { eventId: 'e1', topic: 'orders/paid', state: 'paid', fulfillableItemCount: 2 }),
+			ev('fulfillment', 200, { eventId: 'e2', state: 'success' }),
+		])?.state,
+		'fulfilled',
+	);
+});
+
+test('the derived lane is rebuild-equal under shuffled event order', () => {
+	const events = [
+		ev('order', 100, { eventId: 'e1', topic: 'orders/paid', state: 'paid', fulfillableItemCount: 2 }),
+		ev('fulfillment', 300, { eventId: 'e2', state: 'success' }),
+		ev('order', 400, { eventId: 'e3', topic: 'orders/cancelled' }),
+	];
+	assert.equal(rebuildProjection([...events].reverse())?.state, rebuildProjection(events)?.state);
+	assert.equal(rebuildProjection(events)?.state, 'cancelled');
+});
+
 test('rebuild equality holds for every new latch under shuffled event order', () => {
 	const events = [
 		ev('order', 100, {

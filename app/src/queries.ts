@@ -1,4 +1,5 @@
-import type { Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
+import type { EventDomain, Expectation, GapFinding, OperationalEvent, OrderProjection, Shop } from './model.ts';
+import { eventKind } from './eventKind.ts';
 import {
 	clampLimit,
 	decodeCursor,
@@ -11,8 +12,12 @@ import {
 	FINDING_LIST_FIELDS,
 	PROJECTION_FIELDS,
 	EXPECTATION_FIELDS,
+	MAX_LIMIT,
+	ORDER_FIELDS,
+	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
-import { describeFinding, detectorKey } from './detector.ts';
+import { describeFinding, detectorKey, DETECTOR_FAILED } from './detector.ts';
+import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from './orders.ts';
 import { RECONCILE_STALE_MS } from './opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every
@@ -35,10 +40,12 @@ export interface Page {
 	nextCursor?: string;
 }
 
-// Keyset pagination over a descending numeric sort field with the row id as a
-// tiebreak. Over-fetches a small buffer and finalizes the cursor boundary in
-// code so equal-timestamp rows page correctly.
-async function keysetPageDesc(
+// Keyset pagination over a numeric sort field with the row id as a tiebreak.
+// Over-fetches a small buffer and finalizes the cursor boundary in code so
+// equal-timestamp rows page correctly. `descending` is the default because every
+// ledger view is newest-first; the orders worklist also needs oldest-first, where
+// the most overdue order belongs at the top.
+async function keysetPage(
 	table: QueryTable,
 	baseConditions: QuerySpec['conditions'],
 	sortField: string,
@@ -46,28 +53,46 @@ async function keysetPageDesc(
 	fields: readonly string[],
 	cursorRaw: string | undefined,
 	limitRaw: unknown,
+	descending = true,
 ): Promise<Page> {
 	const limit = clampLimit(limitRaw);
 	const cursor = decodeCursor(cursorRaw);
 	const conditions = [...baseConditions];
-	if (cursor) conditions.push({ attribute: sortField, value: cursor.sortValue, comparator: 'less_than_equal' });
+	if (cursor) {
+		conditions.push({
+			attribute: sortField,
+			value: cursor.sortValue,
+			comparator: descending ? 'less_than_equal' : 'greater_than_equal',
+		});
+	}
 
 	const rows: Array<Record<string, unknown>> = [];
 	for await (const row of table.search({
 		conditions,
 		operator: 'and',
-		sort: { attribute: sortField, descending: true },
+		sort: { attribute: sortField, descending },
 		limit: limit + 25,
 	})) {
 		rows.push(row);
 	}
-	rows.sort((a, b) => Number(b[sortField]) - Number(a[sortField]) || String(b[idField]).localeCompare(String(a[idField])));
+	rows.sort((a, b) => {
+		const av = Number(a[sortField]);
+		const bv = Number(b[sortField]);
+		if (av !== bv) return descending ? bv - av : av - bv;
+		const aid = String(a[idField]);
+		const bid = String(b[idField]);
+		return descending ? bid.localeCompare(aid) : aid.localeCompare(bid);
+	});
 
 	let start = 0;
 	if (cursor) {
-		start = rows.findIndex(
-			(r) => Number(r[sortField]) < cursor.sortValue || (Number(r[sortField]) === cursor.sortValue && String(r[idField]) < cursor.id),
-		);
+		start = rows.findIndex((r) => {
+			const v = Number(r[sortField]);
+			const id = String(r[idField]);
+			return descending
+				? v < cursor.sortValue || (v === cursor.sortValue && id < cursor.id)
+				: v > cursor.sortValue || (v === cursor.sortValue && id > cursor.id);
+		});
 		if (start < 0) start = rows.length;
 	}
 	const page = rows.slice(start, start + limit);
@@ -75,9 +100,53 @@ async function keysetPageDesc(
 	let nextCursor: string | undefined;
 	if (page.length === limit && page.length > 0) {
 		const last = page[page.length - 1];
-		nextCursor = encodeCursor(Number(last[sortField]), String(last[idField]));
+		const sortValue = Number(last[sortField]);
+		// NEVER emit a cursor this module cannot decode. decodeCursor rejects a
+		// non-finite sort value, so a row whose sort field is absent encodes to
+		// "NaN|<id>" and decodes back to `undefined` — the next page then runs with
+		// NO boundary condition, returns this same page again, and pages forever
+		// (an export of such a list accumulated 5000 duplicate rows). Ending the
+		// list is the only safe answer: a cursor that cannot be honoured is worse
+		// than no cursor. Callers keep the sort field non-nullable so this is
+		// insurance, not the normal path.
+		if (Number.isFinite(sortValue)) nextCursor = encodeCursor(sortValue, String(last[idField]));
 	}
 	return { items, nextCursor };
+}
+
+// Attach each event's full SKU list. `skus` is not a column on OperationalEvent —
+// an order has many and the row holds one scalar, deliberately set only when there
+// is exactly one — so the list is assembled from the EventSku index.
+//
+// One OR query per PAGE, not per row: a keyed query per event would be up to
+// MAX_LIMIT round trips to paint one screen. The tenant is re-checked on every
+// index row because this query is keyed by event id, not by shop.
+export async function hydrateSkus(
+	eventSkus: QueryTable,
+	shopId: string,
+	items: Array<Record<string, unknown>>,
+): Promise<Array<Record<string, unknown>>> {
+	const ids = items.map((item) => String(item.eventId)).filter((id) => id.length > 0);
+	if (ids.length === 0) return items;
+
+	const byEvent = new Map<string, string[]>();
+	for await (const row of eventSkus.search({
+		conditions: ids.map((id) => ({ attribute: 'eventId', value: id })),
+		operator: 'or',
+		select: ['eventId', 'sku', 'shopId'],
+	})) {
+		if (row.shopId !== shopId) continue;
+		const eventId = String(row.eventId);
+		const list = byEvent.get(eventId) ?? [];
+		list.push(String(row.sku));
+		byEvent.set(eventId, list);
+	}
+
+	return items.map((item) => {
+		const skus = byEvent.get(String(item.eventId));
+		// Sorted so a rebuild or a different index scan order cannot reorder a cell.
+		return skus && skus.length > 0 ? { ...item, skus: [...skus].sort() } : item;
+	});
 }
 
 export interface EventQueryParams {
@@ -86,6 +155,10 @@ export interface EventQueryParams {
 	resourceId?: string;
 	sku?: string;
 	source?: string;
+	// Fulfillment state ('error' | 'failure' | 'success' | …), so a failed attempt
+	// recorded by Shopify can be found directly among the raw events, not just via
+	// the finding it produced.
+	state?: string;
 	since?: number;
 	until?: number;
 	cursor?: string;
@@ -98,8 +171,24 @@ export interface EventQueryParams {
 // A `sku` filter takes a different path: SKUs live in the EventSku index (one row
 // per event/SKU) because an order has many and the event row holds one scalar.
 // The index carries the other filterable fields, so the SKU path is an ordinary
-// keyset page over EventSku followed by a keyed hydrate — no post-filtering, so
-// a page is never short and `nextCursor` never lies.
+// keyset page over EventSku followed by a keyed hydrate.
+//
+// ONE EXCEPTION: `state` is not an EventSku column, so on the SKU path it is
+// applied AFTER hydration, from the event row itself. Spreading the full
+// condition list into the index query (which is what happened when `state` was
+// added later) meant `sku` and `state` together matched nothing at all: each
+// filter worked alone, and the pair — two controls sitting side by side in the
+// same filter bar — silently returned an empty page.
+//
+// Denormalizing `state` into EventSku was the alternative and is worse: index
+// rows written before the column existed would not carry it, so the combination
+// would UNDER-return for every historical row while looking like it worked. That
+// is exactly the legacy-column failure C1 just demonstrated on the projection
+// table, and it fails silently in the merchant's disfavour.
+//
+// The cost is that this one path can return a SHORT page — fewer items than the
+// limit while `nextCursor` is still set. Not a new property: the hydration loop
+// already skips index rows whose event has been purged.
 export async function listEvents(
 	events: QueryTable,
 	shopId: string,
@@ -113,6 +202,8 @@ export async function listEvents(
 		{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 	];
 	if (params.until !== undefined) conditions.push({ attribute: 'occurredAt', value: params.until, comparator: 'less_than_equal' });
+	// Conditions every EventSku row also carries, so they are safe to push into
+	// either query. `state` is deliberately NOT here — see below.
 	for (const [attr, val] of [
 		['domain', params.domain],
 		['topic', params.topic],
@@ -125,7 +216,7 @@ export async function listEvents(
 	}
 
 	if (params.sku && eventSkus) {
-		const indexPage = await keysetPageDesc(
+		const indexPage = await keysetPage(
 			eventSkus,
 			[...conditions, { attribute: 'sku', value: params.sku }],
 			'occurredAt',
@@ -134,15 +225,25 @@ export async function listEvents(
 			params.cursor,
 			params.limit,
 		);
+		// One get per index row, but ISSUED TOGETHER: awaiting inside the loop meant an
+		// export of a SKU-filtered list serialized up to MAX_EXPORT_ROWS round trips
+		// inside one request. The tenant re-check below stays per-row.
+		const fetched = await Promise.all(indexPage.items.map((row) => events.get(String(row.eventId))));
 		const hydrated: Array<Record<string, unknown>> = [];
-		for (const row of indexPage.items) {
-			const event = await events.get(String(row.eventId));
+		for (const event of fetched) {
 			// An index row whose event is gone (purged mid-page, or written before its
 			// event landed) is skipped rather than surfaced as a phantom result.
-			if (event && event.shopId === shopId) hydrated.push(pick(event, EVENT_FIELDS));
+			if (!event || event.shopId !== shopId) continue;
+			// `state` lives on the event, not on the index, so it is applied here.
+			if (params.state && event.state !== params.state) continue;
+			hydrated.push(pick(event, EVENT_FIELDS));
 		}
-		return { items: hydrated, nextCursor: indexPage.nextCursor };
+		return { items: await hydrateSkus(eventSkus, shopId, hydrated), nextCursor: indexPage.nextCursor };
 	}
+
+	// Off the index path `state` IS a column on the event row, so it filters in the
+	// database like every other condition.
+	if (params.state) conditions.push({ attribute: 'state', value: params.state });
 
 	// No EventSku table wired (or no sku filter requested): fall back to the
 	// scalar `sku` column directly. That column is only ever populated for a
@@ -150,7 +251,8 @@ export async function listEvents(
 	// when a caller hasn't (or can't) supply the index table.
 	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
 
-	return keysetPageDesc(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	const page = await keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	return { items: eventSkus ? await hydrateSkus(eventSkus, shopId, page.items) : page.items, nextCursor: page.nextCursor };
 }
 
 // GET /events/:id — one event plus lightweight relations. Cross-tenant safe: an
@@ -164,6 +266,7 @@ export async function getEventDetail(
 	eventId: string,
 	inventoryItems?: QueryTable,
 	locations?: QueryTable,
+	eventSkus?: QueryTable,
 ): Promise<Record<string, unknown> | null> {
 	const row = (await events.get(eventId)) as OperationalEvent | undefined;
 	if (!row || row.shopId !== shopId) return null;
@@ -207,7 +310,7 @@ export async function getEventDetail(
 		}
 	}
 
-	return {
+	const base = {
 		...pick(row as unknown as Record<string, unknown>, EVENT_FIELDS),
 		relatedEventIds,
 		affectedProjection,
@@ -216,6 +319,11 @@ export async function getEventDetail(
 		...(productTitle ? { productTitle } : {}),
 		...(locationName ? { locationName } : {}),
 	};
+	// Hydrated the same way as the list, so detail and list agree on a multi-SKU
+	// event's SKUs rather than the list showing them and the detail not.
+	if (!eventSkus) return base;
+	const [hydrated] = await hydrateSkus(eventSkus, shopId, [base]);
+	return hydrated;
 }
 
 export interface FindingQueryParams {
@@ -240,7 +348,7 @@ export async function listFindings(
 	const conditions: QuerySpec['conditions'] = [{ attribute: 'shopId', value: shopId }];
 	if (params.status) conditions.push({ attribute: 'status', value: params.status });
 	if (params.detector) conditions.push({ attribute: 'detector', value: params.detector });
-	const page = await keysetPageDesc(findings, conditions, 'detectedAt', 'id', FINDING_FIELDS, params.cursor, params.limit);
+	const page = await keysetPage(findings, conditions, 'detectedAt', 'id', FINDING_FIELDS, params.cursor, params.limit);
 
 	const items = await Promise.all(
 		page.items.map(async (item) => {
@@ -248,8 +356,9 @@ export async function listFindings(
 			const orderId = String(item.orderId);
 			const [expectation, projection] = await Promise.all([expectations.get(id), projections.get(`${shopId}:${orderId}`)]);
 			const paidAt = projection && projection.shopId === shopId ? (projection as unknown as OrderProjection).paidAt : undefined;
+			const orderName = projection && projection.shopId === shopId ? (projection as unknown as OrderProjection).orderName : undefined;
 			const deadline = expectation && expectation.shopId === shopId ? (expectation as unknown as Expectation).deadline : undefined;
-			return pick({ ...item, paidAt, deadline }, FINDING_LIST_FIELDS);
+			return pick({ ...item, paidAt, deadline, orderName }, FINDING_LIST_FIELDS);
 		}),
 	);
 	return { items, nextCursor: page.nextCursor };
@@ -274,6 +383,137 @@ export async function getFindingDetail(
 		expectation:
 			expectation && expectation.shopId === shopId ? pick(expectation as unknown as Record<string, unknown>, EXPECTATION_FIELDS) : null,
 		projection: projection ? pick(projection as unknown as Record<string, unknown>, PROJECTION_FIELDS) : null,
+	};
+}
+
+export interface OrderQueryParams {
+	state?: string;
+	minAgeHours?: number;
+	// Upper bound on age, so an aging BUCKET link can reproduce the bucket rather
+	// than an open-ended threshold. The buckets are half-open intervals; without
+	// this, "Under 24h: 1" opened the entire awaiting list.
+	maxAgeHours?: number;
+	sort?: 'oldest' | 'newest';
+	cursor?: string;
+	limit?: unknown;
+}
+
+// GET /orders — the operational worklist the Overview's counts drill into.
+//
+// Sorted and filtered in the DATABASE on the indexed `lastEventAt`, `paidAt` and
+// `state` columns. Post-filtering in code was the alternative and is wrong here:
+// it returns short pages and a `nextCursor` that implies more matches than exist.
+//
+// The SORT KEY is `lastEventAt`, which the projection reducer always writes —
+// never `paidAt`, which is nullable. `orders/create` is subscribed and `paidAt`
+// is only latched on payment, so every pending, authorized-not-captured, COD or
+// draft order sits in this table with no `paidAt` at all; keysetting on it made
+// the cursor for such a row undecodable and the worklist paged the same rows
+// forever (C3). `sort` therefore means order of LAST OBSERVED ACTIVITY —
+// 'newest' = most recent activity first, 'oldest' = least recent first, which is
+// still what triage wants, because a quiet awaiting order's last activity IS its
+// payment. The UI names the column it sorts on.
+//
+// `paidAt` remains a pure FILTER (minAgeHours), and `ageHours` stays derived from
+// it per row rather than stored, because it changes every hour and a stored copy
+// would be stale the moment it was written.
+export async function listOrders(projections: QueryTable, shopId: string, now: number, params: OrderQueryParams): Promise<Page> {
+	const windowStart = now - WINDOW_MS;
+	const conditions: QuerySpec['conditions'] = [
+		{ attribute: 'shopId', value: shopId },
+		// Same window bound the flow lanes and the Overview tiles use (windowCondition),
+		// so the worklist and the lane counts describe the same set of orders.
+		windowCondition(windowStart),
+	];
+	if (params.state) conditions.push({ attribute: 'state', value: params.state });
+	// Age bounds. `ageHours` floors, so the pair is exactly the half-open interval
+	// [min, max) the aging buckets use, and the four buckets partition the awaiting
+	// set with no gap and no double-count:
+	//   "at least N hours old"      → paid at or before now − N hours
+	//   "less than N hours old"     → paid strictly after   now − N hours
+	// At the boundary paidAt = now − 48h: minAgeHours=48 includes it (<=),
+	// maxAgeHours=48 excludes it (>), so it lands in exactly one bucket. Both are
+	// filters on this shop's own rows, never a scope — shopId still comes from the
+	// authenticated principal above.
+	if (params.minAgeHours !== undefined && Number.isFinite(params.minAgeHours)) {
+		conditions.push({ attribute: 'paidAt', value: now - params.minAgeHours * 3_600_000, comparator: 'less_than_equal' });
+	}
+	if (params.maxAgeHours !== undefined && Number.isFinite(params.maxAgeHours)) {
+		conditions.push({ attribute: 'paidAt', value: now - params.maxAgeHours * 3_600_000, comparator: 'greater_than' });
+	}
+
+	const page = await keysetPage(
+		projections,
+		conditions,
+		'lastEventAt',
+		'id',
+		ORDER_LIST_FIELDS,
+		params.cursor,
+		params.limit,
+		params.sort !== 'oldest',
+	);
+	return {
+		items: page.items.map((item) => {
+			const hours = ageHours(item.paidAt as number | undefined, now);
+			return hours === undefined ? item : { ...item, ageHours: hours };
+		}),
+		nextCursor: page.nextCursor,
+	};
+}
+
+// GET /orders/:orderId — one order's latched facts, its normalized events in the
+// window (newest first, bounded), and any findings about it. This is the
+// order-centric forensics view: everything Sightline observed about one order,
+// without needing a finding to exist first.
+export async function getOrderDetail(
+	projections: QueryTable,
+	events: QueryTable,
+	findings: QueryTable,
+	shopId: string,
+	now: number,
+	orderId: string,
+): Promise<Record<string, unknown> | null> {
+	// Keyed by `${shopId}:${orderId}`, so a manipulated orderId can only ever miss.
+	const projection = await projections.get(`${shopId}:${orderId}`);
+	if (!projection || projection.shopId !== shopId) return null;
+
+	const windowStart = now - WINDOW_MS;
+	const eventRows: Array<Record<string, unknown>> = [];
+	for await (const row of events.search({
+		conditions: [
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'resourceId', value: orderId },
+			// Same window bound every other ledger view honors — retention purge lag
+			// can otherwise leave older rows queryable after the window they belong to.
+			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
+		],
+		operator: 'and',
+		sort: { attribute: 'occurredAt', descending: true },
+		limit: MAX_LIMIT,
+	})) {
+		eventRows.push(pick(row, EVENT_FIELDS));
+	}
+
+	const findingRows: Array<Record<string, unknown>> = [];
+	for await (const row of findings.search({
+		conditions: [
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'orderId', value: orderId },
+		],
+		operator: 'and',
+	})) {
+		findingRows.push({ ...pick(row, FINDING_FIELDS), description: describeFinding(row as unknown as GapFinding) });
+	}
+
+	// ageHours is computed per request, same as listOrders — it changes every
+	// hour and a stored copy would be stale the moment it was written. Omitted
+	// entirely (not zero) for an order that was never paid.
+	const hours = ageHours(projection.paidAt as number | undefined, now);
+	return {
+		...pick(projection, ORDER_FIELDS),
+		...(hours === undefined ? {} : { ageHours: hours }),
+		events: eventRows,
+		findings: findingRows,
 	};
 }
 
@@ -321,6 +561,28 @@ function emptyBuckets(windowStart: number): Array<Record<string, number>> {
 	});
 }
 
+// One definition of "in the read window" for every order-derived count, so the
+// Overview's tiles, the flow lanes, and the worklist can never describe different
+// sets of orders. Retention usually keeps expired projections out of the table
+// anyway, but "usually" is not a guarantee: a purge run capped at
+// MAX_DELETES_PER_RUN leaves residue behind, and that residue must not surface in
+// one panel and not another.
+//
+// The same predicate is available as an INDEXABLE condition, and the two order
+// scans below push it into the search (windowCondition) as well as keeping this
+// code-side check as a belt. Without it, getSummary — which runs on every screen
+// load behind a 15s cache — scanned every projection the shop had ever stored and
+// filtered in code.
+function inWindow(p: OrderProjection, windowStart: number): boolean {
+	return (p.lastEventAt ?? 0) >= windowStart;
+}
+
+// listOrders uses the identical condition, so all three surfaces bound the set the
+// same way, in the database. `lastEventAt` is @indexed for exactly this.
+function windowCondition(windowStart: number): QuerySpec['conditions'][number] {
+	return { attribute: 'lastEventAt', value: windowStart, comparator: 'greater_than_equal' };
+}
+
 // GET /summary — the Overview screen's counts. Recorder health is separate from
 // the finding count: an unhealthy recorder cannot claim "no gaps" (screen spec).
 export async function getSummary(
@@ -331,20 +593,79 @@ export async function getSummary(
 	const windowStart = now - WINDOW_MS;
 	const buckets = emptyBuckets(windowStart);
 	let eventsTotal = 0;
+	// Capture-integrity tally. `webhookEvents` is a plain source tally — every row
+	// whose `source` is not 'reconciliation' — and is evidence about what arrived.
+	// `reconciliationOnlyEvents` used to be the mirror-image tally (every row WITH
+	// source 'reconciliation'), but that is not evidence a webhook failed: the
+	// reconcile sweep (jobs.ts reconcileShopWithToken) is a rolling resync that
+	// writes a synthesized event for every order it touches unconditionally, so a
+	// healthy webhook delivery is routinely followed by a reconciliation event for
+	// the SAME change on the next sweep — both rows persist (their event ids can
+	// never collide) and the old tally counted that as a capture gap every time.
+	// `reconciliationOnlyEvents` now counts only a reconciliation event whose
+	// (resourceId, kind) has NO webhook-sourced counterpart in this same window —
+	// see src/eventKind.ts for how "kind" is derived and why that comparison is
+	// the safe one.
+	//
+	// Matching is BEST-EFFORT within the window, not a guarantee. The two paths read
+	// `occurredAt` from DIFFERENT fields for every one of the four kinds — webhook
+	// `paid`/`cancelled` from the order's updated_at against reconciliation's
+	// createdAt and cancelledAt, webhook `fulfilled` from the fulfillment's
+	// updated_at against the order's fulfilledAt, webhook `refunded` from the
+	// refund's processed_at against the order's updatedAt (src/normalize.ts vs
+	// src/reconcile.ts). So one real change is observed at two different instants,
+	// and a pair whose two timestamps straddle `windowStart` is not found: the
+	// in-window reconciliation row is counted as a gap even though its webhook twin
+	// exists, just outside. That over-counts rather than under-counts, which is the
+	// wrong direction for this product's safety bias, so it is a known residual
+	// worth closing — src/digestData.ts widens its match window by a day on each
+	// side for exactly this reason, and this rolling 7-day window can do the same
+	// when someone is willing to re-verify the three other tallies that share this
+	// loop (eventsTotal, the activity buckets, and webhookEvents).
+	//
+	// Consequence: `webhookEvents` and `reconciliationOnlyEvents` no longer sum to
+	// `eventsTotal` — a matched reconciliation event is counted in neither. That
+	// is intentional: it is real evidence the webhook path DID work, so it must
+	// not inflate the gap count, and it is not itself a webhook-sourced row, so it
+	// must not inflate that count either. `webhookEvents` remains a CATCH-ALL over
+	// `source` (anything not 'reconciliation'), not a test for the literal
+	// 'webhook' value, for the same reason as before: EventSource has exactly two
+	// values today, so it is a harmless simplification while this number links
+	// nowhere. Give it a link into a filtered event list and this becomes a real
+	// defect — add the explicit `=== 'webhook'` branch and a third bucket then.
+	let webhookEvents = 0;
+	const webhookKeys = new Set<string>();
+	const reconciliationCandidates: Array<{ resourceId: string; kind: ReturnType<typeof eventKind> }> = [];
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
 			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
-		select: ['occurredAt', 'domain'],
+		select: ['occurredAt', 'domain', 'source', 'resourceId', 'state', 'topic'],
 	})) {
 		eventsTotal++;
+		const resourceId = typeof e.resourceId === 'string' ? e.resourceId : undefined;
+		const kind = eventKind({ domain: e.domain as EventDomain, state: e.state as string | undefined, topic: e.topic as string | undefined });
+		if (String(e.source) === 'reconciliation') {
+			// Safety bias: a reconciliation event whose kind cannot be determined is
+			// never treated as a capture gap candidate — see eventKind.ts.
+			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
+		} else {
+			webhookEvents++;
+			if (resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
+		}
 		const index = Math.min(WINDOW_DAYS - 1, Math.max(0, Math.floor((Number(e.occurredAt) - windowStart) / DAY_MS)));
 		const bucket = buckets[index];
 		bucket.total++;
 		const domain = String(e.domain);
 		if (domain in bucket) bucket[domain]++;
+	}
+	// Second pass over the already-fetched candidates, not a second query: counts
+	// only a reconciliation kind absent from the webhook set built above.
+	let reconciliationOnlyEvents = 0;
+	for (const c of reconciliationCandidates) {
+		if (!webhookKeys.has(`${c.resourceId}:${c.kind}`)) reconciliationOnlyEvents++;
 	}
 	const deadLettered = await countWhere(tables.deliveries, [
 		{ attribute: 'shopId', value: shopId },
@@ -356,26 +677,42 @@ export async function getSummary(
 	let paid = 0;
 	let fulfilled = 0;
 	let awaitingConfirmation = 0;
-	for await (const p of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
+	// Aging of the awaiting set, so the Overview can show what is heading for the
+	// 72-hour deadline while it can still be acted on — not just what already
+	// blew it. Zero-filled so every bucket renders.
+	const agingCounts: Record<string, number> = Object.fromEntries(AGE_BUCKETS.map((b) => [b.key, 0]));
+	for await (const p of tables.projections.search({
+		conditions: [{ attribute: 'shopId', value: shopId }, windowCondition(windowStart)],
+		operator: 'and',
+	})) {
 		const proj = p as unknown as OrderProjection;
+		if (!inWindow(proj, windowStart)) continue;
 		ordersTracked++;
 		if (proj.paidAt !== undefined) paid++;
-		if (proj.fulfilledAt !== undefined) fulfilled++;
-		if (
-			proj.paidAt !== undefined &&
-			proj.requiresFulfillment &&
-			proj.fulfilledAt === undefined &&
-			proj.cancelledAt === undefined &&
-			proj.fullyRefundedAt === undefined
-		) {
+		// "Fulfilled" here means the lane, not just "has a fulfilledAt" — an order
+		// fulfilled and then cancelled or fully refunded must not count as both.
+		// deriveOrderLane is the same finality-ordered definition computeFlows and
+		// listOrders' state column use, so this tile and those two can never
+		// disagree about the same order.
+		if (deriveOrderLane(proj) === 'fulfilled') fulfilled++;
+		if (isAwaitingConfirmation(proj)) {
 			awaitingConfirmation++;
+			const key = ageBucketKey(proj.paidAt, now);
+			if (key !== undefined) agingCounts[key]++;
 		}
 	}
 
 	const findingCounts: Record<string, number> = { unconfirmed: 0, resolved: 0, suppressed: 0 };
+	// Failed attempts are counted separately as well as inside `unconfirmed`: they
+	// are DIRECT evidence (Shopify recorded an attempt that did not succeed) rather
+	// than an inference from absence, so they deserve their own headline — but they
+	// are still unconfirmed findings, so removing them from that count would make
+	// the two numbers contradict each other.
+	let failedAttempts = 0;
 	for await (const f of tables.findings.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
-		const status = (f as unknown as GapFinding).status;
-		if (status in findingCounts) findingCounts[status]++;
+		const finding = f as unknown as GapFinding;
+		if (finding.status in findingCounts) findingCounts[finding.status]++;
+		if (finding.detector === DETECTOR_FAILED && finding.status === 'unconfirmed') failedAttempts++;
 	}
 
 	return {
@@ -383,36 +720,55 @@ export async function getSummary(
 		windowDays: WINDOW_DAYS,
 		events: { total: eventsTotal },
 		orders: { tracked: ordersTracked, paid, fulfilled, awaitingConfirmation },
-		findings: findingCounts,
+		aging: { buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: agingCounts[b.key] })) },
+		findings: { ...findingCounts, failedAttempts },
 		recorder: { healthy: deadLettered === 0, deadLetteredDeliveries: deadLettered },
 		reconciliation: reconciliationView(shop, now),
 		activity: { days: WINDOW_DAYS, domains: [...ACTIVITY_DOMAINS], buckets },
+		integrity: { webhookEvents, reconciliationOnlyEvents },
 	};
 }
 
 // GET /flows — bounded lane counts derived from order projections in the window.
 // A pure function of the projections, so it reconciles to fixtures and rebuilds.
+// Lanes come from deriveOrderLane, the same definition the worklist and the
+// summary use, so the three views cannot disagree.
 export async function computeFlows(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
-	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, cancelled: 0, refunded: 0 };
-	for await (const p of projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
+	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 };
+	for await (const p of projections.search({
+		conditions: [{ attribute: 'shopId', value: shopId }, windowCondition(windowStart)],
+		operator: 'and',
+	})) {
 		const proj = p as unknown as OrderProjection;
-		if ((proj.lastEventAt ?? 0) < windowStart) continue;
+		if (!inWindow(proj, windowStart)) continue;
 		if (proj.paidAt !== undefined) lanes.paid++;
-		if (proj.fulfilledAt !== undefined) lanes.fulfilled++;
-		if (proj.cancelledAt !== undefined) lanes.cancelled++;
-		if (proj.fullyRefundedAt !== undefined) lanes.refunded++;
-		if (
-			proj.paidAt !== undefined &&
-			proj.requiresFulfillment &&
-			proj.fulfilledAt === undefined &&
-			proj.cancelledAt === undefined &&
-			proj.fullyRefundedAt === undefined
-		) {
-			lanes.awaitingConfirmation++;
+		switch (deriveOrderLane(proj)) {
+			case 'fulfilled':
+				lanes.fulfilled++;
+				break;
+			// Paid, live, no fulfillment observed and none expected (a digital order).
+			// It gets its own lane rather than being folded into 'fulfilled', which
+			// would assert a fulfillment nobody observed, or left out of the breakdown
+			// entirely, which would make a digital-only store's flow panel read as all
+			// zeroes beside a non-zero Paid count.
+			case 'no_fulfillment_expected':
+				lanes.noFulfillmentExpected++;
+				break;
+			case 'cancelled':
+				lanes.cancelled++;
+				break;
+			case 'refunded':
+				lanes.refunded++;
+				break;
+			case 'awaiting':
+				lanes.awaitingConfirmation++;
+				break;
+			default:
+				break;
 		}
 	}
-	return { shop: shopId, windowDays: WINDOW_MS / 86_400_000, lanes };
+	return { shop: shopId, windowDays: WINDOW_DAYS, lanes };
 }
 
 // Customer fields Sightline deliberately never records. Stated positively on the
@@ -425,8 +781,24 @@ export const EXCLUDED_CUSTOMER_FIELDS = ['customer name', 'customer email', 'cus
 // auditable (screen spec §5). Deliberately returns NO secrets, token material,
 // internal host/cluster names, or cross-tenant metrics: scopes are the granted
 // OAuth scope strings, and every count is constrained to this shop.
+// The outbox keeps a longer, separate retention than the seven-day ledger purge
+// (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts) — duplicated here as a literal
+// rather than an import, because ledgerTargets.ts pulls in db.ts's `import {
+// databases } from 'harper'`, a module with no resolvable file under plain node
+// (see test/ledgerTargets.test.ts, which hits the same wall). A test in
+// queries.test.ts reads that file's source and pins this literal against the
+// real constant, so the two numbers cannot silently drift apart.
+const DIGEST_OUTBOX_RETENTION_DAYS = 30;
+
 export async function getPrivacy(
-	tables: { events: QueryTable; findings: QueryTable; projections: QueryTable; deliveries: QueryTable; shops: QueryTable },
+	tables: {
+		events: QueryTable;
+		findings: QueryTable;
+		projections: QueryTable;
+		deliveries: QueryTable;
+		shops: QueryTable;
+		digestSubscriptions?: QueryTable;
+	},
 	shopId: string,
 	now: number,
 ): Promise<Record<string, unknown>> {
@@ -436,6 +808,19 @@ export async function getPrivacy(
 		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
 	};
 	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+
+	// Whether a notification address is on file for this shop — stated, never
+	// echoed. The address is the merchant's own and is shown on the Notifications
+	// screen; repeating it here would make an audit endpoint into a second place it
+	// can leak from.
+	const subscription = tables.digestSubscriptions ? await tables.digestSubscriptions.get(shopId) : undefined;
+	const notifications = {
+		emailStored: Boolean(subscription && subscription.shopId === shopId && subscription.email),
+		...(subscription && subscription.shopId === shopId && typeof subscription.cadence === 'string'
+			? { cadence: subscription.cadence }
+			: {}),
+		status: subscription && subscription.shopId === shopId && subscription.status === 'active' ? 'active' : 'paused',
+	};
 
 	let received = 0;
 	let processed = 0;
@@ -473,13 +858,19 @@ export async function getPrivacy(
 			'inventory levels',
 			'refund status',
 			'SKUs, product & variant titles & quantities',
+			'notification email you supply for digests (merchant contact, not customer data)',
 		],
 		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
 		deletion: {
 			onUninstall: 'shop data erased',
 			onRequest: 'shop/customer redaction (targeted delete)',
-			automatic: 'seven-day retention purge',
+			// Two separate windows, both real: the ledger's seven-day purge, and the
+			// digest outbox's own, independently-tracked 30-day purge (it outlives the
+			// ledger on purpose — see DigestOutbox in docs/data-inventory.md). Stating
+			// only one would understate retention for the other.
+			automatic: `${WINDOW_DAYS}-day retention purge; digest outbox rows are kept separately for ${DIGEST_OUTBOX_RETENTION_DAYS} days, then removed`,
 		},
+		notifications,
 		footprint,
 		webhooks: {
 			received,

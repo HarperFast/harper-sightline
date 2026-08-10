@@ -47,6 +47,77 @@ type AppAuditEvent @table(database: "sightline_core") @sealed {
 	detail: String
 }
 
+type DigestSubscription @table(database: "sightline_core") @sealed {
+	# One notification address per shop. The ONLY merchant-identifying string this
+	# app stores — it is a staff address supplied by the merchant, not customer
+	# data, and it is disclosed on the Privacy screen and in the privacy policy.
+	# Erased on uninstall and on shop redaction.
+	shopId: ID! @primaryKey
+	email: String
+	cadence: String # daily | weekly
+	status: String @indexed # active | paused
+	createdAt: Float
+	updatedAt: Float
+	# Period start of the last digest built for this shop. The build decision keys
+	# on this, so a re-run inside the same period is a no-op.
+	lastBuiltAt: Float
+}
+
+type DigestOutbox @table(database: "sightline_core") @sealed {
+	# A fully-rendered digest, ready for a sender that does not exist yet. Keyed
+	# `${shopId}:${periodStart}` so rebuilding a period upserts one row rather than
+	# duplicating it. Bodies contain order names, counts and timestamps only — never
+	# customer data.
+	#
+	# Deliberately NO `email` column. The privacy policy and the Notifications
+	# screen both tell merchants the address is deleted when they clear it or
+	# uninstall, and uninstallShop deletes only DigestSubscriptions — so a copy on
+	# every outbox row would have survived that promise until the 30-day purge. No
+	# sender exists to need it here, and a future sender can read the address from
+	# the subscription at send time, which is the only moment it is actually needed.
+	id: ID! @primaryKey
+	shopId: String! @indexed
+	cadence: String
+	periodStart: Float! @indexed
+	periodEnd: Float
+	subject: String
+	bodyText: String
+	bodyHtml: String
+	# The headline numbers, kept as columns so an operator can see what a digest
+	# said without parsing its body. They are NOT all in the same tense, and the
+	# names say which is which, because an operator comparing them against the
+	# Overview has nothing else to go on.
+	#
+	# `ordersAwaiting` is CURRENT-STATE and counts ORDERS: how many of this shop's
+	# orders were awaiting fulfillment confirmation at the moment the digest was
+	# built (isAwaitingConfirmation, src/orders.ts — the same population as the
+	# Overview's awaiting tile). It is deliberately NOT period-scoped, and it is not
+	# a count of findings: this column was called `unconfirmed` while it held a
+	# findings tally, which collides with GapFinding.status 'unconfirmed' — a
+	# different population in a different tense, rendered on the Overview as its own
+	# "Unconfirmed" findings tile. One order can carry two findings, so the two
+	# numbers legitimately differ and must never be read as the same figure.
+	ordersAwaiting: Int
+	# The two below ARE scoped to this row's period, [periodStart, periodEnd) — and
+	# the first one's name says so, because getSummary's `findings.failedAttempts`
+	# counts the same findings with NO time bound (capped only by 7-day retention).
+	# Same population, different window, and nothing but the name to tell them apart.
+	#
+	# It also counts ORDERS, not attempts: DETECTOR_FAILED writes one finding per
+	# (order, ruleVersion), so two failed attempts on one order are ONE finding. The
+	# rendered copy says "orders with a fulfillment attempt Shopify recorded as
+	# unsuccessful" for that reason.
+	failedAttemptsInPeriod: Int
+	# Reconciliation-sourced changes with no matching webhook, in this period — see
+	# gatherDigestInput for why matching is best-effort and uses a one-day margin.
+	deliveryGaps: Int
+	# Recorder health at build time (current-state, like ordersAwaiting): false means
+	# the numbers above may be incomplete, and the bodies say so.
+	recorderHealthy: Boolean
+	status: String! @indexed # pending | sent | skipped
+	createdAt: Float! @indexed # retention key (30 days, not the ledger's 7)
+}
+
 # ─── sightline_ledger ────────────────────────────────────────────────────────
 
 type WebhookDelivery @table(database: "sightline_ledger") @sealed {
@@ -100,7 +171,7 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	orderId: String!
 	financialStatus: String
 	fulfillmentStatus: String
-	paidAt: Float # earliest paid time (latch)
+	paidAt: Float @indexed # earliest paid time (latch) — indexed: the worklist sorts/filters by order age
 	cancelledAt: Float # earliest cancellation (latch)
 	fullyRefundedAt: Float # earliest full-refund (latch)
 	fulfilledAt: Float # earliest successful fulfillment (latch)
@@ -113,9 +184,14 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	trackingCompany: String
 	trackingAt: Float # earliest fulfillment observed carrying tracking (latch) — keys trackingCompany
 	fulfillableItemCount: Int
-	state: String @indexed # pending | awaiting_window | confirmed | unconfirmed
-	deadline: Float @indexed
-	lastEventAt: Float
+	state: String @indexed # unpaid | awaiting | fulfilled | no_fulfillment_expected | cancelled | refunded (derived, src/orders.ts)
+	deadline: Float @indexed # RESERVED — not written; the expectation owns the deadline
+	# The read window for EVERY order-derived surface: the Overview tiles, the flow
+	# lanes and the worklist all bound on `lastEventAt >= now − 7 days`, and the
+	# state backfill sweep pages on it. Indexed so the hottest read (getSummary, on
+	# every screen load) is a bounded index scan rather than a scan of every
+	# projection the shop has ever stored.
+	lastEventAt: Float @indexed
 	lastSourceVersion: Float
 }
 

@@ -19,6 +19,7 @@ import {
 	EventSkus as EventSkusTable,
 	InventoryItems as InventoryItemsTable,
 	ShopLocations as ShopLocationsTable,
+	DigestSubscriptions as DigestSubscriptionsTable,
 } from './src/db.ts';
 import {
 	listEvents,
@@ -29,14 +30,19 @@ import {
 	computeFlows,
 	getPrivacy,
 	getSetup,
+	listOrders,
+	getOrderDetail,
 	type QueryTable,
 } from './src/queries.ts';
+import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from './src/csv.ts';
+import { MAX_LIMIT } from './src/apiContract.ts';
 import { supportContact } from './src/support.ts';
 import { privacyPolicyHtml } from './src/privacyPolicy.ts';
 import { redactShop, redactOrders } from './src/redaction.ts';
 import { REDACT_TARGETS } from './src/ledgerTargets.ts';
 import { writeAudit } from './src/audit.ts';
 import { handleCompliance, type ComplianceDeps } from './src/compliance.ts';
+import { applySubscriptionUpdate, toSubscriptionView } from './src/digestSubscription.ts';
 
 // db.ts types tables as Table<T>; the read layer needs only the search/get subset.
 const EventsQ = EventsTable as unknown as QueryTable;
@@ -51,6 +57,9 @@ const CredentialsQ = CredentialsTable as unknown as QueryTable;
 const EventSkusQ = EventSkusTable as unknown as QueryTable;
 const InventoryItemsQ = InventoryItemsTable as unknown as QueryTable;
 const ShopLocationsQ = ShopLocationsTable as unknown as QueryTable;
+// Read ONLY for `email`/`cadence`/`status` in /privacy's notifications
+// disclosure — stated, never echoed (see getPrivacy in src/queries.ts).
+const DigestSubscriptionsQ = DigestSubscriptionsTable as unknown as QueryTable;
 import { readShopifySecret, SHOPIFY_API_KEY } from './src/readSecret.ts';
 import { verifySessionToken } from './src/verifySessionToken.ts';
 import { log, metrics, M } from './src/observe.ts';
@@ -223,7 +232,7 @@ export class EventsResource extends Resource {
 		const url = parseUrl(ctx.url);
 		const id = trailingId(url.pathname, '/api/v1/events');
 		if (id) {
-			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id, InventoryItemsQ, ShopLocationsQ);
+			const detail = await getEventDetail(EventsQ, ProjectionsQ, FindingsQ, shopId, id, InventoryItemsQ, ShopLocationsQ, EventSkusQ);
 			if (!detail) throw httpError('event not found', 404);
 			return detail;
 		}
@@ -238,6 +247,7 @@ export class EventsResource extends Resource {
 				resourceId: p.get('resourceId') ?? undefined,
 				sku: p.get('sku') ?? undefined,
 				source: p.get('source') ?? undefined,
+				state: p.get('state') ?? undefined,
 				since: numParam(p, 'since'),
 				until: numParam(p, 'until'),
 				cursor: p.get('cursor') ?? undefined,
@@ -256,6 +266,123 @@ export class FlowsResource extends Resource {
 	async get() {
 		const shopId = (await identity.authenticate(this.getContext())).shopId;
 		return computeFlows(ProjectionsQ, shopId, Date.now());
+	}
+}
+
+// The operational worklist (orders and one order's full observed history). Every
+// count on the Overview drills in here, so this is the endpoint that turns
+// aggregates into something a merchant can act on.
+export class OrdersResource extends Resource {
+	static path = '/api/v1/orders';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const url = parseUrl(ctx.url);
+		const orderId = trailingId(url.pathname, '/api/v1/orders');
+		if (orderId) {
+			const detail = await getOrderDetail(ProjectionsQ, EventsQ, FindingsQ, shopId, Date.now(), orderId);
+			if (!detail) throw httpError('order not found', 404);
+			return detail;
+		}
+		const p = url.searchParams;
+		return listOrders(ProjectionsQ, shopId, Date.now(), {
+			state: p.get('state') ?? undefined,
+			minAgeHours: numParam(p, 'minAgeHours'),
+			maxAgeHours: numParam(p, 'maxAgeHours'),
+			sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
+			cursor: p.get('cursor') ?? undefined,
+			limit: p.get('limit') ?? undefined,
+		});
+	}
+}
+
+// CSV export of any filtered list. The one differentiator over Shopify's own
+// activity log that a merchant can hold in their hand — the log is view-only,
+// non-exportable, and capped at 250 rows.
+//
+// Authenticated by the same session token as every other read, which is why the
+// SPA fetches this and downloads from a blob rather than linking directly: a
+// browser navigation cannot carry the X-Shopify-Session-Token header.
+//
+// Bounded at MAX_EXPORT_ROWS. A truncated export SAYS SO in a response header and
+// in the UI — silent truncation would read as "this is everything".
+export class ExportResource extends Resource {
+	static path = '/api/v1/export';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const url = parseUrl(ctx.url);
+		const raw = trailingId(url.pathname, '/api/v1/export') ?? '';
+		const kind = raw.replace(/\.csv$/, '');
+		if (kind !== 'events' && kind !== 'findings' && kind !== 'orders') throw httpError('unknown export kind', 404);
+
+		const now = Date.now();
+		const p = url.searchParams;
+		// One page-fetching closure per kind, over the SAME query functions the
+		// screens use, so an export can never see a row the UI could not, and
+		// tenant scoping is identical. collectExportRows (src/csv.ts) owns the
+		// accumulate-until-cap loop and the truncation determination — pure and
+		// unit-tested, since a Resource class needs the Harper runtime to test.
+		const fetchPage = (cursor: string | undefined) => {
+			if (kind === 'events') {
+				return listEvents(
+					EventsQ,
+					shopId,
+					now,
+					{
+						domain: p.get('domain') ?? undefined,
+						topic: p.get('topic') ?? undefined,
+						resourceId: p.get('resourceId') ?? undefined,
+						sku: p.get('sku') ?? undefined,
+						source: p.get('source') ?? undefined,
+						state: p.get('state') ?? undefined,
+						since: numParam(p, 'since'),
+						until: numParam(p, 'until'),
+						cursor,
+						limit: MAX_LIMIT,
+					},
+					EventSkusQ,
+				);
+			}
+			if (kind === 'findings') {
+				return listFindings(FindingsQ, ExpectationsQ, ProjectionsQ, shopId, {
+					status: p.get('status') ?? undefined,
+					detector: p.get('detector') ?? undefined,
+					cursor,
+					limit: MAX_LIMIT,
+				});
+			}
+			return listOrders(ProjectionsQ, shopId, now, {
+				state: p.get('state') ?? undefined,
+				minAgeHours: numParam(p, 'minAgeHours'),
+				maxAgeHours: numParam(p, 'maxAgeHours'),
+				sort: p.get('sort') === 'oldest' ? 'oldest' : 'newest',
+				cursor,
+				limit: MAX_LIMIT,
+			});
+		};
+		const { rows: bounded, truncated } = await collectExportRows(fetchPage, MAX_EXPORT_ROWS, p.get('cursor') ?? undefined);
+		const columns = EXPORT_COLUMNS[kind];
+		const body = toCsv(
+			columns.map((c) => c.header),
+			bounded.map((row) => columns.map((c) => row[c.field])),
+		);
+		log('trace', 'export.served', { kind, rows: bounded.length, truncated });
+		return new Response(body, {
+			status: 200,
+			headers: {
+				'content-type': 'text/csv; charset=utf-8',
+				'content-disposition': `attachment; filename="${exportFilename(kind, now)}"`,
+				'x-sightline-row-count': String(bounded.length),
+				'x-sightline-truncated': String(truncated),
+			},
+		});
 	}
 }
 
@@ -292,10 +419,63 @@ export class PrivacyResource extends Resource {
 	async get() {
 		const shopId = (await identity.authenticate(this.getContext())).shopId;
 		return getPrivacy(
-			{ events: EventsQ, findings: FindingsQ, projections: ProjectionsQ, deliveries: DeliveriesQ, shops: ShopsQ },
+			{
+				events: EventsQ,
+				findings: FindingsQ,
+				projections: ProjectionsQ,
+				deliveries: DeliveriesQ,
+				shops: ShopsQ,
+				digestSubscriptions: DigestSubscriptionsQ,
+			},
 			shopId,
 			Date.now(),
 		);
+	}
+}
+
+// The notification subscription — the app's ONLY write endpoint, and it writes
+// Sightline's own configuration, never Shopify's data. shopId comes from the
+// verified principal; a shopId in the body is ignored.
+//
+// Every change is audited, and the address is never logged: it is the one
+// merchant-identifying string this app holds.
+export class DigestResource extends Resource {
+	static path = '/api/v1/digest';
+	allowRead() {
+		return true;
+	}
+	allowUpdate() {
+		return true;
+	}
+	async get() {
+		const shopId = (await identity.authenticate(this.getContext())).shopId;
+		return toSubscriptionView(await DigestSubscriptionsTable.get(shopId));
+	}
+	async put() {
+		const ctx = this.getContext();
+		const shopId = (await identity.authenticate(ctx)).shopId;
+		const resolved = await ctx.data;
+		// The raw-JSON content-type handler means bodies arrive as a Buffer.
+		let body: Record<string, unknown> = {};
+		try {
+			const text = Buffer.isBuffer(resolved) ? resolved.toString('utf8') : typeof resolved === 'string' ? resolved : '';
+			const parsed = JSON.parse(text);
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
+		} catch {
+			throw httpError('body must be a JSON object', 400);
+		}
+
+		const now = Date.now();
+		const existing = await DigestSubscriptionsTable.get(shopId);
+		const next = applySubscriptionUpdate(existing, shopId, body, now);
+		await DigestSubscriptionsTable.put(next);
+		// Audit the CHANGE, never the address itself.
+		await writeAudit(`digest:${shopId}:${now}`, shopId, 'digest.subscription.updated', now, {
+			status: next.status,
+			cadence: next.cadence,
+			hasEmail: Boolean(next.email),
+		});
+		return toSubscriptionView(next);
 	}
 }
 

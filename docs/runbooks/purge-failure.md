@@ -19,7 +19,19 @@ the deletion guarantee — a compliance commitment — is not being met.
 - `purge.residue` warn: `{residue: N}` expired rows remained after a run.
 - `purge.failures` warn: `{count, failures}` per-table failure reasons
   (table-name/error strings, redaction-capped — no row data).
-- `purge.error`: the whole purge tick threw.
+- `purge.error`: the ledger purge threw.
+
+The **digest outbox** is swept in the same tick but on its own 30-day cutoff and
+inside its own try/catch, so one sweep failing never skips the other and its
+failures are reported separately. Its signals mirror the ledger's:
+- `purge.outbox` trace: `{deleted: N}` (healthy outbox purges).
+- `purge.outbox.residue` warn: expired digests still present after a run.
+- `purge.outbox.failures` warn: `{count, failures}`.
+- `purge.outbox.error`: the outbox sweep threw.
+
+Both sweeps feed the same `purge.deleted` / `purge.failure` counters, so a rising
+counter says purge work happened or failed without saying which sweep — read the
+log event name for that.
 
 ### Diagnose
 1. Read the `purge.failures` line — `failures` names which table(s) failed and

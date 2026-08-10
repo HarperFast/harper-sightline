@@ -88,6 +88,21 @@ test('cutoffMs default window is seven days', () => {
 	assert.equal(cutoffMs(NOW), NOW - RETENTION_DAYS * DAY_MS);
 });
 
+// The digest outbox keeps 30 days (OUTBOX_RETENTION_TARGETS/OUTBOX_RETENTION_DAYS
+// in src/ledgerTargets.ts), not the ledger's 7 — purgeExpired's third parameter
+// (retentionDays) is what lets one shared purge function serve both windows.
+test('digest outbox rows are purged after thirty days, not seven', async () => {
+	const outbox = new FakeTable('id', [
+		{ id: 's1:old', shopId: 's1', periodStart: 1, status: 'pending', createdAt: NOW - 40 * DAY_MS },
+		{ id: 's1:recent', shopId: 's1', periodStart: 2, status: 'pending', createdAt: NOW - 10 * DAY_MS },
+	]);
+	const result = await purgeExpired([{ name: 'DigestOutbox', keyField: 'id', tsField: 'createdAt', table: outbox }], NOW, 30);
+	assert.equal(result.deleted, 1);
+	assert.equal(await outbox.get('s1:old'), undefined);
+	// Ten days old survives a 30-day retention but would NOT survive the ledger's 7.
+	assert.notEqual(await outbox.get('s1:recent'), undefined);
+});
+
 test('EventSku rows are purged with their events', async () => {
 	const eventSkus = new FakeTable('id', [
 		{ id: 'old:A', shopId: 's1', eventId: 'old', sku: 'A', receivedAt: NOW - 8 * DAY_MS, occurredAt: NOW - 8 * DAY_MS },

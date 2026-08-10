@@ -1,11 +1,21 @@
 // TypeScript mirror of schema.graphql, for use by resources/workers. Required
 // (non-null `!`) schema fields are non-optional here. Epoch-ms times are number.
 
+import type { OrderLane } from './orders.ts';
+
 export type ShopStatus = 'active' | 'reauthorization_required' | 'uninstalled';
 export type DeliveryStatus = 'accepted' | 'processed' | 'dead_letter';
 export type EventDomain = 'order' | 'fulfillment' | 'inventory' | 'refund';
 export type EventSource = 'webhook' | 'reconciliation';
-export type ProjectionState = 'pending' | 'awaiting_window' | 'confirmed' | 'unconfirmed';
+// The order's lane, derived from the latches by src/orders.ts. An ALIAS, never a
+// second copy of the union: the stored column and the derived lane are the same
+// value set by construction (projection.ts writes deriveOrderLane's result into
+// it), and two hand-maintained lists would let the two drift apart silently.
+// NOTE: this replaces an earlier value set ('pending' | 'awaiting_window' |
+// 'confirmed' | 'unconfirmed') that was declared but never written by any code
+// path — no stored row has ever carried it, so redefining the column's meaning is
+// safe.
+export type ProjectionState = OrderLane;
 export type ExpectationState = 'pending' | 'resolved' | 'suppressed' | 'expired';
 export type FindingStatus = 'pending' | 'unconfirmed' | 'resolved' | 'suppressed';
 
@@ -39,6 +49,51 @@ export interface AppAuditEvent {
 	action: string;
 	at: number;
 	detail?: string;
+}
+
+export type DigestCadence = 'daily' | 'weekly';
+export type DigestStatus = 'pending' | 'sent' | 'skipped';
+
+export interface DigestSubscription {
+	shopId: string;
+	email?: string;
+	cadence?: DigestCadence;
+	status?: 'active' | 'paused';
+	createdAt?: number;
+	updatedAt?: number;
+	lastBuiltAt?: number;
+}
+
+// No `email` field, deliberately — see schema.graphql's DigestOutbox comment. The
+// address lives on DigestSubscription only, so clearing it or uninstalling really
+// does erase it, as the policy and the Notifications screen both promise.
+export interface DigestOutbox {
+	id: string; // `${shopId}:${periodStart}`
+	shopId: string;
+	cadence?: DigestCadence;
+	periodStart: number;
+	periodEnd?: number;
+	subject?: string;
+	bodyText?: string;
+	bodyHtml?: string;
+	// Current-state, and a count of ORDERS: how many were awaiting fulfillment
+	// confirmation when the digest was built (isAwaitingConfirmation, src/orders.ts —
+	// the Overview's awaiting tile, same population). Not period-scoped, and not a
+	// findings tally: the name is deliberately not `unconfirmed`, which in this
+	// codebase means a GapFinding STATUS (see FindingStatus above, and
+	// getSummary's findings.unconfirmed) — a different population in a different
+	// tense, and one order can produce two findings.
+	ordersAwaiting?: number;
+	// Scoped to this row's period, [periodStart, periodEnd) — the name says so because
+	// getSummary's `findings.failedAttempts` counts the same findings with no time
+	// bound at all. Also a count of ORDERS, not attempts: DETECTOR_FAILED writes one
+	// finding per (order, ruleVersion), so two failed attempts on one order are one.
+	failedAttemptsInPeriod?: number;
+	deliveryGaps?: number;
+	// Recorder health at build time, current-state like ordersAwaiting.
+	recorderHealthy?: boolean;
+	status: DigestStatus;
+	createdAt: number;
 }
 
 // ─── sightline_ledger ─────────────────────────────────────────────────────────

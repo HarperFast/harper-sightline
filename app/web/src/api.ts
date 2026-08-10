@@ -57,10 +57,12 @@ export interface Summary {
 	windowDays: number;
 	events: { total: number };
 	orders: { tracked: number; paid: number; fulfilled: number; awaitingConfirmation: number };
-	findings: { unconfirmed: number; resolved: number; suppressed: number };
+	aging: { buckets: Array<{ key: string; label: string; count: number }> };
+	findings: { unconfirmed: number; resolved: number; suppressed: number; failedAttempts: number };
 	recorder: { healthy: boolean; deadLetteredDeliveries: number };
 	reconciliation: Reconciliation;
 	activity: { days: number; domains: string[]; buckets: ActivityBucket[] };
+	integrity: { webhookEvents: number; reconciliationOnlyEvents: number };
 }
 export interface SetupStep {
 	key: string;
@@ -85,6 +87,9 @@ export interface EventItem {
 	topic?: string;
 	resourceId?: string;
 	sku?: string;
+	// The full SKU list, hydrated from the EventSku index. Preferred over `sku`
+	// (a scalar populated only for a single-SKU event) whenever present.
+	skus?: string[];
 	quantity?: number;
 	fulfillableItemCount?: number;
 	state?: string;
@@ -96,10 +101,16 @@ export interface EventDetail extends EventItem {
 	relatedEventIds: string[];
 	affectedProjection: boolean;
 	affectedFinding: boolean;
+	// Present only for an inventory event whose item id / location id resolved
+	// against this shop's cache.
+	inventorySku?: string;
+	productTitle?: string;
+	locationName?: string;
 }
 export interface FindingItem {
 	id: string;
 	orderId: string;
+	orderName?: string;
 	// Which detector wrote this finding ('fulfillment_confirmation' | 'fulfillment_attempt_failed').
 	// Absent on rows written before this column existed — those must still be
 	// treated as the absence detector (src/detector.ts DETECTOR), never as unknown.
@@ -122,6 +133,7 @@ export interface FindingDetail extends FindingItem {
 		fulfilledAt?: number;
 		cancelledAt?: number;
 		fullyRefundedAt?: number;
+		orderName?: string;
 	} | null;
 }
 export interface Privacy {
@@ -132,13 +144,42 @@ export interface Privacy {
 	dataCategories: string[];
 	excludedFields: string[];
 	deletion: Record<string, string>;
+	notifications: { emailStored: boolean; cadence?: string; status: string };
 	footprint: { events: number; orders: number; findings: number };
 	webhooks: { received: number; processed: number; deadLettered: number; healthy: boolean; lastReceivedAt?: number };
 	reconciliation: Reconciliation;
 }
+export interface OrderItem {
+	orderId: string;
+	orderName?: string;
+	state: string;
+	paidAt?: number;
+	fulfilledAt?: number;
+	cancelledAt?: number;
+	fullyRefundedAt?: number;
+	fulfillmentFailedAt?: number;
+	hasTracking?: boolean;
+	trackingCompany?: string;
+	orderTotal?: number;
+	currency?: string;
+	lastEventAt?: number;
+	ageHours?: number;
+}
+export interface OrderDetail extends OrderItem {
+	requiresFulfillment?: boolean;
+	fulfillableItemCount?: number;
+	events: EventItem[];
+	findings: Array<FindingItem & { description: string }>;
+}
 export interface Page<T> {
 	items: T[];
 	nextCursor?: string;
+}
+export interface DigestSettings {
+	email?: string;
+	cadence: string;
+	status: string;
+	lastBuiltAt?: number;
 }
 
 const qs = (params: Record<string, string | undefined>): string => {
@@ -157,3 +198,48 @@ export const apiEvent = (id: string) => get<EventDetail>(`/api/v1/events/${encod
 export const apiFindings = (params: Record<string, string | undefined>) => get<Page<FindingItem>>(`/api/v1/findings${qs(params)}`);
 export const apiFinding = (id: string) => get<FindingDetail>(`/api/v1/findings/${encodeURIComponent(id)}`);
 export const apiPrivacy = () => get<Privacy>('/api/v1/privacy');
+export const apiOrders = (params: Record<string, string | undefined>) => get<Page<OrderItem>>(`/api/v1/orders${qs(params)}`);
+export const apiOrder = (orderId: string) => get<OrderDetail>(`/api/v1/orders/${encodeURIComponent(orderId)}`);
+export const apiDigest = () => get<DigestSettings>('/api/v1/digest');
+
+// The one write the SPA performs, and it writes Sightline's own settings.
+export async function apiSaveDigest(body: { email?: string; cadence?: string; status?: string }): Promise<DigestSettings> {
+	const token = await shopify.idToken();
+	const res = await nativeFetch()('/api/v1/digest', {
+		method: 'PUT',
+		headers: { 'X-Shopify-Session-Token': token, 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		let detail = '';
+		try {
+			detail = ((await res.json()) as { error?: string }).error ?? '';
+		} catch {
+			// no JSON body
+		}
+		throw new Error(`${res.status}${detail ? ` ${detail}` : ''}`);
+	}
+	return res.json() as Promise<DigestSettings>;
+}
+
+// Export is a file, not JSON, so it bypasses get<T>(): the same session-token
+// header, but the body is text and the row-count/truncation signals come back as
+// response headers.
+export async function apiExport(
+	kind: string,
+	params: Record<string, string | undefined>,
+): Promise<{ csv: string; truncated: boolean; rows: number; filename: string }> {
+	const token = await shopify.idToken();
+	const res = await nativeFetch()(`/api/v1/export/${encodeURIComponent(kind)}.csv${qs(params)}`, {
+		headers: { 'X-Shopify-Session-Token': token },
+	});
+	if (!res.ok) throw new Error(`${res.status}`);
+	const disposition = res.headers.get('content-disposition') ?? '';
+	const match = disposition.match(/filename="([^"]+)"/);
+	return {
+		csv: await res.text(),
+		truncated: res.headers.get('x-sightline-truncated') === 'true',
+		rows: Number(res.headers.get('x-sightline-row-count') ?? 0),
+		filename: match ? match[1] : `sightline-${kind}.csv`,
+	};
+}

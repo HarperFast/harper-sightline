@@ -12,7 +12,8 @@
 
 Every task's requirements implicitly include this section.
 
-- **Plan A must be merged first.** This plan reads `orderName`, `orderTotal`, `currency`, `fulfillmentFailedAt`, `hasTracking`, `trackingCompany`, and `GapFinding.detector` — all introduced in Plan A.
+- **Plan A must be in place first.** This plan reads `orderName`, `orderTotal`, `currency`, `fulfillmentFailedAt`, `hasTracking`, `trackingCompany`, the `EventSku` index, and `GapFinding.detector` — all introduced in Plan A. This branch is stacked directly on `feat/plan-a-data-extraction` (PR #72), so that code is present; its PR targets Plan A's branch and retargets to `main` once #72 merges.
+- **Plan A left two of its defect fixes true of the API but not of the screen** — a multi-SKU event renders a blank SKU cell, and an inventory row is still a bare numeric id. **Task 10** closes both. Until it lands, do not describe those defects as fixed for merchants.
 - **Read-only.** No screen may render a replay, repair, re-announce, tag, or any other write affordance. `capabilitiesFor()` grants `record` only; do not change it.
 - **Zero runtime dependencies.** `app/package.json` has `devDependencies` only.
 - **All tables `@table @sealed`, PRIVATE.** Never add `@export`.
@@ -2398,7 +2399,205 @@ git commit -m "feat(ui): surface failed fulfillment attempts as a distinct signa
 
 ---
 
-### Task 10: Fix the Overview window inconsistency, then verify the whole plan live
+### Task 10: Make Plan A's SKU and inventory fixes visible on screen
+
+Plan A fixed two defects in the API and not on the screen, which is where a merchant looks. Two symptoms:
+
+- **A SKU search returns the right rows, and every SKU cell in them is blank.** `OperationalEvent.sku` is deliberately populated only when an event has exactly one SKU (a "first SKU" scalar would misrepresent a multi-line order), and the list response carries no SKU list. So searching `TSHIRT-BLK-M` returns the order's events with `—` in the SKU column. That reads as broken.
+- **Inventory rows are still a bare numeric id.** Plan A's enrichment resolves item id → SKU/product title and location id → name, and `getEventDetail` returns `inventorySku`, `productTitle`, and `locationName` — but no screen renders any of them.
+
+**Files:**
+- Modify: `app/src/queries.ts` (add `hydrateSkus`, call it from `listEvents` and `getEventDetail`), `app/src/apiContract.ts`, `app/src/csv.ts`, `app/web/src/api.ts`, `app/web/src/view.ts`
+- Test: `app/test/queries.test.ts`, `app/test/view.test.ts`, `app/test/crossTenant.test.ts`, `app/test/csv.test.ts`
+
+**Interfaces:**
+- Consumes: the `EventSku` index and the `inventorySku`/`productTitle`/`locationName` fields, both from Plan A.
+- Produces:
+  - `hydrateSkus(eventSkus: QueryTable, shopId: string, items: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>>` — attaches a sorted `skus: string[]` to each item that has any
+  - `EVENT_LIST_FIELDS = [...EVENT_FIELDS, 'skus']` in `apiContract.ts`, used as the events resource's declared `item`
+  - `EventItem.skus?: string[]` and `EventDetail.inventorySku?/productTitle?/locationName?` in `api.ts`
+  - `skuCell(e: EventItem): string` in `view.ts`
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `app/test/queries.test.ts` (reuse the `skuFixtures()` helper Plan A added):
+
+```typescript
+test('events carry their full SKU list, sorted, not just the scalar', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, {}, skuFixtures());
+	const e1 = page.items.find((i) => i.eventId === 's1:e1');
+	assert.deepEqual(e1?.skus, ['TSHIRT']);
+});
+
+test('an event with no index rows simply has no skus key', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, {}, skuFixtures());
+	const e3 = page.items.find((i) => i.eventId === 's1:e3');
+	assert.equal('skus' in (e3 ?? {}), false);
+});
+
+test('the SKU list is hydrated in one query per page, not one per row', async () => {
+	const { events } = fixtures();
+	const index = skuFixtures();
+	let searches = 0;
+	const counting = {
+		search: (spec: unknown) => {
+			searches++;
+			return index.search(spec as never);
+		},
+		get: (id: string) => index.get(id),
+	} as unknown as typeof index;
+	await listEvents(events, 's1', NOW, {}, counting);
+	assert.equal(searches, 1, 'a keyed query per row would be up to MAX_LIMIT round trips per screen');
+});
+
+test('SKU hydration never attaches another tenant SKUs', async () => {
+	const { events } = fixtures();
+	const index = skuFixtures();
+	// s2:e1 shares the SKU and an id shape; s1's rows must not inherit it.
+	const page = await listEvents(events, 's1', NOW, {}, index);
+	for (const item of page.items) {
+		if (item.skus) assert.equal((item.skus as string[]).every((s) => typeof s === 'string'), true);
+		assert.notEqual(item.eventId, 's2:e1');
+	}
+});
+```
+
+Add to `app/test/view.test.ts`:
+
+```typescript
+test('the SKU cell shows every SKU on a multi-SKU event', () => {
+	const html = eventsView({}, [event({ skus: ['STICKER-PK', 'TSHIRT-BLK-M'], sku: undefined })], false, '');
+	assert.match(html, /STICKER-PK/);
+	assert.match(html, /TSHIRT-BLK-M/);
+});
+
+test('the SKU cell falls back to the scalar, then to an em dash', () => {
+	assert.match(eventsView({}, [event({ skus: undefined, sku: 'ONLY-ONE' })], false, ''), /ONLY-ONE/);
+	assert.match(eventsView({}, [event({ skus: undefined, sku: undefined })], false, ''), /—/);
+});
+
+test('an inventory row shows its resolved SKU rather than only a numeric id', () => {
+	const html = eventsView({}, [event({ domain: 'inventory', resourceId: '8400000000001', skus: ['TSHIRT-BLK-M'], sku: undefined })], false, '');
+	assert.match(html, /TSHIRT-BLK-M/);
+});
+
+test('event detail names the product and location behind an inventory id', () => {
+	const html = eventDetailView(
+		{ ...eventDetail(), domain: 'inventory', resourceId: '8400000000001', inventorySku: 'TSHIRT-BLK-M', productTitle: 'T-Shirt', locationName: 'Brooklyn' },
+		'',
+	);
+	assert.match(html, /TSHIRT-BLK-M/);
+	assert.match(html, /T-Shirt/);
+	assert.match(html, /Brooklyn/);
+});
+
+test('event detail omits the enrichment rows when nothing is resolved', () => {
+	const html = eventDetailView({ ...eventDetail(), inventorySku: undefined, productTitle: undefined, locationName: undefined }, '');
+	assert.doesNotMatch(html, /Product|Location name/);
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd app && node --test test/queries.test.ts test/view.test.ts`
+Expected: FAIL — `skus` is undefined; `hydrateSkus` is not exported.
+
+- [ ] **Step 3: Implement the hydration**
+
+Add to `app/src/queries.ts`:
+
+```typescript
+// Attach each event's full SKU list. `skus` is not a column on OperationalEvent —
+// an order has many and the row holds one scalar, deliberately set only when there
+// is exactly one — so the list is assembled from the EventSku index.
+//
+// One OR query per PAGE, not per row: a keyed query per event would be up to
+// MAX_LIMIT round trips to paint one screen. The tenant is re-checked on every
+// index row because this query is keyed by event id, not by shop.
+export async function hydrateSkus(
+	eventSkus: QueryTable,
+	shopId: string,
+	items: Array<Record<string, unknown>>,
+): Promise<Array<Record<string, unknown>>> {
+	const ids = items.map((item) => String(item.eventId)).filter((id) => id.length > 0);
+	if (ids.length === 0) return items;
+
+	const byEvent = new Map<string, string[]>();
+	for await (const row of eventSkus.search({
+		conditions: ids.map((id) => ({ attribute: 'eventId', value: id })),
+		operator: 'or',
+		select: ['eventId', 'sku', 'shopId'],
+	})) {
+		if (row.shopId !== shopId) continue;
+		const eventId = String(row.eventId);
+		const list = byEvent.get(eventId) ?? [];
+		list.push(String(row.sku));
+		byEvent.set(eventId, list);
+	}
+
+	return items.map((item) => {
+		const skus = byEvent.get(String(item.eventId));
+		// Sorted so a rebuild or a different index scan order cannot reorder a cell.
+		return skus && skus.length > 0 ? { ...item, skus: [...skus].sort() } : item;
+	});
+}
+```
+
+Then call it at the end of both `listEvents` return paths and in `getEventDetail`, in each case only when an `eventSkus` table was supplied. In `getEventDetail`, hydrate the single event the same way (pass a one-element array) so detail and list agree.
+
+- [ ] **Step 4: Declare the field and export it**
+
+In `app/src/apiContract.ts`, add `export const EVENT_LIST_FIELDS = [...EVENT_FIELDS, 'skus'] as const;` and use it as the `events` resource's `item`. Add `'skus'` to the `eventDetail` fields list too.
+
+In `app/src/csv.ts`, add `{ header: 'SKUs', field: 'skus' }` to `EXPORT_COLUMNS.events` immediately after the existing `SKU` column, so an export of a SKU-filtered list is not silently missing the thing that was searched for. Note `csvCell` stringifies an array via `String(...)`, which yields a comma-joined value — quote-safe because `csvCell` already quotes anything containing a comma. Add a `csv.test.ts` case asserting an array cell round-trips as a quoted, comma-joined field.
+
+Update the `crossTenant.test.ts` export-allowlist test's `events` entry to `EVENT_LIST_FIELDS` so the new column stays inside the allowlist check.
+
+- [ ] **Step 5: Render it**
+
+In `app/web/src/api.ts`, add `skus?: string[];` to `EventItem` and `inventorySku?: string; productTitle?: string; locationName?: string;` to `EventDetail`.
+
+In `app/web/src/view.ts`, add the cell helper and use it in `eventsView`'s SKU column:
+
+```typescript
+// Prefer the full list; fall back to the scalar (single-SKU events); then an em
+// dash. Before this, a multi-SKU event rendered blank — so a SKU search returned
+// the right rows with nothing in the column the merchant searched on.
+export function skuCell(e: EventItem): string {
+	if (e.skus && e.skus.length > 0) return esc(e.skus.join(', '));
+	return e.sku ? esc(e.sku) : '—';
+}
+```
+
+In `eventDetailView`, add the three enrichment rows to the `fields()` list, each omitted when absent — an inventory event is the only one that has them, and a row reading `—` on every order event would be noise:
+
+```typescript
+			...(e.inventorySku ? ([['Inventory SKU', esc(e.inventorySku)]] as Array<[string, string]>) : []),
+			...(e.productTitle ? ([['Product', esc(e.productTitle)]] as Array<[string, string]>) : []),
+			...(e.locationName ? ([['Location name', esc(e.locationName)]] as Array<[string, string]>) : []),
+```
+
+Also replace the detail's existing single `['SKU', ...]` row with the full list when one is present.
+
+- [ ] **Step 6: Run everything**
+
+Run: `cd app && npm run contract:gen && npm test && npm run typecheck && npm run build && npm run lint:required && npm run format:check`
+Expected: all PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add app/src/queries.ts app/src/apiContract.ts app/src/csv.ts app/web/src/api.ts app/web/src/view.ts contracts/sightline-api-v1.json app/test/queries.test.ts app/test/view.test.ts app/test/crossTenant.test.ts app/test/csv.test.ts
+git commit -m "feat(ui): render full SKU lists and resolved inventory names"
+```
+
+**Known risk to verify live (add to Task 11's checklist):** the hydration issues one `operator: 'or'` query with up to `MAX_LIMIT` conditions. If that shape proves unsupported or slow against real Harper, fall back to per-row keyed lookups bounded by the page limit, and record the change. The in-memory test table supports `or`, so the suite cannot tell you.
+
+---
+
+### Task 11: Fix the Overview window inconsistency, then verify the whole plan live
 
 **Defect being fixed:** the Overview heading says "Orders (last 7 days)" but `getSummary`'s order counts scan every projection for the shop with no window bound, while `computeFlows` filters on `lastEventAt >= windowStart`. The retention purge usually keeps them in agreement, so the divergence only shows up between purge runs, or when a run hits `MAX_DELETES_PER_RUN` — and then two panels on the same screen disagree about the same orders.
 
@@ -2532,6 +2731,7 @@ Then open the app inside Shopify Admin on the dev store and confirm, because non
 6. A finding from each detector renders with the correct label, and the absence disclaimer appears on the absence finding only.
 7. The capture-integrity section reports honestly (it will usually say everything arrived by webhook).
 8. Every screen still handles an expired session — leave the tab idle, then click a filter, and confirm the auth-expired state rather than a raw error.
+9. **Task 10's SKU hydration, which the suite cannot validate.** Search a SKU on the Events screen and confirm the returned rows show that SKU in the SKU column (a blank cell there was the defect). Then confirm an inventory row shows a SKU rather than only a numeric id, and that its detail names the product and location. Watch the query latency on a page of 25–100 events: the hydration issues one `operator: 'or'` query with up to `MAX_LIMIT` conditions, and the in-memory test table cannot tell you whether real Harper handles that shape well. If it is slow or unsupported, fall back to per-row keyed lookups bounded by the page limit and record the change.
 
 - [ ] **Step 8: Open the PR**
 

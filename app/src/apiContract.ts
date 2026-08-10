@@ -32,6 +32,11 @@ export const EVENT_FIELDS = [
 	'occurredAt',
 	'receivedAt',
 ] as const;
+// The events LIST additionally carries each event's full SKU list. `sku` above
+// stays a scalar (populated only for a single-SKU event); `skus` is hydrated
+// from the EventSku index and allowlisted separately so the join can never
+// widen the base fields.
+export const EVENT_LIST_FIELDS = [...EVENT_FIELDS, 'skus'] as const;
 export const FINDING_FIELDS = [
 	'id',
 	'orderId',
@@ -45,7 +50,7 @@ export const FINDING_FIELDS = [
 // The findings LIST additionally carries the two order facts the screen spec's
 // list columns need (paid time, expected confirmation). They are joined from the
 // projection/expectation and allowlisted here so the join can never widen.
-export const FINDING_LIST_FIELDS = [...FINDING_FIELDS, 'paidAt', 'deadline'] as const;
+export const FINDING_LIST_FIELDS = [...FINDING_FIELDS, 'paidAt', 'deadline', 'orderName'] as const;
 export const PROJECTION_FIELDS = [
 	'orderId',
 	'paidAt',
@@ -63,6 +68,30 @@ export const PROJECTION_FIELDS = [
 ] as const;
 export const EXPECTATION_FIELDS = ['state', 'deadline', 'createdAt', 'resolvedAt'] as const;
 
+// The orders worklist. `ageHours` is computed per request, not stored.
+export const ORDER_LIST_FIELDS = [
+	'orderId',
+	'orderName',
+	'state',
+	'paidAt',
+	'fulfilledAt',
+	'cancelledAt',
+	'fullyRefundedAt',
+	'fulfillmentFailedAt',
+	'hasTracking',
+	'trackingCompany',
+	'orderTotal',
+	'currency',
+	'lastEventAt',
+	'ageHours',
+] as const;
+// `fulfillableItemCount` is deliberately NOT here: the column exists on the
+// schema but src/projection.ts never writes it (the reducer latches
+// `requiresFulfillment` from a positive count instead), so declaring it promised a
+// field the detail endpoint could never carry. Same defect an earlier task fixed
+// for `ageHours`. Removed rather than started — nothing needs the raw count.
+export const ORDER_FIELDS = [...ORDER_LIST_FIELDS, 'requiresFulfillment'] as const;
+
 // The contract artifact shape (also what gen-contract.mjs serializes).
 export const API_CONTRACT = {
 	version: API_VERSION,
@@ -73,21 +102,43 @@ export const API_CONTRACT = {
 		setup: { path: '/api/v1/setup', fields: ['shop', 'complete', 'steps', 'eventsObserved', 'action'] },
 		summary: {
 			path: '/api/v1/summary',
-			fields: ['shop', 'windowDays', 'events', 'orders', 'findings', 'recorder', 'reconciliation', 'activity'],
+			fields: ['shop', 'windowDays', 'events', 'orders', 'aging', 'findings', 'recorder', 'reconciliation', 'activity', 'integrity'],
 		},
 		events: {
 			path: '/api/v1/events',
-			item: EVENT_FIELDS,
+			item: EVENT_LIST_FIELDS,
 			paginated: true,
-			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'since', 'until', 'cursor', 'limit'],
+			filters: ['domain', 'topic', 'resourceId', 'sku', 'source', 'state', 'since', 'until', 'cursor', 'limit'],
 		},
 		eventDetail: {
 			path: '/api/v1/events/:id',
-			fields: [...EVENT_FIELDS, 'relatedEventIds', 'affectedProjection', 'affectedFinding', 'inventorySku', 'productTitle', 'locationName'],
+			fields: [
+				...EVENT_FIELDS,
+				'skus',
+				'relatedEventIds',
+				'affectedProjection',
+				'affectedFinding',
+				'inventorySku',
+				'productTitle',
+				'locationName',
+			],
 		},
 		flows: { path: '/api/v1/flows', fields: ['shop', 'windowDays', 'lanes'] },
 		findings: { path: '/api/v1/findings', item: FINDING_LIST_FIELDS, paginated: true, filters: ['status', 'detector', 'cursor', 'limit'] },
 		findingDetail: { path: '/api/v1/findings/:id', fields: [...FINDING_FIELDS, 'description', 'projection', 'expectation'] },
+		orders: {
+			path: '/api/v1/orders',
+			item: ORDER_LIST_FIELDS,
+			paginated: true,
+			filters: ['state', 'minAgeHours', 'maxAgeHours', 'sort', 'cursor', 'limit'],
+		},
+		orderDetail: { path: '/api/v1/orders/:orderId', fields: [...ORDER_FIELDS, 'events', 'findings'] },
+		export: {
+			path: '/api/v1/export/:kind.csv',
+			kinds: ['events', 'findings', 'orders'],
+			format: 'text/csv',
+			maxRows: 5000,
+		},
 		privacy: {
 			path: '/api/v1/privacy',
 			fields: [
@@ -98,10 +149,18 @@ export const API_CONTRACT = {
 				'dataCategories',
 				'excludedFields',
 				'deletion',
+				'notifications',
 				'footprint',
 				'webhooks',
 				'reconciliation',
 			],
+		},
+		digest: {
+			path: '/api/v1/digest',
+			fields: ['email', 'cadence', 'status', 'lastBuiltAt'],
+			// The app's only write surface, and it writes Sightline's own
+			// configuration — never Shopify data.
+			methods: ['GET', 'PUT'],
 		},
 	},
 } as const;

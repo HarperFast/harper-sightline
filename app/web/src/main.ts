@@ -5,10 +5,16 @@ import {
 	apiFlows,
 	apiEvents,
 	apiEvent,
+	apiExport,
 	apiFindings,
 	apiFinding,
 	apiPrivacy,
+	apiOrders,
+	apiOrder,
+	apiDigest,
+	apiSaveDigest,
 	type EventItem,
+	type OrderItem,
 	type Setup,
 	type Summary,
 } from './api.ts';
@@ -23,9 +29,16 @@ import {
 	findingDetailView,
 	findingsListView,
 	notFoundView,
+	notificationsView,
+	orderDetailView,
+	orderQuery,
+	ordersView,
+	ORDER_FILTER_KEYS,
 	overviewView,
 	parseHash,
 	privacyView,
+	saveErrorAction,
+	setShop,
 	setSupport,
 	setupView,
 	spinnerView,
@@ -73,6 +86,37 @@ function bindFilters(containerId: string, submit: () => void): void {
 			submit();
 		}
 	});
+}
+
+// Download the export as a blob. A direct link cannot carry the session-token
+// header, so the file is fetched and handed to a synthetic anchor.
+async function downloadExport(kind: string, params: Record<string, string | undefined>): Promise<void> {
+	const result = await apiExport(kind, params);
+	const url = URL.createObjectURL(new Blob([result.csv], { type: 'text/csv;charset=utf-8' }));
+	const anchor = document.createElement('a');
+	anchor.href = url;
+	anchor.download = result.filename;
+	document.body.appendChild(anchor);
+	anchor.click();
+	anchor.remove();
+	URL.revokeObjectURL(url);
+	if (result.truncated) {
+		// Never let a capped export read as "this is everything".
+		window.alert(`Exported the first ${result.rows} rows. Narrow the filters to export the rest.`);
+	}
+}
+
+function bindExport(params: Record<string, string | undefined>): void {
+	for (const button of document.querySelectorAll<HTMLElement>('[data-export]')) {
+		button.addEventListener('click', () => {
+			// A rejected fetch (e.g. an expired session token) must not fail silently
+			// as an unhandled promise rejection — the merchant needs to know the
+			// export did not happen.
+			downloadExport(button.getAttribute('data-export') ?? '', params).catch(() => {
+				window.alert('Export failed. Try again, or reload the page if you were signed out.');
+			});
+		});
+	}
 }
 
 function setActiveNav(path: string): void {
@@ -178,6 +222,7 @@ function paintEvents(params: Record<string, string>, contextHtml: string): void 
 		eventCursor = next.nextCursor;
 		paintEvents(params, contextHtml);
 	});
+	bindExport(eventQueryActive);
 }
 
 async function eventDetail(id: string): Promise<void> {
@@ -186,15 +231,61 @@ async function eventDetail(id: string): Promise<void> {
 	render(eventDetailView(await apiEvent(id), contextHtml));
 }
 
+let orderItems: OrderItem[] = [];
+let orderCursor: string | undefined;
+let orderQueryActive: Record<string, string> = {};
+
+async function ordersList(params: Record<string, string>): Promise<void> {
+	loading();
+	orderItems = [];
+	orderCursor = undefined;
+	orderQueryActive = orderQuery(params);
+	const contextHtml = await strip();
+	const first = await apiOrders(orderQueryActive);
+	orderItems = first.items;
+	orderCursor = first.nextCursor;
+	paintOrders(params, contextHtml);
+}
+
+function paintOrders(params: Record<string, string>, contextHtml: string): void {
+	render(ordersView(params, orderItems, Boolean(orderCursor), contextHtml));
+	bindFilters('orderFilters', () => {
+		const q = new URLSearchParams();
+		for (const key of ORDER_FILTER_KEYS) {
+			const v = fieldValue(`f-${key}`);
+			if (v) q.set(key, v);
+		}
+		location.hash = `#/orders${q.toString() ? `?${q}` : ''}`;
+	});
+	document.getElementById('loadMore')?.addEventListener('click', async () => {
+		const next = await apiOrders({ ...orderQueryActive, cursor: orderCursor });
+		orderItems.push(...next.items);
+		orderCursor = next.nextCursor;
+		paintOrders(params, contextHtml);
+	});
+	bindExport(orderQueryActive);
+}
+
+async function orderDetail(orderId: string): Promise<void> {
+	loading();
+	const contextHtml = await strip();
+	render(orderDetailView(await apiOrder(orderId), contextHtml));
+}
+
 async function findingsList(params: Record<string, string>): Promise<void> {
 	loading();
 	const contextHtml = await strip();
 	const listPage = await apiFindings(params);
 	render(findingsListView(params, listPage.items, Date.now(), contextHtml));
 	bindFilters('findingFilters', () => {
-		const v = fieldValue('f-status');
-		location.hash = `#/findings${v ? `?status=${encodeURIComponent(v)}` : ''}`;
+		const q = new URLSearchParams();
+		for (const key of ['status', 'detector']) {
+			const v = fieldValue(`f-${key}`);
+			if (v) q.set(key, v);
+		}
+		location.hash = `#/findings${q.toString() ? `?${q}` : ''}`;
 	});
+	bindExport(params);
 }
 
 async function findingDetail(id: string): Promise<void> {
@@ -218,6 +309,28 @@ async function privacy(): Promise<void> {
 	render(privacyView(await apiPrivacy(), Date.now(), contextHtml));
 }
 
+async function notifications(message?: { tone: string; text: string }): Promise<void> {
+	loading();
+	const contextHtml = await strip();
+	const settings = await apiDigest();
+	render(notificationsView(settings, Date.now(), contextHtml, message));
+	document.querySelector('[data-save-digest]')?.addEventListener('click', () => {
+		void (async () => {
+			try {
+				await apiSaveDigest({ email: fieldValue('f-email'), cadence: fieldValue('f-cadence') });
+				await notifications({ tone: 'success', text: 'Saved.' });
+			} catch (err) {
+				const action = saveErrorAction(String((err as Error).message));
+				// A click handler never goes through route(), so it doesn't get that
+				// function's 401 → authExpiredView() handling for free — ask for the same
+				// decision explicitly rather than showing the merchant a bare "401".
+				if (action.kind === 'reauthorize') render(authExpiredView());
+				else await notifications({ tone: 'critical', text: action.text });
+			}
+		})();
+	});
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 async function route(): Promise<void> {
 	const { path, params } = parseHash(location.hash);
@@ -225,13 +338,17 @@ async function route(): Promise<void> {
 	try {
 		const eventId = path.match(/^\/events\/(.+)$/);
 		const findingId = path.match(/^\/findings\/(.+)$/);
+		const orderId = path.match(/^\/orders\/(.+)$/);
 		if (path === '/' || path === '') await overview();
 		else if (path === '/setup') await setupScreen();
 		else if (eventId) await eventDetail(decodeURIComponent(eventId[1]));
+		else if (orderId) await orderDetail(decodeURIComponent(orderId[1]));
+		else if (path === '/orders') await ordersList(params);
 		else if (path === '/events') await eventsList(params);
 		else if (findingId) await findingDetail(decodeURIComponent(findingId[1]));
 		else if (path === '/findings') await findingsList(params);
 		else if (path === '/privacy') await privacy();
+		else if (path === '/notifications') await notifications();
 		else render(notFoundView());
 	} catch (err) {
 		// api.ts prefixes the thrown message with the HTTP status; a 401 means the
@@ -251,6 +368,7 @@ async function boot(): Promise<void> {
 		// paints timestamps in one zone and then re-paints them in another.
 		useShopTimeZone(session.timezone);
 		setSupport(session.support);
+		setShop(session.shop);
 	} catch {
 		// Not connected — the screens surface their own auth/error state.
 	}

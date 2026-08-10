@@ -1,11 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { EventDetail, EventItem, FindingDetail, FindingItem, Privacy, Setup, Summary } from '../web/src/api.ts';
+import type {
+	DigestSettings,
+	EventDetail,
+	EventItem,
+	FindingDetail,
+	FindingItem,
+	OrderDetail,
+	OrderItem,
+	Privacy,
+	Setup,
+	Summary,
+} from '../web/src/api.ts';
 import {
 	activityView,
+	adminOrderLink,
+	adminOrderUrl,
+	agingView,
+	bucketMaxHours,
+	bucketMinHours,
 	contextStrip,
 	errorViewMarkup,
 	authExpiredView,
+	detectorLabel,
 	eventDetailView,
 	eventQuery,
 	eventsView,
@@ -13,16 +30,26 @@ import {
 	FINDING_DISCLAIMER,
 	findingDetailView,
 	findingsListView,
+	integrityView,
+	money,
 	needsAttention,
+	notificationsView,
 	observedTimeline,
+	orderDetailView,
+	orderTimeline,
+	ordersView,
 	overviewView,
 	parseHash,
 	privacyView,
+	saveErrorAction,
+	setShop,
 	setSupport,
 	setupView,
+	storeHandle,
 	useShopTimeZone,
 	zoneText,
 } from '../web/src/view.ts';
+import { AGE_BUCKETS } from '../src/orders.ts';
 
 // UI tests. view.ts is pure — every screen is a function from data to markup — so
 // these run in plain node with no browser, DOM shim, or extra dependency. They
@@ -40,7 +67,8 @@ function summary(over: Partial<Summary> = {}): Summary {
 		windowDays: 7,
 		events: { total: 12 },
 		orders: { tracked: 4, paid: 3, fulfilled: 2, awaitingConfirmation: 1 },
-		findings: { unconfirmed: 1, resolved: 2, suppressed: 0 },
+		findings: { unconfirmed: 1, resolved: 2, suppressed: 0, failedAttempts: 0 },
+		aging: { buckets: [] },
 		recorder: { healthy: true, deadLetteredDeliveries: 0 },
 		reconciliation: { lastReconciledAt: NOW - 4 * MIN, ageMs: 4 * MIN, stale: false, state: 'ready' },
 		activity: {
@@ -55,11 +83,12 @@ function summary(over: Partial<Summary> = {}): Summary {
 				refund: 0,
 			})),
 		},
+		integrity: { webhookEvents: 0, reconciliationOnlyEvents: 0 },
 		...over,
 	};
 }
 
-const FLOWS = { lanes: { paid: 3, fulfilled: 2, awaitingConfirmation: 1, cancelled: 0, refunded: 0 } };
+const FLOWS = { lanes: { paid: 3, fulfilled: 2, awaitingConfirmation: 1, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 } };
 
 function setup(over: Partial<Setup> = {}): Setup {
 	return {
@@ -137,10 +166,73 @@ test('a finding with no detector field still gets absence-detector copy (rows wr
 	assert.ok(html.includes(FINDING_DISCLAIMER));
 });
 
+test('an unlabelled detector degrades to a readable fallback rather than a blank cell', () => {
+	assert.equal(detectorLabel(undefined), 'No confirmation observed');
+	assert.equal(detectorLabel('something_new'), 'something_new');
+});
+
+test('findings show which detector produced them', () => {
+	const absence: FindingItem = {
+		id: 'f1',
+		orderId: 'o1',
+		orderName: '#1001',
+		detector: 'fulfillment_confirmation',
+		status: 'unconfirmed',
+		detectedAt: NOW - HOUR,
+	};
+	const failed: FindingItem = {
+		id: 'f2',
+		orderId: 'o2',
+		orderName: '#1002',
+		detector: 'fulfillment_attempt_failed',
+		status: 'unconfirmed',
+		detectedAt: NOW - HOUR,
+	};
+	const html = findingsListView({}, [absence, failed], NOW, '');
+	// Scoped to each row's own Order cell + the Type cell immediately after it, so
+	// a label appearing anywhere else on the page (e.g. a filter option) can't make
+	// this pass for the wrong row.
+	assert.match(
+		html,
+		/<s-table-cell><s-link href="#\/findings\/f1">#1001<\/s-link><\/s-table-cell>\s*<s-table-cell>No confirmation observed<\/s-table-cell>/,
+	);
+	assert.match(
+		html,
+		/<s-table-cell><s-link href="#\/findings\/f2">#1002<\/s-link><\/s-table-cell>\s*<s-table-cell>Attempt did not succeed<\/s-table-cell>/,
+	);
+});
+
+test('the findings list offers a detector filter', () => {
+	const html = findingsListView({ detector: 'fulfillment_attempt_failed' }, [], NOW, '');
+	// Scoped to the f-detector select itself, so a coincidental match elsewhere on
+	// the page (e.g. a different control) can't make this pass.
+	assert.match(
+		html,
+		/<s-select id="f-detector" label="Type">[\s\S]*?<option value="fulfillment_attempt_failed" selected>[\s\S]*?<\/s-select>/,
+	);
+});
+
+test('the finding detail evidence table names which detector produced it', () => {
+	const html = findingDetailView(
+		finding({
+			detector: 'fulfillment_attempt_failed',
+			description: 'Shopify recorded a fulfillment attempt for this order that did not succeed.',
+		}),
+		undefined,
+		'',
+	);
+	assert.match(html, /<s-table-row><s-table-cell>Type<\/s-table-cell><s-table-cell>Attempt did not succeed<\/s-table-cell><\/s-table-row>/);
+});
+
 test('the findings list states the claim boundary', () => {
 	const html = findingsListView({}, [], NOW, '');
 	assert.ok(html.includes(FINDINGS_BOUNDARY));
 	assert.match(FINDINGS_BOUNDARY, /do not prove/);
+});
+
+test('an empty findings list mentions both the absence and the failed-attempt detector', () => {
+	const html = findingsListView({}, [], NOW, '');
+	assert.match(html, /No findings — nothing is missing confirmation and no attempt has failed\./);
 });
 
 test('no screen accuses a downstream party of failing', () => {
@@ -162,9 +254,19 @@ test('no screen accuses a downstream party of failing', () => {
 	];
 	for (const html of screens) {
 		// Both constants legitimately contain the words — they are the sentences that
-		// DENY the claim. Strip them, then nothing else may make it.
-		const rest = html.replace(FINDING_DISCLAIMER, '').replace(FINDINGS_BOUNDARY, '');
-		assert.ok(!/failed/i.test(rest), 'no failure language outside the sentences that disclaim it');
+		// DENY the claim. The "Orders with a failed attempt" tile label (previously
+		// "Failed attempts", renamed because the tile counts one finding per ORDER, not
+		// one per attempt) and the fulfillment_attempt_failed detector id (in filter
+		// hrefs) are also legitimate: that detector fires on a fulfillment Shopify
+		// itself recorded as failed, so stating that is direct evidence, not an
+		// inference or an accusation against a downstream party — strip them too, then
+		// nothing else may make the claim.
+		const rest = html
+			.replace(FINDING_DISCLAIMER, '')
+			.replace(FINDINGS_BOUNDARY, '')
+			.replace(/Orders with a failed attempt/g, '')
+			.replace(/fulfillment_attempt_failed/g, '');
+		assert.ok(!/failed/i.test(rest), 'no failure language outside the sentences/labels that are approved to use it');
 		assert.ok(!/warehouse|carrier|3PL|vendor/i.test(rest), 'no downstream party is named as a cause');
 	}
 });
@@ -217,7 +319,10 @@ test('an incomplete setup says history is still being built', () => {
 test('an unhealthy recorder never renders as "no gaps"', () => {
 	const html = overviewView({
 		...OVERVIEW_BASE,
-		summary: summary({ recorder: { healthy: false, deadLetteredDeliveries: 3 }, findings: { unconfirmed: 0, resolved: 0, suppressed: 0 } }),
+		summary: summary({
+			recorder: { healthy: false, deadLetteredDeliveries: 3 },
+			findings: { unconfirmed: 0, resolved: 0, suppressed: 0, failedAttempts: 0 },
+		}),
 	});
 	assert.ok(html.includes('Recorder needs attention'), 'health is stated separately from the finding count');
 	assert.ok(html.includes('3 deliver(ies) could not be processed'));
@@ -265,6 +370,100 @@ test('a fully healthy overview shows no warning banners', () => {
 	}
 });
 
+// ── aging / drill-down links ─────────────────────────────────────────────────
+
+test('the aging breakdown links each bucket to the bucket, not to everything older', () => {
+	// Every bucket, per bucket. Asserting one href (as this test used to) missed
+	// that three of the four linked to a strictly larger set than they displayed:
+	// the buckets are half-open intervals, `minAgeHours` alone is an open-ended
+	// threshold, so "Under 24h: 1" opened the whole awaiting list.
+	const html = agingView({
+		buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: 1 })),
+	});
+	const expected: Record<string, string> = {
+		under24: '#/orders?state=awaiting&amp;minAgeHours=0&amp;maxAgeHours=24',
+		h24to48: '#/orders?state=awaiting&amp;minAgeHours=24&amp;maxAgeHours=48',
+		h48to72: '#/orders?state=awaiting&amp;minAgeHours=48&amp;maxAgeHours=72',
+		// The last bucket is genuinely open-ended, so it carries no upper bound.
+		over72: '#/orders?state=awaiting&amp;minAgeHours=72',
+	};
+	for (const bucket of AGE_BUCKETS) {
+		const row = html.match(new RegExp(`<s-table-row>[\\s\\S]*?${bucket.label}[\\s\\S]*?</s-table-row>`));
+		assert.ok(row, `no row rendered for ${bucket.key}`);
+		assert.match(
+			row![0],
+			new RegExp(`href="${expected[bucket.key].replace(/[?&]/g, (c) => `\\${c}`)}"`),
+			`${bucket.key} links to its own set`,
+		);
+	}
+	// Built inline rather than through esc(), so the separator must be the literal
+	// entity — and must not have been escaped twice.
+	assert.doesNotMatch(html, /&amp;amp;/);
+	assert.doesNotMatch(html, /minAgeHours=\d+&maxAgeHours/, 'a bare & in an attribute is invalid markup');
+});
+
+test('bucketMinHours and bucketMaxHours agree with AGE_BUCKETS, and the four buckets partition', () => {
+	for (const bucket of AGE_BUCKETS) {
+		assert.equal(bucketMinHours(bucket.key), bucket.minHours, `bucketMinHours('${bucket.key}') must match AGE_BUCKETS`);
+		assert.equal(bucketMaxHours(bucket.key), bucket.maxHours, `bucketMaxHours('${bucket.key}') must match AGE_BUCKETS`);
+	}
+	// Each bucket's upper bound is the next one's lower bound: contiguous, no gap,
+	// and (because the query pairs `<=` with `>`) no double-count at the seam.
+	for (let i = 0; i < AGE_BUCKETS.length - 1; i++) {
+		assert.equal(bucketMaxHours(AGE_BUCKETS[i].key), bucketMinHours(AGE_BUCKETS[i + 1].key));
+	}
+	assert.equal(bucketMaxHours(AGE_BUCKETS[AGE_BUCKETS.length - 1].key), undefined, 'only the last bucket is open-ended');
+});
+
+// Pull out one <s-grid-item>…</s-grid-item> block by the label it renders, so an
+// assertion can check that block's own href/count rather than matching anywhere
+// in the page — the loose-match failure mode that let an earlier defect (the
+// Paid tile linking to a page showing a different count) pass silently.
+function gridItem(html: string, label: string): string {
+	const items = html.match(/<s-grid-item>[\s\S]*?<\/s-grid-item>/g) ?? [];
+	const found = items.find((item) => item.includes(`>${label}<`));
+	assert.ok(found, `no stat tile found for "${label}"`);
+	return found!;
+}
+
+test('the overview stat tiles link into the worklist, each to its own count', () => {
+	const html = overviewView({ ...OVERVIEW_BASE, summary: summary() });
+	// summary()'s orders are { tracked: 4, paid: 3, fulfilled: 2, awaitingConfirmation: 1 }.
+	assert.match(gridItem(html, 'Tracked'), /href="#\/orders"[\s\S]*>4</);
+	assert.match(gridItem(html, 'Fulfilled'), /href="#\/orders\?state=fulfilled"[\s\S]*>2</);
+	assert.match(gridItem(html, 'Awaiting confirmation'), /href="#\/orders\?state=awaiting"[\s\S]*>1</);
+});
+
+test('the Paid stat tile and the Paid flow lane are never links — no worklist filter reproduces "every paid order regardless of lane"', () => {
+	const html = overviewView({ ...OVERVIEW_BASE, summary: summary() });
+	assert.doesNotMatch(gridItem(html, 'Paid'), /<s-link/, 'the Paid stat tile has no href');
+	assert.match(html, /<s-table-cell>Paid<\/s-table-cell>/, 'the Paid flow lane renders as a plain cell');
+	assert.doesNotMatch(html, /<s-link[^>]*>Paid<\/s-link>/, 'no href wraps the Paid flow-lane label');
+});
+
+test('the overview surfaces failed attempts as their own count, linking to the exact set it counts', () => {
+	const s = summary({ findings: { unconfirmed: 3, resolved: 1, suppressed: 0, failedAttempts: 2 } });
+	const html = overviewView({ summary: s, flows: null, unconfirmed: [], setup: null, now: NOW });
+	// failedAttempts only counts UNCONFIRMED failed-attempt findings (a resolved or
+	// suppressed one is still counted in its own status bucket) — so the link must
+	// carry status=unconfirmed too, or it opens a bigger set than the tile shows
+	// (the same class of defect this plan already caught on the Paid tile).
+	// The label names ORDERS, not attempts: the tile counts one finding per
+	// (order, ruleVersion), so two failed attempts on one order are one row in the
+	// list it links to. Renaming it also keeps the count-equals-its-list invariant
+	// legible — the list is one row per order, and now the label says so.
+	assert.match(
+		gridItem(html, 'Orders with a failed attempt'),
+		/href="#\/findings\?detector=fulfillment_attempt_failed&amp;status=unconfirmed"[\s\S]*>2</,
+	);
+	assert.ok(!html.includes('>Failed attempts<'), 'the old attempts-labelled tile must not come back');
+});
+
+test('a zero-count aging bucket still renders, so the breakdown is readable', () => {
+	const html = agingView({ buckets: [{ key: 'h48to72', label: '48–72h', count: 0 }] });
+	assert.match(html, /48–72h/);
+});
+
 // ── activity visualization ───────────────────────────────────────────────────
 
 test('activity exposes the same numbers to assistive tech and as a table', () => {
@@ -279,6 +478,24 @@ test('a zero-count day renders no bar height, so magnitude never overstates', ()
 	const html = activityView(summary().activity);
 	assert.ok(html.includes('style="height:0%"'), 'empty days are visibly empty');
 	assert.ok(html.includes('style="height:100%"'), 'the peak day fills the track');
+});
+
+test('the integrity section states what a direct-check discovery does and does not mean', () => {
+	const html = integrityView({ webhookEvents: 40, reconciliationOnlyEvents: 3 });
+	// Scoped to the banner heading and to each labelled row. `assert.match(html, /3/)`
+	// verified nothing about WHERE the number rendered — swapping the two integrity
+	// counts would still have passed it.
+	assert.match(html, /<s-banner tone="info" heading="3 change\(s\) found by direct check">/);
+	assert.match(html, /<s-table-cell>Arrived as a webhook<\/s-table-cell><s-table-cell>40<\/s-table-cell>/);
+	assert.match(html, /<s-table-cell>Found by direct check<\/s-table-cell><s-table-cell>3<\/s-table-cell>/);
+	assert.match(html, /direct check/i);
+	// It must NOT claim Shopify failed, or that other apps missed anything.
+	assert.doesNotMatch(html, /Shopify failed|never delivered to your|your vendors did not/i);
+	assert.match(html, /href="#\/events\?source=reconciliation"/);
+});
+
+test('zero direct-check discoveries reads as healthy, not as an absence of data', () => {
+	assert.match(integrityView({ webhookEvents: 40, reconciliationOnlyEvents: 0 }), /Every change[\s\S]*webhook/i);
 });
 
 // ── escaping ─────────────────────────────────────────────────────────────────
@@ -352,11 +569,32 @@ test('with no store zone the label does not claim store time', () => {
 	assert.ok(zoneText().includes('your device'));
 });
 
+function event(over: Partial<EventItem> = {}): EventItem {
+	return {
+		eventId: 'e1',
+		domain: 'order',
+		source: 'webhook',
+		occurredAt: NOW,
+		receivedAt: NOW,
+		...over,
+	};
+}
+
+function eventDetail(over: Partial<EventDetail> = {}): EventDetail {
+	return {
+		...event(),
+		relatedEventIds: [],
+		affectedProjection: false,
+		affectedFinding: false,
+		...over,
+	};
+}
+
 // ── events ───────────────────────────────────────────────────────────────────
 
 test('the events screen offers the full screen-spec filter set', () => {
 	const html = eventsView({}, [], false, '');
-	for (const id of ['f-range', 'f-domain', 'f-topic', 'f-resourceId', 'f-sku', 'f-source']) {
+	for (const id of ['f-range', 'f-domain', 'f-topic', 'f-resourceId', 'f-sku', 'f-source', 'f-state']) {
 		assert.ok(html.includes(`id="${id}"`), `missing the ${id} filter`);
 	}
 	assert.ok(html.includes('Evidence source'));
@@ -373,7 +611,7 @@ test('the events screen offers the full screen-spec filter set', () => {
 
 test('active filters are reflected back into the controls', () => {
 	const html = eventsView(
-		{ range: '24h', domain: 'fulfillment', topic: 'fulfillments/create', sku: 'SKU-1', source: 'reconciliation' },
+		{ range: '24h', domain: 'fulfillment', topic: 'fulfillments/create', sku: 'SKU-1', source: 'reconciliation', state: 'error' },
 		[],
 		false,
 		'',
@@ -383,6 +621,10 @@ test('active filters are reflected back into the controls', () => {
 	assert.ok(html.includes('<option value="reconciliation" selected>'));
 	assert.ok(html.includes('value="fulfillments/create"'));
 	assert.ok(html.includes('value="SKU-1"'));
+	assert.ok(
+		html.includes('id="f-state" label="State" placeholder="error" value="error"'),
+		'a failed attempt can be found directly by state',
+	);
 });
 
 test('eventQuery turns a symbolic range into a window floor', () => {
@@ -390,6 +632,7 @@ test('eventQuery turns a symbolic range into a window floor', () => {
 	assert.deepEqual(eventQuery({ range: '1h', domain: 'order' }, NOW), { domain: 'order', since: String(NOW - HOUR) });
 	assert.deepEqual(eventQuery({}, NOW), {}, 'no range means the full retention window');
 	assert.deepEqual(eventQuery({ range: 'bogus' }, NOW), {}, 'an unknown range is ignored, not passed through');
+	assert.deepEqual(eventQuery({ state: 'error' }, NOW), { state: 'error' }, 'the state filter passes through to the API query');
 });
 
 test('an empty ledger says so instead of rendering an empty table', () => {
@@ -417,6 +660,49 @@ test('a delayed receipt is disclosed without reordering the ledger', () => {
 	};
 	assert.ok(eventDetailView(base, '').includes('Received 2h after it occurred'));
 	assert.ok(!eventDetailView({ ...base, receivedAt: base.occurredAt }, '').includes('after it occurred'));
+});
+
+test('the SKU cell shows every SKU on a multi-SKU event', () => {
+	const html = eventsView({}, [event({ skus: ['STICKER-PK', 'TSHIRT-BLK-M'], sku: undefined })], false, '');
+	assert.match(html, /STICKER-PK/);
+	assert.match(html, /TSHIRT-BLK-M/);
+});
+
+test('the SKU cell falls back to the scalar, then to an em dash', () => {
+	assert.match(eventsView({}, [event({ skus: undefined, sku: 'ONLY-ONE' })], false, ''), /ONLY-ONE/);
+	assert.match(eventsView({}, [event({ skus: undefined, sku: undefined })], false, ''), /—/);
+});
+
+test('an inventory row shows its resolved SKU rather than only a numeric id', () => {
+	const html = eventsView(
+		{},
+		[event({ domain: 'inventory', resourceId: '8400000000001', skus: ['TSHIRT-BLK-M'], sku: undefined })],
+		false,
+		'',
+	);
+	assert.match(html, /TSHIRT-BLK-M/);
+});
+
+test('event detail names the product and location behind an inventory id', () => {
+	const html = eventDetailView(
+		{
+			...eventDetail(),
+			domain: 'inventory',
+			resourceId: '8400000000001',
+			inventorySku: 'TSHIRT-BLK-M',
+			productTitle: 'T-Shirt',
+			locationName: 'Brooklyn',
+		},
+		'',
+	);
+	assert.match(html, /TSHIRT-BLK-M/);
+	assert.match(html, /T-Shirt/);
+	assert.match(html, /Brooklyn/);
+});
+
+test('event detail omits the enrichment rows when nothing is resolved', () => {
+	const html = eventDetailView({ ...eventDetail(), inventorySku: undefined, productTitle: undefined, locationName: undefined }, '');
+	assert.doesNotMatch(html, /Inventory SKU|Product|Location name/);
 });
 
 // ── findings ─────────────────────────────────────────────────────────────────
@@ -491,6 +777,7 @@ function privacy(over: Partial<Privacy> = {}): Privacy {
 		dataCategories: ['order status & timestamps'],
 		excludedFields: ['customer name', 'customer email', 'customer phone', 'shipping & billing address'],
 		deletion: { onUninstall: 'shop data erased' },
+		notifications: { emailStored: false, status: 'paused' },
 		footprint: { events: 10, orders: 4, findings: 1 },
 		webhooks: { received: 10, processed: 9, deadLettered: 1, healthy: false, lastReceivedAt: NOW - MIN },
 		reconciliation: { lastReconciledAt: NOW - 4 * MIN, ageMs: 4 * MIN, stale: false, state: 'ready' },
@@ -520,6 +807,26 @@ test('the privacy screen never renders secrets or another tenant', () => {
 
 test('a shop with no scopes recorded says so rather than showing an empty list', () => {
 	assert.ok(privacyView(privacy({ scopes: [] }), NOW, '').includes('read-only scopes pending confirmation'));
+});
+
+// Pinned to the badge, and asserted in BOTH directions. `/Notification email[\s\S]*stored/`
+// was satisfied by the no-address rendering too, because "none stored" contains
+// "stored" — so an inverted badge (claiming an address is held when none is, or the
+// reverse) read as correct. That is the one thing this row exists to get right.
+test('the privacy screen states whether a notification address is stored', () => {
+	const stored = privacyView(privacy({ notifications: { emailStored: true, status: 'active' } }), NOW, '');
+	assert.match(stored, /<s-badge tone="info">stored<\/s-badge>/);
+	assert.doesNotMatch(stored, /none stored/);
+
+	const absent = privacyView(privacy({ notifications: { emailStored: false, status: 'paused' } }), NOW, '');
+	assert.match(absent, /<s-text color="subdued">none stored<\/s-text>/);
+	assert.doesNotMatch(absent, /<s-badge tone="info">stored(, paused)?<\/s-badge>/);
+
+	// A paused subscription still HOLDS the address, and says so distinctly — the
+	// row must not report a paused-but-stored address as no address at all.
+	const paused = privacyView(privacy({ notifications: { emailStored: true, status: 'paused' } }), NOW, '');
+	assert.match(paused, /<s-badge tone="info">stored, paused<\/s-badge>/);
+	assert.doesNotMatch(paused, /none stored/);
 });
 
 // ── shell states ─────────────────────────────────────────────────────────────
@@ -616,4 +923,503 @@ test('parseHash resolves every route and its filters', () => {
 	assert.deepEqual(parseHash('#/events?domain=order&sku=A'), { path: '/events', params: { domain: 'order', sku: 'A' } });
 	assert.deepEqual(parseHash('#/findings?status=unconfirmed'), { path: '/findings', params: { status: 'unconfirmed' } });
 	assert.deepEqual(parseHash('#/events/s%3Ae1'), { path: '/events/s%3Ae1', params: {} });
+});
+
+// ── admin deep links ─────────────────────────────────────────────────────────
+
+test('an admin deep link is built from the store handle and opens the top frame', () => {
+	setShop('acme-store.myshopify.com');
+	assert.equal(storeHandle(), 'acme-store');
+	assert.equal(adminOrderUrl('7518851989809'), 'https://admin.shopify.com/store/acme-store/orders/7518851989809');
+	const link = adminOrderLink('7518851989809');
+	assert.match(link, /target="_top"/);
+	assert.match(link, /admin\.shopify\.com\/store\/acme-store\/orders\/7518851989809/);
+});
+
+test('with no known shop there is no fabricated admin link', () => {
+	setShop(undefined);
+	assert.equal(adminOrderUrl('1'), undefined);
+	assert.equal(adminOrderLink('1'), '');
+});
+
+test('a hostile order id cannot escape the admin link attribute', () => {
+	setShop('acme-store.myshopify.com');
+	const link = adminOrderLink('1"><script>alert(1)</script>');
+	assert.doesNotMatch(link, /<script>alert/);
+});
+
+test('findings and needs-attention rows show the order name when known', () => {
+	setShop('acme-store.myshopify.com');
+	const item: FindingItem = {
+		id: 'f1',
+		orderId: '7518851989809',
+		orderName: '#1001',
+		status: 'unconfirmed',
+		detectedAt: NOW - HOUR,
+		paidAt: NOW - 73 * HOUR,
+		deadline: NOW - HOUR,
+	};
+	const list = findingsListView({}, [item], NOW, '');
+	const attention = needsAttention([item], NOW);
+	assert.match(list, /#1001/);
+	assert.match(attention, /#1001/);
+	// The task's core promise: a way into Shopify Admin from the row, not just the
+	// merchant-facing name. Regression-proofs findingsListView and needsAttention
+	// each still call adminOrderLink for their order cell.
+	assert.match(list, /admin\.shopify\.com\/store\/acme-store\/orders\/7518851989809/);
+	assert.match(attention, /admin\.shopify\.com\/store\/acme-store\/orders\/7518851989809/);
+});
+
+test('findings fall back to the raw order id when no name was captured', () => {
+	setShop(undefined);
+	const item: FindingItem = { id: 'f1', orderId: '7518851989809', status: 'unconfirmed', detectedAt: NOW - HOUR };
+	assert.match(findingsListView({}, [item], NOW, ''), /7518851989809/);
+});
+
+test('the admin link also appears on the finding detail, orders worklist, and order detail screens', () => {
+	// Rounds out call-site coverage for the task's core promise: every screen that
+	// names an order also offers a way into it in Shopify Admin. A regression that
+	// silently dropped the adminOrderLink(...) call from any one of these five
+	// sites (findingsListView and needsAttention are covered above) would still
+	// pass every other test in this file, since adminOrderUrl/adminOrderLink are
+	// otherwise only exercised standalone.
+	setShop('acme-store.myshopify.com');
+	const orderUrl = 'admin.shopify.com/store/acme-store/orders/7518851989809';
+	assert.match(findingDetailView(finding({ orderId: '7518851989809' }), NOW, ''), new RegExp(orderUrl.replace(/\./g, '\\.')));
+	assert.match(ordersView({}, [order()], false, ''), new RegExp(orderUrl.replace(/\./g, '\\.')));
+	assert.match(orderDetailView(orderDetail(), ''), new RegExp(orderUrl.replace(/\./g, '\\.')));
+});
+
+// ── orders ───────────────────────────────────────────────────────────────────
+
+function order(over: Partial<OrderItem> = {}): OrderItem {
+	return {
+		orderId: '7518851989809',
+		orderName: '#1001',
+		state: 'awaiting',
+		paidAt: NOW - 30 * HOUR,
+		ageHours: 30,
+		orderTotal: 129.95,
+		currency: 'USD',
+		...over,
+	};
+}
+
+test('the orders worklist shows the merchant-facing name, lane, age and value', () => {
+	const html = ordersView({}, [order()], false, '');
+	assert.match(html, /#1001/);
+	assert.match(html, /awaiting/);
+	// Fixture is 30h old (paidAt: NOW - 30 * HOUR) — past the 24h cutoff, so it
+	// renders as the multi-day format, not the plain-hours one.
+	assert.match(html, /1d 6h/);
+	assert.match(html, /\$129\.95|129\.95/);
+});
+
+test('the age cell renders plain hours under the 24h cutoff and days+hours past it', () => {
+	assert.ok(ordersView({}, [order({ ageHours: 6 })], false, '').includes('<s-table-cell>6h</s-table-cell>'));
+	assert.ok(ordersView({}, [order({ ageHours: 30 })], false, '').includes('<s-table-cell>1d 6h</s-table-cell>'));
+});
+
+test('only an awaiting order is shown as waiting — a fulfilled one is not waiting for anything', () => {
+	// The spec's own mock shows an em dash here for the fulfilled row. Before this the
+	// column read "Waiting: 5h" for an order whose fulfillment had already been
+	// observed.
+	for (const state of ['fulfilled', 'cancelled', 'refunded', 'no_fulfillment_expected', 'unpaid']) {
+		const html = ordersView({}, [order({ state, ageHours: 5 })], false, '');
+		assert.ok(html.includes('<s-table-cell>—</s-table-cell>'), `${state} must not render a waiting time`);
+		assert.ok(!html.includes('<s-table-cell>5h</s-table-cell>'), `${state} rendered a waiting time`);
+	}
+	assert.ok(ordersView({}, [order({ state: 'awaiting', ageHours: 5 })], false, '').includes('<s-table-cell>5h</s-table-cell>'));
+});
+
+test('the order detail formats the waiting time exactly as the worklist does', () => {
+	// Same order, two screens: the detail rendered "30h" while the list rendered
+	// "1d 6h" for the same value.
+	const detail = orderDetailView(orderDetail({ state: 'awaiting', ageHours: 30 }), '');
+	const list = ordersView({}, [order({ state: 'awaiting', ageHours: 30 })], false, '');
+	assert.match(detail, /<s-table-cell>1d 6h<\/s-table-cell>/);
+	assert.doesNotMatch(detail, />30h</, 'the raw-hours format is gone from the detail screen');
+	assert.ok(list.includes('<s-table-cell>1d 6h</s-table-cell>'));
+	// And the same lane gate applies, so the two screens agree about that too.
+	assert.doesNotMatch(orderDetailView(orderDetail({ state: 'fulfilled', ageHours: 30 }), ''), /1d 6h/);
+});
+
+test('"Needs shipping" says nothing Sightline did not observe', () => {
+	// requiresFulfillment is only ever latched TRUE, so undefined means "no
+	// fulfillment-eligible units observed" — not "this order needs no shipping".
+	assert.match(orderDetailView(orderDetail({ requiresFulfillment: true }), ''), /Needs shipping<\/s-table-cell><s-table-cell>Yes</);
+	assert.match(
+		orderDetailView(orderDetail({ requiresFulfillment: undefined, state: 'no_fulfillment_expected' }), ''),
+		/Needs shipping<\/s-table-cell><s-table-cell>—</,
+		'an unobserved eligibility is an em dash, not a "No" that asserts it',
+	);
+});
+
+test('a digital order is never labelled as fulfilled, and its label claims nothing unobserved', () => {
+	const html = ordersView({}, [order({ state: 'no_fulfillment_expected', fulfilledAt: undefined })], false, '');
+	assert.match(html, /<s-badge tone="neutral">no fulfillment expected<\/s-badge>/, 'the raw lane value is not shown as snake_case');
+	// Scoped to the table body: "fulfilled" legitimately appears in the Lane
+	// select's own option list, and an unscoped search would pass on that instead of
+	// on the row it is meant to be checking.
+	const body = html.match(/<s-table-body>[\s\S]*<\/s-table-body>/)?.[0] ?? '';
+	assert.doesNotMatch(body, /fulfilled/i, 'no row cell claims a fulfillment nobody observed');
+	// "expected" is a fact about Sightline's own expectation. requiresFulfillment is
+	// only ever latched true, so its absence cannot license a claim about the order
+	// itself ("needs no shipping").
+	assert.doesNotMatch(html, /needs no shipping|no shipping required|digital/i);
+	// The same label reaches the Lane select, so the filter reads like the badge.
+	assert.match(html, /<option value="no_fulfillment_expected">no fulfillment expected<\/option>/);
+});
+
+test('the overview flow lanes include the no-fulfillment-expected lane, linked to the set it counts', () => {
+	const html = overviewView({
+		...OVERVIEW_BASE,
+		flows: { lanes: { paid: 4, fulfilled: 2, awaitingConfirmation: 1, noFulfillmentExpected: 1, cancelled: 0, refunded: 0 } },
+		summary: summary(),
+	});
+	assert.match(
+		html,
+		/<s-table-cell><s-link href="#\/orders\?state=no_fulfillment_expected">No fulfillment expected<\/s-link><\/s-table-cell><s-table-cell>1<\/s-table-cell>/,
+	);
+});
+
+test('an order with no name falls back to its id so the row is never blank', () => {
+	const html = ordersView({}, [order({ orderName: undefined })], false, '');
+	assert.match(html, /7518851989809/);
+});
+
+test('a failed fulfillment attempt is flagged on the row without accusing anyone', () => {
+	const html = ordersView({}, [order({ fulfillmentFailedAt: NOW - 20 * HOUR })], false, '');
+	assert.match(html, /attempt did not succeed|failed attempt/i);
+	assert.doesNotMatch(html, /warehouse|carrier|vendor|3PL/i);
+});
+
+test('the worklist names the column it is sorted on, and the sort control agrees', () => {
+	// The list keysets on lastEventAt (paidAt is nullable and cannot be paged on —
+	// C3), so the sort control must not promise an ordering by payment. A "Newest
+	// first" label over a list sorted by last activity is a lie the merchant cannot
+	// see; naming the column makes the ordering checkable on screen.
+	const html = ordersView({}, [order({ lastEventAt: NOW - 2 * HOUR })], false, '');
+	assert.ok(html.includes('<s-table-header format="base">Last activity</s-table-header>'), 'the sort key has a column');
+	assert.match(html, /<option value="newest"[^>]*>Latest activity first<\/option>/);
+	assert.match(html, /<option value="oldest"[^>]*>Earliest activity first<\/option>/);
+	assert.doesNotMatch(html, /Newest first|Oldest first/, 'no label claims an ordering by payment');
+});
+
+test('the orders screen offers lane, age and sort filters reflected in the URL', () => {
+	const html = ordersView({ state: 'awaiting', minAgeHours: '24', sort: 'oldest' }, [order()], false, '');
+	assert.match(html, /id="f-state"/);
+	assert.match(html, /id="f-minAgeHours"/);
+	assert.match(html, /id="f-sort"/);
+	assert.match(html, /value="awaiting" selected/);
+	assert.match(html, /value="24" selected/);
+	assert.match(html, /value="oldest" selected/);
+});
+
+test('an empty worklist says so rather than rendering an empty table', () => {
+	assert.match(ordersView({}, [], false, ''), /No orders match/);
+});
+
+test('load more appears only when there is another page', () => {
+	assert.match(ordersView({}, [order()], true, ''), /id="loadMore"/);
+	assert.doesNotMatch(ordersView({}, [order()], false, ''), /id="loadMore"/);
+});
+
+test('a hostile order name cannot inject markup', () => {
+	const html = ordersView({}, [order({ orderName: '"><script>alert(1)</script>' })], false, '');
+	assert.doesNotMatch(html, /<script>alert/);
+});
+
+test('money renders with its currency and omits gracefully when absent', () => {
+	assert.match(money(129.95, 'USD'), /129\.95/);
+	assert.equal(money(undefined, 'USD'), '—');
+	assert.equal(money(129.95, undefined), '129.95');
+});
+
+test('the orders screen is Polaris markup like every other screen', () => {
+	const html = ordersView({}, [order()], false, '');
+	assert.match(html, /<s-page/);
+	assert.match(html, /<s-section/);
+	assert.match(html, /<s-table/);
+});
+
+function orderDetail(over: Partial<OrderDetail> = {}): OrderDetail {
+	return {
+		orderId: '7518851989809',
+		orderName: '#1001',
+		state: 'awaiting',
+		paidAt: NOW - 30 * HOUR,
+		ageHours: 30,
+		orderTotal: 129.95,
+		currency: 'USD',
+		requiresFulfillment: true,
+		events: [],
+		findings: [],
+		...over,
+	};
+}
+
+test('the order timeline is chronological and every entry is an observation', () => {
+	// orderTimeline checks fields in a fixed order — paid, failed attempt, fulfilled,
+	// cancelled, refunded — so a fixture whose insertion order already matches time
+	// order would pass even with the trailing .sort() deleted. These timestamps are
+	// deliberately out of that check order: the cancellation is recorded before the
+	// failed-attempt entry, which Shopify reports later (an attempt already in flight
+	// can still fail after the order was cancelled), so an unsorted implementation
+	// would emit the failed-attempt entry before the cancellation entry.
+	const entries = orderTimeline(orderDetail({ paidAt: 100, fulfillmentFailedAt: 500, cancelledAt: 300 }));
+	assert.deepEqual(
+		entries.map((e) => e.at),
+		[100, 300, 500],
+	);
+	assert.match(entries[0].text, /paid/i);
+	assert.match(entries[1].text, /cancelled/i);
+	assert.match(entries[2].text, /did not succeed/i);
+	for (let i = 1; i < entries.length; i++) assert.ok(entries[i].at >= entries[i - 1].at, 'sorted by time');
+});
+
+test('a later fulfillment confirmation appears after the payment in the timeline', () => {
+	const entries = orderTimeline(orderDetail({ paidAt: NOW - 40 * HOUR, fulfilledAt: NOW - 10 * HOUR }));
+	assert.deepEqual(
+		entries.map((e) => e.text),
+		['Order paid', 'Fulfillment confirmation observed in Shopify'],
+	);
+});
+
+test('order detail renders the timeline, the events, and any findings', () => {
+	const html = orderDetailView(
+		orderDetail({
+			events: [
+				{
+					eventId: 's1:e1',
+					domain: 'order',
+					topic: 'orders/paid',
+					source: 'webhook',
+					occurredAt: NOW - 30 * HOUR,
+					receivedAt: NOW - 30 * HOUR,
+				},
+			],
+			findings: [
+				{
+					id: 'f1',
+					orderId: '7518851989809',
+					status: 'unconfirmed',
+					detectedAt: NOW - 2 * HOUR,
+					description: 'No Shopify fulfillment confirmation was observed for this paid, fulfillment-eligible order by the expected time.',
+				},
+			],
+		}),
+		'',
+	);
+	assert.match(html, /#1001/);
+	assert.match(html, /What Sightline observed/);
+	assert.match(html, /orders\/paid/);
+	assert.match(html, /No Shopify fulfillment confirmation/);
+});
+
+test('order detail has a breadcrumb back to the worklist', () => {
+	assert.match(orderDetailView(orderDetail(), ''), /href="#\/orders"/);
+});
+
+test('an order with nothing but a payment still renders, with an empty-state note', () => {
+	const html = orderDetailView(orderDetail({ events: [], findings: [] }), '');
+	assert.match(html, /No events recorded|No findings/);
+});
+
+test('order detail never claims a downstream party failed', () => {
+	const html = orderDetailView(orderDetail({ fulfillmentFailedAt: NOW - 5 * HOUR }), '');
+	assert.doesNotMatch(html, /warehouse|carrier|vendor|3PL/i);
+});
+
+test('a hostile order name cannot inject markup on the order detail screen', () => {
+	// orderLabel() surfaces the name twice — the page heading (page()) and the
+	// fields table (fields()) — and both must escape it independently.
+	const html = orderDetailView(orderDetail({ orderName: '"><script>alert(1)</script>' }), '');
+	assert.doesNotMatch(html, /<script>alert/);
+	assert.match(html, /heading="Order &quot;&gt;&lt;script&gt;/, 'the page heading escapes the name');
+	assert.match(html, /<s-table-cell>&quot;&gt;&lt;script&gt;/, 'the fields table escapes the name');
+});
+
+test('every list screen offers a CSV export', () => {
+	assert.match(eventsView({}, [], false, ''), /data-export="events"/);
+	assert.match(findingsListView({}, [], NOW, ''), /data-export="findings"/);
+	assert.match(ordersView({}, [], false, ''), /data-export="orders"/);
+});
+
+// ── notifications ────────────────────────────────────────────────────────────
+// The digest subscription screen. Two things it must be honest about: nothing is
+// sent yet (delivery isn't built), and the stored address is the app's only
+// merchant-identifying data. Both claims get their own pinned test below, not a
+// loose page-wide substring match — a loose match on this screen already hid one
+// vacuous test (see the "not yet sent" test) and would hide an inverted status
+// badge just as easily.
+
+function digestSettings(over: Partial<DigestSettings> = {}): DigestSettings {
+	return { cadence: 'daily', status: 'paused', ...over };
+}
+
+test('the notifications screen offers an address, a cadence, and a save action', () => {
+	const html = notificationsView(digestSettings(), NOW, '');
+	assert.match(html, /id="f-email"/);
+	assert.match(html, /id="f-cadence"/);
+	assert.match(html, /data-save-digest/);
+});
+
+test('an active subscription shows its address and current cadence selected', () => {
+	const html = notificationsView(digestSettings({ email: 'ops@merchant.example', cadence: 'weekly', status: 'active' }), NOW, '');
+	assert.match(html, /ops@merchant\.example/);
+	assert.match(html, /value="weekly" selected/);
+	// Pinned to the badge markup itself: `assert.match(html, /active/)` (the
+	// brief's original assertion) is also satisfied by the substring inside
+	// "inactive", so it cannot tell a correct badge from an inverted one.
+	assert.match(html, /<s-badge tone="success">active<\/s-badge>/);
+});
+
+test('an active subscription never shows a paused badge, and a paused one never shows active', () => {
+	// Two fixtures, both directions checked, so an inverted status ternary — which
+	// the single positive assertion above cannot catch, since a badge that always
+	// rendered "active" would still pass it — fails here in whichever direction it
+	// is wrong.
+	const active = notificationsView(digestSettings({ email: 'ops@merchant.example', status: 'active' }), NOW, '');
+	assert.match(active, /<s-badge tone="success">active<\/s-badge>/);
+	assert.doesNotMatch(active, /<s-badge tone="neutral">paused<\/s-badge>/);
+
+	const paused = notificationsView(digestSettings({ status: 'paused' }), NOW, '');
+	assert.match(paused, /<s-badge tone="neutral">paused<\/s-badge>/);
+	assert.doesNotMatch(paused, /<s-badge tone="success">active<\/s-badge>/);
+});
+
+test('the screen states plainly, in its own banner, that digests are stored (for 30 days) and not yet sent', () => {
+	// Promising email that does not go out would be the worst possible copy here —
+	// this is the single highest-value test on the screen.
+	//
+	// A prior version of this test matched /not yet|will not be sent|stored/i
+	// against the WHOLE page. That is vacuous: deleting this banner entirely still
+	// leaves the assertion passing, because "stored" also appears, correctly, in
+	// the unrelated address-disclosure paragraph further down the screen. Anchoring
+	// the match to the banner's own markup is what makes the test able to fail —
+	// confirmed by deleting the banner and watching only this test go red, then
+	// restoring it (see the task report for the transcript).
+	const html = notificationsView(digestSettings(), NOW, '');
+	const banner = html.match(/<s-banner tone="info" heading="Digests are being prepared[^"]*">[\s\S]*?<\/s-banner>/);
+	assert.ok(banner, 'the delivery-status banner must be present');
+	assert.match(banner![0], /not yet|will not be sent/i);
+	// The outbox's 30-day retention (OUTBOX_RETENTION_DAYS, src/ledgerTargets.ts)
+	// purges a pending, unsent row exactly like a sent one — there is no sender, so
+	// every digest built today is deleted, unsent, in 30 days. The banner must say
+	// so, or a merchant is left assuming a stored digest is kept indefinitely and
+	// will eventually arrive once delivery ships. That promise was here once (see
+	// the fix-round report) and must not quietly come back as a softer rewrite.
+	assert.match(banner![0], /30 days/);
+	assert.doesNotMatch(banner![0], /ready when delivery ships|waiting for you/i);
+});
+
+// Pinned to the instruction paragraph, not the page. Matching /clear|remove|empty/
+// against the whole page was satisfied by the banner's own "then removes it", so
+// deleting the sentence that tells a merchant HOW to unsubscribe — the only place
+// the app says it — left this test green. It is the disclosure that matters, so it
+// has to be the disclosure that is asserted.
+test('the screen discloses that the address is stored and how to remove it', () => {
+	const html = notificationsView(digestSettings({ email: 'ops@merchant.example', status: 'active' }), NOW, '');
+	const instruction = html.match(/<s-paragraph><s-text color="subdued">Clear the field[\s\S]*?<\/s-paragraph>/);
+	assert.ok(instruction, 'the address-disclosure paragraph must be present');
+	// Both halves in the paragraph itself: how to remove the address, and that it is
+	// stored with the shop's data until then.
+	assert.match(instruction![0], /clear the field and save to remove your address/i);
+	assert.match(instruction![0], /stored/i);
+});
+
+test('a save error is shown to the merchant rather than swallowed', () => {
+	assert.match(
+		notificationsView(digestSettings(), NOW, '', { tone: 'critical', text: 'email is not a valid address' }),
+		/not a valid address/,
+	);
+});
+
+test('a save confirmation is shown on success', () => {
+	assert.match(
+		notificationsView(digestSettings({ status: 'active', email: 'a@b.example' }), NOW, '', { tone: 'success', text: 'Saved' }),
+		/Saved/,
+	);
+});
+
+test('a hostile stored address cannot inject markup', () => {
+	const html = notificationsView(digestSettings({ email: '"><script>alert(1)</script>' }), NOW, '');
+	assert.doesNotMatch(html, /<script>alert/);
+});
+
+test('a hostile save-result message cannot inject markup', () => {
+	// message.text is server-supplied (a 400's validation reason) and reaches the
+	// view the same way settings.email does; esc() already covers it at the call
+	// site, but nothing proved that until now.
+	const html = notificationsView(digestSettings(), NOW, '', { tone: 'critical', text: '"><script>alert(1)</script>' });
+	assert.doesNotMatch(html, /<script>alert/);
+});
+
+// ── save-error handling ──────────────────────────────────────────────────────
+// saveErrorAction is what the save click handler (main.ts) asks to decide what a
+// thrown apiSaveDigest() message means. Extracted as a pure function specifically
+// so this decision — previously inline in a DOM listener the suite could not
+// reach — is testable at all; that gap is what let a 401 render as the bare
+// string "401" instead of prompting reauthorization the way route() does for
+// every other screen.
+
+test('a 401 asks the screen to reauthorize, not display the bare status', () => {
+	assert.deepEqual(saveErrorAction('401'), { kind: 'reauthorize' });
+});
+
+test('a 401 with a trailing detail still asks the screen to reauthorize', () => {
+	// The session-expiry banner replaces the whole screen, so any detail Harper's
+	// 401 body carried is irrelevant — only the status matters here.
+	assert.deepEqual(saveErrorAction('401 something'), { kind: 'reauthorize' });
+});
+
+test('a 400 with a validation reason shows that reason', () => {
+	assert.deepEqual(saveErrorAction('400 email is not a valid address'), { kind: 'banner', text: 'email is not a valid address' });
+});
+
+test('a bare 400 with no detail falls back to a sentence, not an empty banner', () => {
+	assert.deepEqual(saveErrorAction('400'), { kind: 'banner', text: 'Could not save. Please try again.' });
+});
+
+test('a 500 is never shown to the merchant as a bare status code', () => {
+	// The pre-fix handler only stripped a leading "400" — a 500 (or any other
+	// non-400/401 status) passed straight through and rendered as the string "500".
+	assert.deepEqual(saveErrorAction('500'), { kind: 'banner', text: 'Could not save. Please try again.' });
+});
+
+test('a message with no leading status at all — a network failure — gets the same generic sentence', () => {
+	// apiSaveDigest's fetch() call can reject before any HTTP response exists (the
+	// request never reached the server), in which case the caught error's message
+	// is whatever the runtime's fetch implementation throws (e.g. "fetch failed" or
+	// "Failed to fetch") — never a leading status number. This must not be treated
+	// as an unrecognized status code that happens not to match; it is the same
+	// "nothing useful to show" case as 500.
+	assert.deepEqual(saveErrorAction('fetch failed'), { kind: 'banner', text: 'Could not save. Please try again.' });
+});
+
+test('a never-checked subscription says so, in its own status line', () => {
+	// Scoped to the status stack, not the whole page — the delivery-status banner
+	// legitimately says Sightline "prepares" digests in general terms, and an
+	// unscoped /prepared/i check on the whole page would fail on that unrelated
+	// sentence rather than on the line this test actually means to check.
+	const html = notificationsView(digestSettings(), NOW, '');
+	const statusLine = html.match(/<s-stack direction="inline" gap="small-200" alignItems="center">[\s\S]*?<\/s-stack>/);
+	assert.ok(statusLine, 'the status line must be present');
+	assert.match(statusLine![0], /Not checked yet/);
+});
+
+test('a checked subscription’s status line says when it was last checked, not when a digest was "prepared"', () => {
+	// lastBuiltAt is stamped by the build loop even on a quiet period where nothing
+	// was written (Task 6) — a recurring "all clear" email trains people to ignore
+	// the channel, so the loop deliberately writes no digest then. The field means
+	// "last period evaluated", not "last digest produced", so THIS line must say
+	// "checked", not "prepared" — rendering it as "prepared" would have the screen
+	// assert an artifact it never made. (The banner elsewhere on the page may still
+	// say "prepared" in general terms — see the scoping note on the previous test.)
+	const html = notificationsView(digestSettings({ lastBuiltAt: NOW - HOUR }), NOW, '');
+	const statusLine = html.match(/<s-stack direction="inline" gap="small-200" alignItems="center">[\s\S]*?<\/s-stack>/);
+	assert.ok(statusLine, 'the status line must be present');
+	assert.match(statusLine![0], /Last checked .*ago/);
+	assert.doesNotMatch(statusLine![0], /prepared/i);
 });

@@ -10,9 +10,13 @@ import {
 	computeFlows,
 	getPrivacy,
 	getSetup,
+	listOrders,
+	getOrderDetail,
 } from '../src/queries.ts';
 import { detectorKey } from '../src/detector.ts';
-import { encodeCursor } from '../src/apiContract.ts';
+import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/apiContract.ts';
+import { EXPORT_COLUMNS } from '../src/csv.ts';
+import { applySubscriptionUpdate } from '../src/digestSubscription.ts';
 
 // Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
 // `victim` and `attacker`. The attacker deliberately (a) reuses the victim's
@@ -88,11 +92,33 @@ function world() {
 			requiresFulfillment: true,
 			fulfilledAt: NOW - 500,
 			lastEventAt: NOW - 500,
+			state: 'fulfilled',
 		},
-		{ id: `${V}:o2`, shopId: V, orderId: 'o2', paidAt: NOW - 2000, requiresFulfillment: true, lastEventAt: NOW - 2000 }, // awaiting
-		{ id: `${A}:o1`, shopId: A, orderId: 'o1', paidAt: NOW - 100, requiresFulfillment: true, lastEventAt: NOW - 100 },
-		{ id: `${A}:o2`, shopId: A, orderId: 'o2', paidAt: NOW - 90, requiresFulfillment: true, lastEventAt: NOW - 90 },
-		{ id: `${A}:o3`, shopId: A, orderId: 'o3', paidAt: NOW - 80, requiresFulfillment: true, fulfilledAt: NOW - 70, lastEventAt: NOW - 70 },
+		{
+			id: `${V}:o2`,
+			shopId: V,
+			orderId: 'o2',
+			paidAt: NOW - 2000,
+			requiresFulfillment: true,
+			lastEventAt: NOW - 2000,
+			state: 'awaiting',
+		}, // awaiting
+		{ id: `${A}:o1`, shopId: A, orderId: 'o1', paidAt: NOW - 100, requiresFulfillment: true, lastEventAt: NOW - 100, state: 'awaiting' },
+		{ id: `${A}:o2`, shopId: A, orderId: 'o2', paidAt: NOW - 90, requiresFulfillment: true, lastEventAt: NOW - 90, state: 'awaiting' },
+		{
+			id: `${A}:o3`,
+			shopId: A,
+			orderId: 'o3',
+			paidAt: NOW - 80,
+			requiresFulfillment: true,
+			fulfilledAt: NOW - 70,
+			lastEventAt: NOW - 70,
+			state: 'fulfilled',
+		},
+		// A digital order per shop, sharing an order id, so the newest lane value is
+		// attacked exactly like every other filter.
+		{ id: `${V}:o4`, shopId: V, orderId: 'o4', paidAt: NOW - 60, lastEventAt: NOW - 60, state: 'no_fulfillment_expected' },
+		{ id: `${A}:o4`, shopId: A, orderId: 'o4', paidAt: NOW - 50, lastEventAt: NOW - 50, state: 'no_fulfillment_expected' },
 	]);
 	const findings = new FakeTable('id', [
 		{
@@ -249,21 +275,21 @@ test('getSummary: every count is victim-only despite the attacker holding more',
 	const w = world();
 	const s = await getSummary(w, V, NOW);
 	assert.equal((s.events as Record<string, number>).total, 2, 'victim in-window events only (attacker has 4)');
-	assert.deepEqual(s.orders, { tracked: 2, paid: 2, fulfilled: 1, awaitingConfirmation: 1 }, 'victim projections only');
-	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0 }, 'victim findings only');
+	assert.deepEqual(s.orders, { tracked: 3, paid: 3, fulfilled: 1, awaitingConfirmation: 1 }, 'victim projections only');
+	assert.deepEqual(s.findings, { unconfirmed: 1, resolved: 0, suppressed: 0, failedAttempts: 0 }, 'victim findings only');
 	assert.deepEqual(s.recorder, { healthy: false, deadLetteredDeliveries: 1 }, 'victim dead letters only (attacker has 3)');
 });
 
 test('computeFlows: lane counts are victim-only', async () => {
 	const { projections } = world();
 	const flows = await computeFlows(projections, V, NOW);
-	assert.deepEqual(flows.lanes, { paid: 2, fulfilled: 1, awaitingConfirmation: 1, cancelled: 0, refunded: 0 });
+	assert.deepEqual(flows.lanes, { paid: 3, fulfilled: 1, awaitingConfirmation: 1, noFulfillmentExpected: 1, cancelled: 0, refunded: 0 });
 });
 
 test('getPrivacy: footprint counts are victim-only', async () => {
 	const w = world();
 	const p = await getPrivacy(w, V, NOW);
-	assert.deepEqual(p.footprint, { events: 2, orders: 2, findings: 1 });
+	assert.deepEqual(p.footprint, { events: 2, orders: 3, findings: 1 });
 	// Disclosure fields are the victim's own: the attacker holds 3 dead letters and
 	// a wider scope string; neither may appear on the victim's privacy screen.
 	assert.deepEqual(p.scopes, ['read_orders']);
@@ -276,4 +302,117 @@ test('getSetup: the attacker’s reauthorization state never blocks the victim',
 	assert.equal(victim.action, 'none', "the attacker's reauthorization_required credential is not the victim's");
 	const attacker = await getSetup(w, A, NOW);
 	assert.equal(attacker.action, 'reauthorize');
+});
+
+test('listOrders: attacker never sees a victim order that shares an order id', async () => {
+	const { projections } = world();
+	const page = await listOrders(projections, A, NOW, {});
+	assert.deepEqual(new Set(page.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']), "only the attacker's own four orders");
+	// o1/o2 are shared order ids between shops — the returned rows must carry the
+	// attacker's own paidAt, never the victim's.
+	for (const item of page.items) {
+		assert.notEqual(item.paidAt, NOW - 1000, "victim's o1 paidAt must not leak");
+		assert.notEqual(item.paidAt, NOW - 2000, "victim's o2 paidAt must not leak");
+	}
+});
+
+test('getOrderDetail: a crafted key cannot reach the victim order, and the attacker sees only its own data', async () => {
+	const { projections, events, findings } = world();
+	// `${shopId}:${orderId}` keying means these compute to a key that was never
+	// written for the attacker's tenant, regardless of what looks like a victim key.
+	assert.equal(await getOrderDetail(projections, events, findings, A, NOW, `../${V}:o1`), null);
+	assert.equal(await getOrderDetail(projections, events, findings, A, NOW, `${V}:o1`), null);
+	// The attacker's own o1 (same order id as the victim's) resolves to its own row.
+	const detail = await getOrderDetail(projections, events, findings, A, NOW, 'o1');
+	assert.equal(detail?.paidAt, NOW - 100, "the attacker's own o1, not the victim's");
+});
+
+test('listOrders: a cursor crafted from the victim boundary cannot surface victim rows for the attacker', async () => {
+	const { projections } = world();
+	// Victim's newest paidAt is o1 @ NOW-1000, older than every attacker order.
+	const cursor = encodeCursor(NOW - 1000, `${V}:o1`);
+	const page = await listOrders(projections, A, NOW, { cursor });
+	assert.ok(!page.items.some((i) => i.paidAt === NOW - 1000 || i.paidAt === NOW - 2000), 'no victim paidAt leaked');
+	assert.deepEqual(page.items, [], "the victim boundary excludes all of the attacker's own, newer orders");
+});
+
+test('listOrders: hostile filters cannot widen the attacker result set beyond its own shop', async () => {
+	const { projections } = world();
+	const hostile = await listOrders(projections, A, NOW, { state: "awaiting' OR 1=1" });
+	assert.deepEqual(hostile.items, [], 'a hostile state filter matches nothing rather than everything');
+
+	// minAgeHours=0 ("at least 0 hours old") matches every paid order — still only
+	// the attacker's own four, never the victim's three.
+	const wide = await listOrders(projections, A, NOW, { minAgeHours: 0 });
+	assert.deepEqual(new Set(wide.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']));
+	assert.equal(wide.items.length, 4, "never the victim's three orders too");
+
+	// An age WINDOW is a filter too. The victim's orders are older than every
+	// attacker order, so a bound wide enough to include them must still return only
+	// the attacker's own — and a bound that excludes the attacker's own returns
+	// nothing rather than falling back to a wider set.
+	const windowed = await listOrders(projections, A, NOW, { minAgeHours: 0, maxAgeHours: 24 });
+	assert.deepEqual(new Set(windowed.items.map((i) => i.orderId)), new Set(['o1', 'o2', 'o3', 'o4']));
+	for (const item of windowed.items) {
+		assert.notEqual(item.paidAt, NOW - 1000, "victim's o1 paidAt must not leak");
+		assert.notEqual(item.paidAt, NOW - 2000, "victim's o2 paidAt must not leak");
+	}
+	assert.deepEqual(await listOrders(projections, A, NOW, { minAgeHours: 48, maxAgeHours: 72 }).then((r) => r.items), []);
+
+	// The newest lane value is a FILTER, not a scope: the victim also has an o4 in
+	// exactly this lane, and it must stay invisible.
+	const lane = await listOrders(projections, A, NOW, { state: 'no_fulfillment_expected' });
+	assert.deepEqual(
+		lane.items.map((i) => i.orderId),
+		['o4'],
+	);
+	assert.equal(lane.items[0].paidAt, NOW - 50, "the attacker's own o4, not the victim's");
+});
+
+// The digest subscription endpoint (#24) — the app's first and only write
+// surface. shopId is derived from the verified principal and passed as its own
+// argument; a shopId (or lastBuiltAt/createdAt) carried in the body must be
+// unable to retarget or backdate another tenant's row.
+//
+// NOTE: this proves only the pure merge function (applySubscriptionUpdate). The
+// resource-level guarantee — that DigestResource.get/put in resources.ts key
+// strictly on the authenticated principal's shopId, never a caller-supplied one
+// — cannot be exercised here: resources.ts imports src/db.ts, which imports the
+// `harper` module, and that module has no file on disk outside the deployed
+// Harper runtime, so importing resources.ts under `node --test` fails with
+// ERR_MODULE_NOT_FOUND before any assertion runs. That half is deferred to a
+// live check against a dev store.
+test('a digest update body cannot retarget or backdate another tenant subscription', () => {
+	const victim = {
+		shopId: 'victim.myshopify.com',
+		email: 'victim@example.com',
+		cadence: 'daily' as const,
+		status: 'active' as const,
+		createdAt: 1,
+		updatedAt: 1,
+		lastBuiltAt: 999,
+	};
+	// The attacker's principal is attacker.myshopify.com; the body lies.
+	const row = applySubscriptionUpdate(
+		undefined,
+		'attacker.myshopify.com',
+		{ email: 'attacker@example.com', shopId: victim.shopId, lastBuiltAt: 0, createdAt: 0 } as Record<string, unknown>,
+		2000,
+	);
+	assert.equal(row.shopId, 'attacker.myshopify.com');
+	assert.equal(row.lastBuiltAt, undefined);
+	assert.equal(row.createdAt, 2000);
+});
+
+test('export columns never reference a field outside the API allowlist', () => {
+	const allowed: Record<string, readonly string[]> = {
+		events: EVENT_LIST_FIELDS,
+		findings: FINDING_LIST_FIELDS,
+		orders: ORDER_LIST_FIELDS,
+	};
+	for (const kind of ['events', 'findings', 'orders'] as const) {
+		for (const column of EXPORT_COLUMNS[kind]) {
+			assert.ok(allowed[kind].includes(column.field), `${kind}.${column.field} is not in the API allowlist`);
+		}
+	}
 });

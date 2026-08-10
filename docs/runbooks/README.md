@@ -39,9 +39,10 @@ below is paged.
 | `webhook.hmac_fail` spiking, or elevated non-2xx on `/webhooks/shopify/events` | [webhook-backlog](./webhook-backlog.md#hmac-rejection-spike) | Sightline on-call → security owner |
 | `ops.snapshot.health.reconciliation.staleShops > 0` (`RECONCILE_STALE_MS` 30m), or `reconcile.error` rising | [stale-reconciliation](./stale-reconciliation.md) | Sightline on-call → Harper Fabric on-call |
 | `ops.snapshot.health.reauthorization.shops > 0`, or repeated `reconcile.error` for one shop | [token-refresh-failure](./token-refresh-failure.md) | Sightline on-call |
-| `purge.residue` warn line, `purge.failure`/`purge.error` rising, or expired rows still present | [purge-failure](./purge-failure.md) | Sightline on-call → data/privacy owner |
+| `purge.residue` or `purge.outbox.residue` warn line, `purge.failure`/`purge.error`/`purge.outbox.error` rising, or expired rows still present | [purge-failure](./purge-failure.md) | Sightline on-call → data/privacy owner |
 | Failed deploy, health-probe 404, or post-deploy smoke failure | [deployment-rollback](./deployment-rollback.md) | Sightline on-call → Harper Fabric on-call |
 | Shopify Admin API / webhook delivery outage (widespread `reconcile.error`, backlog with no ingress) | [shopify-outage](./shopify-outage.md) | Sightline on-call |
+| `digest.error` rising, `tick.stalled` with `loop="digest"`, or `digest.build.subscription.failed` rising (esp. repeating for one `shopId`, which the per-shop isolation lets happen silently otherwise) — **not** a quiet shop's absent outbox row, which is expected behavior | [digest-not-building](./digest-not-building.md) | Sightline on-call |
 
 > Owners are role-based. Map each role to a named person / PagerDuty schedule as
 > part of staging cutover (#25) before App Store launch (#26).

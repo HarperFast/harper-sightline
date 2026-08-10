@@ -3,6 +3,8 @@ import type {
 	Shop,
 	ShopCredential,
 	AppAuditEvent,
+	DigestSubscription,
+	DigestOutbox,
 	WebhookDelivery,
 	OperationalEvent,
 	OrderProjection,
@@ -23,6 +25,8 @@ const ledger = databases.sightline_ledger;
 export const Shops = core.Shop as unknown as Table<Shop>;
 export const Credentials = core.ShopCredential as unknown as Table<ShopCredential>;
 export const AuditEvents = core.AppAuditEvent as unknown as Table<AppAuditEvent>;
+export const DigestSubscriptions = core.DigestSubscription as unknown as Table<DigestSubscription>;
+export const DigestOutboxes = core.DigestOutbox as unknown as Table<DigestOutbox>;
 
 export const Deliveries = ledger.WebhookDelivery as unknown as Table<WebhookDelivery>;
 export const Events = ledger.OperationalEvent as unknown as Table<OperationalEvent>;
