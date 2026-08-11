@@ -7,7 +7,7 @@
 		"#harper": {
 			"types": "./types/harperImportsShim.d.ts",
 			"test": "./test/harperStub.ts",
-			"default": "harper"
+			"default": "./src/harperRuntime.ts"
 		}
 	},
 	"scripts": {
