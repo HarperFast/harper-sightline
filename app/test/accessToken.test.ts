@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getUsableAccessToken, isAuthError, REFRESH_MARGIN_MS, type TokenDeps, type CredentialFacts } from '../src/accessToken.ts';
-import { installHarperLogSink } from '../src/harperLogSink.ts';
-import { setLogSink, log } from '../src/observe.ts';
+import { getUsableAccessToken, isAuthError, REFRESH_MARGIN_MS, type TokenDeps, type CredentialFacts } from '../src/shopify/accessToken.ts';
+import { installHarperLogSink } from '../src/observability/harperLogSink.ts';
+import { setLogSink, log } from '../src/observability/observe.ts';
 
 // These cover the exact failure that killed reconciliation on the live dev store
 // for ~21 hours on 2026-08-06/07: an expired offline token handed straight to the

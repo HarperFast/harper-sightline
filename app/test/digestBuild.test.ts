@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { runDigestBuild, scrubEmailShaped, scrubKnownAddress, type DigestBuildDeps } from '../src/digestBuild.ts';
-import { periodStartFor } from '../src/digest.ts';
-import { setLogSink } from '../src/observe.ts';
-import type { DigestOutbox } from '../src/model.ts';
+import { runDigestBuild, scrubEmailShaped, scrubKnownAddress, type DigestBuildDeps } from '../src/digest/digestBuild.ts';
+import { periodStartFor } from '../src/digest/digest.ts';
+import { setLogSink } from '../src/observability/observe.ts';
+import type { DigestOutbox } from '../src/domain/model.ts';
 
 // The digest build loop's orchestration, deps-injected exactly like
-// src/inventoryEnrich.ts / src/stateBackfill.ts — no Harper runtime needed. The
+// src/ingest/inventoryEnrich.ts / src/jobs/stateBackfill.ts — no Harper runtime needed. The
 // pure decisions (shouldBuild, hasSomethingToSay, outboxRow) already have their
 // own coverage in test/digest.test.ts; these tests pin the LOOP that wires them
 // together against a table.
@@ -40,7 +40,7 @@ function buildDeps(
 // ABOUT. The two go together: a `fulfillment_confirmation` finding for an order
 // with no projection is a self-contradictory fixture, and it stopped being an
 // invisible one when the digest's headline count moved off findings and onto
-// isAwaitingConfirmation (src/orders.ts) — which is the population these tests
+// isAwaitingConfirmation (src/domain/orders.ts) — which is the population these tests
 // need non-empty for hasSomethingToSay to be true.
 function unconfirmedFinding(shopId: string, orderId: string): Record<string, unknown> {
 	return {
@@ -53,7 +53,7 @@ function unconfirmedFinding(shopId: string, orderId: string): Record<string, unk
 }
 
 // Paid, needs shipping, no fulfillment observed, not called off — awaiting, by
-// src/orders.ts's single definition. Paid four days before NOW, so it is past the
+// src/domain/orders.ts's single definition. Paid four days before NOW, so it is past the
 // 72-hour deadline the finding above represents.
 function awaitingOrder(shopId: string, orderId: string): Record<string, unknown> {
 	return {
@@ -84,7 +84,7 @@ test('a subscription that should build, with something to report, does', async (
 });
 
 // Edit that breaks this: dropping the `shouldBuild` gate (build unconditionally)
-// in src/digestBuild.ts.
+// in src/digest/digestBuild.ts.
 test('a subscription already built for this period is not rebuilt', async () => {
 	const { deps, subscriptions, outboxes } = buildDeps({
 		subscriptions: new FakeTable('shopId', [{ shopId: 's1', email: 'a@b.example', status: 'active', lastBuiltAt: PERIOD_START }]),
@@ -102,7 +102,7 @@ test('a subscription already built for this period is not rebuilt', async () => 
 });
 
 // Edit that breaks this: removing the `subscriptions.patch(...lastBuiltAt...)`
-// call from the non-build (skippedQuiet) branch in src/digestBuild.ts — the
+// call from the non-build (skippedQuiet) branch in src/digest/digestBuild.ts — the
 // period would then be re-gathered forever.
 test('a quiet, healthy period writes no outbox row but still advances lastBuiltAt', async () => {
 	const { deps, subscriptions, outboxes } = buildDeps({
@@ -118,7 +118,7 @@ test('a quiet, healthy period writes no outbox row but still advances lastBuiltA
 });
 
 // Edit that breaks this: dropping the `subscription.email` check from the build
-// condition (or dropping it from `shouldBuild`) in src/digestBuild.ts / src/digest.ts.
+// condition (or dropping it from `shouldBuild`) in src/digest/digestBuild.ts / src/digest/digest.ts.
 test('a subscription with no address never builds', async () => {
 	const { deps, subscriptions, outboxes } = buildDeps({
 		subscriptions: new FakeTable('shopId', [{ shopId: 's1', status: 'active' }]),
@@ -132,7 +132,7 @@ test('a subscription with no address never builds', async () => {
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, undefined);
 });
 
-// Edit that breaks this: changing outboxRow's id in src/digest.ts to include a
+// Edit that breaks this: changing outboxRow's id in src/digest/digest.ts to include a
 // non-deterministic component (e.g. `now`) instead of just shop+period — the
 // second put would then land at a different key and the table would hold two
 // rows for the same shop and period instead of one.
@@ -165,7 +165,7 @@ test('a rebuild of the same period upserts rather than duplicating', async () =>
 });
 
 // Edit that breaks this: removing the try/catch around one subscription's work
-// in src/digestBuild.ts — s1's thrown error would then propagate out of
+// in src/digest/digestBuild.ts — s1's thrown error would then propagate out of
 // runDigestBuild entirely, and s2 (which sorts after s1 in the table's
 // iteration order) would never be reached, let alone built.
 test('a failure building one subscription does not starve subscriptions after it, and is counted', async () => {
@@ -241,7 +241,7 @@ test('scrubKnownAddress removes exactly the given address, and leaves an address
 // Edit that breaks this: dropping the 'i' flag (or reverting to the plain
 // split/join) in scrubKnownAddress. Not exploitable today — normalizeEmail
 // lowercases on write — but the scrubber must not depend on an invariant
-// enforced three modules away in src/digestSubscription.ts.
+// enforced three modules away in src/digest/digestSubscription.ts.
 test('scrubKnownAddress matches the address regardless of case', () => {
 	assert.equal(scrubKnownAddress('write conflict for Ops@Merchant.Example', 'ops@merchant.example'), 'write conflict for [address]');
 });

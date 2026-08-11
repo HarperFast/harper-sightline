@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from '../src/processor.ts';
+import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from '../src/ingest/processor.ts';
 
 function memDeps(rows: DeliveryRow[], failIds = new Set<string>()) {
 	const state = new Map(rows.map((r) => [r.id, { ...r }]));

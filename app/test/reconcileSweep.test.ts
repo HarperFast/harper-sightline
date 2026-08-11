@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ReconcileOrder } from '../src/adminApi.ts';
-import { sweepOrdersSince, type ReconcileSweepDeps } from '../src/reconcileSweep.ts';
+import type { ReconcileOrder } from '../src/shopify/adminApi.ts';
+import { sweepOrdersSince, type ReconcileSweepDeps } from '../src/shopify/reconcileSweep.ts';
 
 // The reconcile sweep is the gap-fill that stops the detector reporting an
 // absence Sightline caused rather than the store. Before this module the paging

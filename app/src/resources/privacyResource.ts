@@ -1,5 +1,5 @@
 import { Resource } from 'harper';
-import { getPrivacy } from '../queries.ts';
+import { getPrivacy } from '../api/queries.ts';
 import { identity } from './auth.ts';
 import { EventsQ, FindingsQ, ProjectionsQ, DeliveriesQ, ShopsQ, DigestSubscriptionsQ } from './tables.ts';
 

@@ -1,8 +1,8 @@
 import { Resource } from 'harper';
-import { listEvents, listFindings, listOrders } from '../queries.ts';
-import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from '../csv.ts';
-import { MAX_LIMIT } from '../apiContract.ts';
-import { log } from '../observe.ts';
+import { listEvents, listFindings, listOrders } from '../api/queries.ts';
+import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from '../api/csv.ts';
+import { MAX_LIMIT } from '../api/apiContract.ts';
+import { log } from '../observability/observe.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { EventsQ, FindingsQ, ExpectationsQ, ProjectionsQ, EventSkusQ } from './tables.ts';
@@ -34,7 +34,7 @@ export class ExportResource extends Resource {
 		const p = url.searchParams;
 		// One page-fetching closure per kind, over the SAME query functions the
 		// screens use, so an export can never see a row the UI could not, and
-		// tenant scoping is identical. collectExportRows (src/csv.ts) owns the
+		// tenant scoping is identical. collectExportRows (src/api/csv.ts) owns the
 		// accumulate-until-cap loop and the truncation determination — pure and
 		// unit-tested, since a Resource class needs the Harper runtime to test.
 		const fetchPage = (cursor: string | undefined) => {

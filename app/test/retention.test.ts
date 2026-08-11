@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { purgeExpired, cutoffMs, DAY_MS, RETENTION_DAYS, type RetentionTarget } from '../src/retention.ts';
+import { purgeExpired, cutoffMs, DAY_MS, RETENTION_DAYS, type RetentionTarget } from '../src/retention/retention.ts';
 import { FakeTable } from './fakeTable.ts';
 
 const NOW = 1000 * DAY_MS; // fixed, arbitrary "now"
@@ -89,7 +89,7 @@ test('cutoffMs default window is seven days', () => {
 });
 
 // The digest outbox keeps 30 days (OUTBOX_RETENTION_TARGETS in
-// src/ledgerTargets.ts, OUTBOX_RETENTION_DAYS above in this same file), not the
+// src/retention/ledgerTargets.ts, OUTBOX_RETENTION_DAYS above in this same file), not the
 // ledger's 7 — purgeExpired's third parameter (retentionDays) is what lets one
 // shared purge function serve both windows.
 test('digest outbox rows are purged after thirty days, not seven', async () => {

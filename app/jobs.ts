@@ -13,36 +13,42 @@ import {
 	DigestSubscriptions,
 	DigestOutboxes,
 } from './src/db.ts';
-import type { Expectation, GapFinding, OperationalEvent } from './src/model.ts';
-import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/processor.ts';
-import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/normalize.ts';
-import { writeEventWithSkus } from './src/eventSkus.ts';
-import { isOrderLinked, rebuildProjection } from './src/projection.ts';
-import { uninstallShop } from './src/lifecycle.ts';
-import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/detector.ts';
-import { purgeExpired, OUTBOX_RETENTION_DAYS, type PurgeResult } from './src/retention.ts';
-import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/ledgerTargets.ts';
-import { runPurgeCycle } from './src/purgeCycle.ts';
-import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
-import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
-import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations, isThrottledAdminError } from './src/adminApi.ts';
-import { synthesizeEvents } from './src/reconcile.ts';
-import { sweepOrdersSince } from './src/reconcileSweep.ts';
-import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
-import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/stateBackfill.ts';
+import type { Expectation, GapFinding, OperationalEvent } from './src/domain/model.ts';
+import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/ingest/processor.ts';
+import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
+import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
+import { isOrderLinked, rebuildProjection } from './src/ingest/projection.ts';
+import { uninstallShop } from './src/shopify/lifecycle.ts';
+import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/domain/detector.ts';
+import { purgeExpired, OUTBOX_RETENTION_DAYS, type PurgeResult } from './src/retention/retention.ts';
+import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/retention/ledgerTargets.ts';
+import { runPurgeCycle } from './src/retention/purgeCycle.ts';
+import { getUsableAccessToken, isAuthError } from './src/shopify/accessToken.ts';
+import { tokenDeps, rotateShopCredential } from './src/shopify/tokenDeps.ts';
+import {
+	fetchOrdersUpdatedSince,
+	fetchShopTimezone,
+	fetchInventoryItems,
+	fetchLocations,
+	isThrottledAdminError,
+} from './src/shopify/adminApi.ts';
+import { synthesizeEvents } from './src/shopify/reconcile.ts';
+import { sweepOrdersSince } from './src/shopify/reconcileSweep.ts';
+import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/ingest/inventoryEnrich.ts';
+import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/jobs/stateBackfill.ts';
 import {
 	runDigestBuild as runDigestBuildSweep,
 	scrubEmailShaped,
 	type DigestBuildDeps,
 	type DigestBuildResult,
-} from './src/digestBuild.ts';
-import { log, metrics, M } from './src/observe.ts';
-import { computeOpsHealth, type OpsHealth } from './src/opsHealth.ts';
-import { createTicker } from './src/tick.ts';
-import type { QueryTable } from './src/queries.ts';
+} from './src/digest/digestBuild.ts';
+import { log, metrics, M } from './src/observability/observe.ts';
+import { computeOpsHealth, type OpsHealth } from './src/observability/opsHealth.ts';
+import { createTicker } from './src/jobs/tick.ts';
+import type { QueryTable } from './src/api/queries.ts';
 
 // Every background loop runs at most one pass at a time, but must never be able
-// to wedge permanently if a pass fails to settle (src/tick.ts). A detected stall
+// to wedge permanently if a pass fails to settle (src/jobs/tick.ts). A detected stall
 // is logged at error level — now genuinely visible via read_log — so a stuck loop
 // alerts instead of going quiet.
 function ticker(name: string, stallMs: number) {
@@ -239,7 +245,7 @@ export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
 }
 
 // The two sweeps' independence (a ledger-purge failure must never stop the
-// outbox sweep, and vice versa) lives in src/purgeCycle.ts, deps-injected so it
+// outbox sweep, and vice versa) lives in src/retention/purgeCycle.ts, deps-injected so it
 // is unit-testable without the Harper runtime — jobs.ts just wires the real
 // purge functions, log, and metrics, and keeps the ticker.
 function purgeTick(): void {
@@ -348,7 +354,7 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 	const checkpointId = `reconcile:${shopId}`;
 	const checkpoint = await Checkpoints.get(checkpointId);
 	const sinceMs = checkpoint?.cursor ? Number(checkpoint.cursor) : now - RECONCILE_BACKFILL_MS;
-	// Paging lives in src/reconcileSweep.ts so the convergence guarantee (progress
+	// Paging lives in src/shopify/reconcileSweep.ts so the convergence guarantee (progress
 	// is persisted even when a page fetch throws) is unit-testable without the
 	// Harper runtime.
 	const sweep = await sweepOrdersSince(
@@ -435,7 +441,7 @@ export function startReconcileLoop(): void {
 // sweep resolves unseen item ids (and the shop's locations) through the Admin API,
 // caches them, and backfills EventSku rows so inventory events become
 // SKU-searchable like every other domain. The orchestration itself (including the
-// checkpoint that makes it converge — see src/inventoryEnrich.ts) is deps-injected
+// checkpoint that makes it converge — see src/ingest/inventoryEnrich.ts) is deps-injected
 // and lives there, unit-testable without the Harper runtime, matching the
 // accessToken.ts/tokenDeps.ts and processor.ts/jobs.ts split already in this
 // codebase. This section only wires the real tables/Admin API/token resolution
@@ -491,7 +497,7 @@ export function startInventoryEnrichmentLoop(): void {
 // Runs on a short interval so a deploy converges quickly, then goes quiet: rows
 // written after the deploy always carry `state`, so once the checkpoint's
 // frontier reaches the present each tick reads one small batch and writes
-// nothing. The sweep itself is deps-injected in src/stateBackfill.ts (same split
+// nothing. The sweep itself is deps-injected in src/jobs/stateBackfill.ts (same split
 // as inventoryEnrich.ts) so it is unit-testable without the Harper runtime.
 const BACKFILL_INTERVAL_MS = 60_000;
 const BACKFILL_INITIAL_DELAY_MS = 15_000;
@@ -535,7 +541,7 @@ export function startProjectionStateBackfillLoop(): void {
 // Idempotent by construction: the outbox id is `${shopId}:${periodStart}` and
 // the build decision keys on the subscription's lastBuiltAt, so overlapping
 // ticks across threads and cluster nodes converge on one row per period. The
-// orchestration itself is deps-injected and lives in src/digestBuild.ts (same
+// orchestration itself is deps-injected and lives in src/digest/digestBuild.ts (same
 // split as inventoryEnrich.ts/stateBackfill.ts) so it is unit-testable without
 // the Harper runtime. This section only wires the real tables and the tick.
 const DIGEST_INTERVAL_MS = 3_600_000; // hourly; the period check does the real gating

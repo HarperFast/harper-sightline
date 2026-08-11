@@ -12,10 +12,10 @@ import {
 	getSetup,
 	listOrders,
 	getOrderDetail,
-} from '../src/queries.ts';
-import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/apiContract.ts';
-import { detectorKey } from '../src/detector.ts';
-import { runStateBackfill, type BackfillDeps } from '../src/stateBackfill.ts';
+} from '../src/api/queries.ts';
+import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/api/apiContract.ts';
+import { detectorKey } from '../src/domain/detector.ts';
+import { runStateBackfill, type BackfillDeps } from '../src/jobs/stateBackfill.ts';
 
 const NOW = 1_000_000_000_000;
 const DAY = 86_400_000;
@@ -1046,9 +1046,9 @@ test('the no-customer-PII promise is unchanged by the notification address', asy
 });
 
 test('the deletion disclosure states the digest outbox retention alongside the ledger purge', async () => {
-	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention.ts directly
+	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention/retention.ts directly
 	// (queries.ts used to hold its own duplicated `DIGEST_OUTBOX_RETENTION_DAYS`
-	// literal, checked against the real constant by reading src/ledgerTargets.ts
+	// literal, checked against the real constant by reading src/retention/ledgerTargets.ts
 	// as text — now that db.ts is importable under test, the constant could have
 	// been imported from ledgerTargets.ts, but it lives in retention.ts instead,
 	// which has no imports of its own, so queries.ts stays testable without
@@ -1429,7 +1429,7 @@ test('a legacy projection with no stored state is counted but not listed, until 
 	// getSummary/computeFlows, which derive the lane live, count it as awaiting,
 	// while listOrders, which filters the stored `state` column, cannot see it. A
 	// count that disagrees with the list it links to is the defect; the fix is the
-	// backfill sweep (src/stateBackfill.ts), not a query-time fallback, because the
+	// backfill sweep (src/jobs/stateBackfill.ts), not a query-time fallback, because the
 	// stored column is what makes DB-side filtering and honest paging possible.
 	const f = fixtures();
 	const legacy = await f.projections.get('s1:oLegacy');

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scopedFilter } from '../src/tenant.ts';
-import type { Principal } from '../src/principal.ts';
+import { scopedFilter } from '../src/auth/tenant.ts';
+import type { Principal } from '../src/auth/principal.ts';
 
 const principal: Principal = { shopId: 'demo-shop.myshopify.com', userId: '42', roles: [], source: 'shopify-session' };
 

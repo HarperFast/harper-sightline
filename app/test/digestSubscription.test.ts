@@ -6,7 +6,7 @@ import {
 	normalizeCadence,
 	normalizeEmail,
 	toSubscriptionView,
-} from '../src/digestSubscription.ts';
+} from '../src/digest/digestSubscription.ts';
 
 const NOW = 1_775_000_000_000;
 

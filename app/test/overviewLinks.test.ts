@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { computeFlows, getSummary, listFindings, listOrders } from '../src/queries.ts';
-import { runStateBackfill, type BackfillDeps } from '../src/stateBackfill.ts';
-import { MAX_LIMIT } from '../src/apiContract.ts';
-import { detectorKey, FAILED_RULE } from '../src/detector.ts';
+import { computeFlows, getSummary, listFindings, listOrders } from '../src/api/queries.ts';
+import { runStateBackfill, type BackfillDeps } from '../src/jobs/stateBackfill.ts';
+import { MAX_LIMIT } from '../src/api/apiContract.ts';
+import { detectorKey, FAILED_RULE } from '../src/domain/detector.ts';
 import { overviewView } from '../web/src/view.ts';
 import type { Summary } from '../web/src/api.ts';
 

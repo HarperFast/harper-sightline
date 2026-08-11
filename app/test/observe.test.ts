@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { redactFields, REDACTED, log, setLogSink, correlationId, metrics, M, type LogLevel } from '../src/observe.ts';
+import { redactFields, REDACTED, log, setLogSink, correlationId, metrics, M, type LogLevel } from '../src/observability/observe.ts';
 
 test('redactFields masks sensitive keys (case-insensitive)', () => {
 	const out = redactFields({

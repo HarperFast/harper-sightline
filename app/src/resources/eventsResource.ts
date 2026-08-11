@@ -1,5 +1,5 @@
 import { Resource } from 'harper';
-import { listEvents, getEventDetail } from '../queries.ts';
+import { listEvents, getEventDetail } from '../api/queries.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { EventsQ, ProjectionsQ, FindingsQ, InventoryItemsQ, ShopLocationsQ, EventSkusQ } from './tables.ts';

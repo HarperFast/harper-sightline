@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { opsTokenAccepted, OPS_TOKEN_MIN_LENGTH } from '../src/opsAuth.ts';
+import { opsTokenAccepted, OPS_TOKEN_MIN_LENGTH } from '../src/auth/opsAuth.ts';
 
 // The ops endpoint exposes cross-shop operational counts (backlog, dead letters,
 // reconcile staleness). No merchant-identifying data — computeOpsHealth is built

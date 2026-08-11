@@ -1,9 +1,9 @@
 import { Resource } from 'harper';
-import { verifyWebhookHmac } from '../webhookHmac.ts';
-import { readShopifySecret } from '../readSecret.ts';
-import { acceptDelivery } from '../webhookIngress.ts';
-import { stripPii } from '../pii.ts';
-import { log, metrics, M } from '../observe.ts';
+import { verifyWebhookHmac } from '../shopify/webhookHmac.ts';
+import { readShopifySecret } from '../secrets/readSecret.ts';
+import { acceptDelivery } from '../ingest/webhookIngress.ts';
+import { stripPii } from '../privacy/pii.ts';
+import { log, metrics, M } from '../observability/observe.ts';
 import { httpError } from './http.ts';
 
 // Shopify webhook ingress. Authenticated by HMAC over the RAW body (NOT the

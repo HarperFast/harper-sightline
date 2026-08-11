@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runPurgeCycle, type PurgeCycleDeps } from '../src/purgeCycle.ts';
-import { M, type LogLevel } from '../src/observe.ts';
-import type { PurgeResult } from '../src/retention.ts';
+import { runPurgeCycle, type PurgeCycleDeps } from '../src/retention/purgeCycle.ts';
+import { M, type LogLevel } from '../src/observability/observe.ts';
+import type { PurgeResult } from '../src/retention/retention.ts';
 
 // The ledger purge (7-day, ADR-003) and the outbox purge (30-day digest
 // retention, publicly disclosed in the privacy policy/data inventory/

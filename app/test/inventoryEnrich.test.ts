@@ -9,11 +9,11 @@ import {
 	skuRowsForInventoryEvent,
 	unresolvedIds,
 	type EnrichDeps,
-} from '../src/inventoryEnrich.ts';
-import type { OperationalEvent } from '../src/model.ts';
+} from '../src/ingest/inventoryEnrich.ts';
+import type { OperationalEvent } from '../src/domain/model.ts';
 import { FakeTable } from './fakeTable.ts';
-import { setLogSink } from '../src/observe.ts';
-import { PermanentAdminApiError } from '../src/adminApi.ts';
+import { setLogSink } from '../src/observability/observe.ts';
+import { PermanentAdminApiError } from '../src/shopify/adminApi.ts';
 
 const NOW = 1_775_000_000_000;
 
@@ -63,7 +63,7 @@ test('an enriched inventory event gets exactly one SKU index row', () => {
 // ─── runInventoryEnrichment: convergence behind the durable checkpoint ─────────
 // These cover the deps-injected sweep itself (moved here from jobs.ts precisely
 // so it can be exercised with FakeTables and fake fetchers, with no Harper
-// runtime and no network — see the module comment in src/inventoryEnrich.ts).
+// runtime and no network — see the module comment in src/ingest/inventoryEnrich.ts).
 
 function inventoryEvent(overrides: Partial<OperationalEvent> & { eventId: string; resourceId: string }): Record<string, unknown> {
 	return {

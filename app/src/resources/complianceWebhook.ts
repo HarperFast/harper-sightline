@@ -1,10 +1,10 @@
 import { Resource } from 'harper';
-import { verifyWebhookHmac } from '../webhookHmac.ts';
-import { readShopifySecret } from '../readSecret.ts';
-import { redactShop, redactOrders } from '../redaction.ts';
-import { REDACT_TARGETS } from '../ledgerTargets.ts';
+import { verifyWebhookHmac } from '../shopify/webhookHmac.ts';
+import { readShopifySecret } from '../secrets/readSecret.ts';
+import { redactShop, redactOrders } from '../privacy/redaction.ts';
+import { REDACT_TARGETS } from '../retention/ledgerTargets.ts';
 import { writeAudit } from '../audit.ts';
-import { handleCompliance, type ComplianceDeps } from '../compliance.ts';
+import { handleCompliance, type ComplianceDeps } from '../privacy/compliance.ts';
 import { httpError } from './http.ts';
 
 // Shopify mandatory privacy/compliance webhooks (#21). Separate URIs from the

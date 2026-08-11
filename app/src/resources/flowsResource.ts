@@ -1,5 +1,5 @@
 import { Resource } from 'harper';
-import { computeFlows } from '../queries.ts';
+import { computeFlows } from '../api/queries.ts';
 import { identity } from './auth.ts';
 import { ProjectionsQ } from './tables.ts';
 

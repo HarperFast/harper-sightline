@@ -12,7 +12,7 @@ import {
 	ShopLocations as ShopLocationsTable,
 	DigestSubscriptions as DigestSubscriptionsTable,
 } from '../db.ts';
-import type { QueryTable } from '../queries.ts';
+import type { QueryTable } from '../api/queries.ts';
 
 export const EventsQ = EventsTable as unknown as QueryTable;
 export const FindingsQ = FindingsTable as unknown as QueryTable;
@@ -27,5 +27,5 @@ export const EventSkusQ = EventSkusTable as unknown as QueryTable;
 export const InventoryItemsQ = InventoryItemsTable as unknown as QueryTable;
 export const ShopLocationsQ = ShopLocationsTable as unknown as QueryTable;
 // Read ONLY for `email`/`cadence`/`status` in /privacy's notifications
-// disclosure — stated, never echoed (see getPrivacy in src/queries.ts).
+// disclosure — stated, never echoed (see getPrivacy in src/api/queries.ts).
 export const DigestSubscriptionsQ = DigestSubscriptionsTable as unknown as QueryTable;

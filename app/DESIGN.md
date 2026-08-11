@@ -27,12 +27,42 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 - `config.yaml` — component config (rest, graphqlSchema, jsResource; static web/dist later).
 - `resources.ts` — export layer for `src/resources/*`; nothing else belongs here.
 - `src/resources/` — one file per resource class, named after the class it exports
-  (`health.ts` → `Health`, `eventsResource.ts` → `EventsResource`, …), plus four
+  (`health.ts` → `Health`, `eventsResource.ts` → `EventsResource`, …), plus five
   shared modules: `boot.ts` (log sink + raw-JSON content type + job loop; imported
   FIRST by `resources.ts`), `auth.ts` (the shared identity adapter, `API_KEY`,
-  `sessionPayload`), `tables.ts` (the read-only `QueryTable` casts), and `http.ts`
-  (`parseUrl`/`trailingId`/`numParam`/`httpError` — no `harper` import, so unit-testable).
-- `src/` — `verifySessionToken.ts` (+ tests), `AuthError.ts`, `readSecret.ts`, `principal.ts`.
+  `sessionPayload`), `tables.ts` (the read-only `QueryTable` casts), `http.ts`
+  (`parseUrl`/`trailingId`/`numParam`/`httpError` — no `harper` import, so unit-testable),
+  and `assetPath.ts` (`resolveAssetUrl`, the containment boundary for the
+  unauthenticated static-asset read in `appHome.ts` — same no-`harper` rule, and it
+  is security-load-bearing, so it stays directly testable).
+- `src/*/` — the rest of the app, grouped by concern. A module's directory tells you
+  what it is for; nothing else about the code changed when they were grouped.
+  - `auth/` — who the caller is: `verifySessionToken.ts`, `identity.ts`, `principal.ts`,
+    `AuthError.ts`, `tenant.ts` (the shopId scoping control), `capabilities.ts`,
+    `opsAuth.ts` (the `SIGHTLINE_OPS_TOKEN` gate — an operator, not a merchant).
+  - `secrets/` — secret material: `crypto.ts` (token envelope encryption),
+    `readSecret.ts`, `secretsPolicy.ts` (the fail-closed `SIGHTLINE_REQUIRE_SECRETS` gate).
+  - `shopify/` — everything that talks to Shopify or holds a Shopify credential:
+    `adminApi.ts`, `exchangeToken.ts`, `accessToken.ts`, `tokenDeps.ts`,
+    `credentialStore.ts`, `rotateCredential.ts`, `lifecycle.ts` (install/uninstall),
+    `webhookHmac.ts`, `reconcile.ts`, `reconcileSweep.ts` (the deps-injected order paging).
+  - `ingest/` — the write path from a delivery to stored state: `webhookIngress.ts`,
+    `processor.ts`, `normalize.ts`, `eventSkus.ts`, `projection.ts`, `inventoryEnrich.ts`.
+  - `domain/` — the shared vocabulary the rest reads: `model.ts` (the schema.graphql
+    mirror), `orders.ts` (the single lane/age definition), `eventKind.ts`, `detector.ts`.
+  - `api/` — the read side: `apiContract.ts` (response allowlists), `queries.ts`, `csv.ts`.
+  - `digest/` — `digest.ts` (pure domain), `digestData.ts`, `digestBuild.ts`
+    (deps-injected orchestration), `digestSubscription.ts`.
+  - `privacy/` — `compliance.ts` (mandatory-webhook dispatcher), `redaction.ts`,
+    `pii.ts`, `privacyPolicy.ts`, `support.ts`.
+  - `retention/` — `retention.ts`, `ledgerTargets.ts`, `purgeCycle.ts`.
+  - `observability/` — `observe.ts`, `harperLogSink.ts`, `opsHealth.ts`.
+  - `jobs/` — what `jobs.ts` runs on: `tick.ts` (the non-wedging loop guard),
+    `stateBackfill.ts`.
+- `src/*.ts` — only the base layer everything sits on: `db.ts` (the table handles),
+  `audit.ts` (a thin writer over them), and `harperRuntime.ts`. **`harperRuntime.ts`
+  must stay at `src/` root** — it is the `default` target of the `#harper` subpath
+  import in package.json, and that resolution is load-bearing (see its header).
 - `web/` — Vite/App Bridge/Polaris SPA (slice 2).
 - `scripts/` — `deploy.mjs`, `smoke.mjs`.
 - `schema.graphql` — placeholder; real sealed tables in issue #6.
@@ -42,7 +72,7 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 `jobs.ts` and `resources.ts` import the Harper runtime, so nothing in them is
 unit-testable. Every background sweep therefore keeps its logic in a
 deps-injected `src/` module — `processor.ts`, `inventoryEnrich.ts`,
-`stateBackfill.ts`, `purgeCycle.ts`, `reconcileSweep.ts` — and `jobs.ts` wires
+`stateBackfill.ts`, `purgeCycle.ts`, `shopify/reconcileSweep.ts` — and `jobs.ts` wires
 the real tables, Admin API calls, and tickers. When a sweep needs a behavior
 guarantee tested (retry, convergence, idempotency), move the loop into `src/`
 rather than testing around it.
@@ -53,7 +83,7 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
 
 ## Observability (#22)
 
-`src/observe.ts` is the single observability primitive: a PII-safe structured
+`src/observability/observe.ts` is the single observability primitive: a PII-safe structured
 logger and an in-process metrics registry. There is **no external metrics
 backend** in the MVP — metrics are a cumulative in-process tally emitted as
 `ops.snapshot` log lines (see below); the staging log pipeline turns them into
@@ -68,13 +98,13 @@ dashboards/alerts under #25.
 - **Metrics**: the `metrics` registry (`inc`, `observeMs`, `snapshot`) keyed by
   the `M` name constants. **No merchant-identifying labels** — a metric is a bare
   name, never keyed by shop (plan §13).
-- **Ops health**: `src/opsHealth.ts` `computeOpsHealth` derives an aggregate,
+- **Ops health**: `src/observability/opsHealth.ts` `computeOpsHealth` derives an aggregate,
   merchant-label-free health view from tables (backlog age/count, dead letters,
   reconciliation staleness, reauth). `jobs.ts` runs it once a minute as the
   `ops.snapshot` heartbeat (emitted at `warn` when unhealthy so alerts can key
   off it). This is distinct from the per-shop merchant-facing `getSummary`.
   The same object is served over HTTP at `/api/v1/ops`, gated by
-  `src/opsAuth.ts` on the `SIGHTLINE_OPS_TOKEN` shared secret and 404-ing when
+  `src/auth/opsAuth.ts` on the `SIGHTLINE_OPS_TOKEN` shared secret and 404-ing when
   unset. Prefer it over log scraping for anything programmatic: it reads
   replicated tables, so any node answers for the whole cluster, whereas
   `read_log` only ever sees the node that happened to serve the request.

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, rebuildProjection, isOrderLinked } from '../src/projection.ts';
-import type { EventDomain, OperationalEvent } from '../src/model.ts';
+import { applyEvent, rebuildProjection, isOrderLinked } from '../src/ingest/projection.ts';
+import type { EventDomain, OperationalEvent } from '../src/domain/model.ts';
 
 let seq = 0;
 function ev(domain: EventDomain, occurredAt: number, extra: Partial<OperationalEvent> = {}): OperationalEvent {

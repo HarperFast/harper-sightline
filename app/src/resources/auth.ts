@@ -1,10 +1,10 @@
 // The identity adapter every authenticated resource shares, plus the session
 // payload the SPA boots from. shopId is always derived from the verified
 // principal, never from caller input (threat model §4).
-import { createShopifyIdentityAdapter } from '../identity.ts';
-import { capabilitiesFor } from '../capabilities.ts';
-import { supportContact } from '../support.ts';
-import { SHOPIFY_API_KEY } from '../readSecret.ts';
+import { createShopifyIdentityAdapter } from '../auth/identity.ts';
+import { capabilitiesFor } from '../auth/capabilities.ts';
+import { supportContact } from '../privacy/support.ts';
+import { SHOPIFY_API_KEY } from '../secrets/readSecret.ts';
 import { Shops as ShopsTable } from '../db.ts';
 
 // Public app API key (client_id) — not a secret. Sourced from readSecret.ts so the
@@ -30,7 +30,7 @@ export async function sessionPayload(shopId: string, userId: string): Promise<Re
 		...(shop?.ianaTimezone ? { timezone: shop.ianaTimezone } : {}),
 		// Merchant-facing support contact, so the UI can offer help on the screens
 		// where a merchant is actually stuck. Absent when unconfigured — never a
-		// fabricated address (src/support.ts).
+		// fabricated address (src/privacy/support.ts).
 		support: supportContact(),
 	};
 }
