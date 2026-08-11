@@ -8,10 +8,12 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 - Deployed to Harper Fabric as component **`sightline`** via `scripts/deploy.mjs`
   (ops-API `deploy_component` + `restart`), URL fronted on 443. No local Harper
   (blocked in our sandbox); the Fabric instance is the runtime.
-- **Resources** (`resources.ts`) extend `Resource` from `'harper'`, are
-  deny-by-default (`allowRead()` to open a GET), and route at their `static path`
-  (e.g. `/api/v1/health`). A bad top-level import silently 404s _all_ routes while
-  the component still reports "healthy" → `scripts/smoke.mjs` runs after every
+- **Resources** live one-per-file in `src/resources/`, extend `Resource` from
+  `'harper'`, are deny-by-default (`allowRead()` to open a GET), and route at their
+  `static path` (e.g. `/api/v1/health`). `resources.ts` (the `jsResource` entry
+  point) is an **export layer only** — no logic — and Harper registers whatever
+  `Resource` subclass it exports. A bad top-level import silently 404s _all_ routes
+  while the component still reports "healthy" → `scripts/smoke.mjs` runs after every
   deploy as a guard (ADR-001).
 - **Auth:** the Shopify session token rides in `X-Shopify-Session-Token`, NOT
   `Authorization` (Harper's HTTP layer intercepts Authorization). `Session`
@@ -23,7 +25,13 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 ## Layout
 
 - `config.yaml` — component config (rest, graphqlSchema, jsResource; static web/dist later).
-- `resources.ts` — `Health` (`/api/v1/health`) and `Session` (`/api/v1/session`).
+- `resources.ts` — export layer for `src/resources/*`; nothing else belongs here.
+- `src/resources/` — one file per resource class, named after the class it exports
+  (`health.ts` → `Health`, `eventsResource.ts` → `EventsResource`, …), plus four
+  shared modules: `boot.ts` (log sink + raw-JSON content type + job loop; imported
+  FIRST by `resources.ts`), `auth.ts` (the shared identity adapter, `API_KEY`,
+  `sessionPayload`), `tables.ts` (the read-only `QueryTable` casts), and `http.ts`
+  (`parseUrl`/`trailingId`/`numParam`/`httpError` — no `harper` import, so unit-testable).
 - `src/` — `verifySessionToken.ts` (+ tests), `AuthError.ts`, `readSecret.ts`, `principal.ts`.
 - `web/` — Vite/App Bridge/Polaris SPA (slice 2).
 - `scripts/` — `deploy.mjs`, `smoke.mjs`.
