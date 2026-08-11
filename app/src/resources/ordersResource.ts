@@ -1,5 +1,5 @@
 import { Resource } from 'harper';
-import { listOrders, getOrderDetail } from '../queries.ts';
+import { listOrders, getOrderDetail } from '../api/queries.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { ProjectionsQ, EventsQ, FindingsQ } from './tables.ts';

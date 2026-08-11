@@ -22,17 +22,17 @@
 //     node seed-dev-data.mjs --shop=my-store.myshopify.com
 //
 // The dry run pipes every generated payload through the REAL normalizer and
-// reducer (src/normalize.ts, src/projection.ts, src/orders.ts) and asserts each
+// reducer (src/ingest/normalize.ts, src/ingest/projection.ts, src/domain/orders.ts) and asserts each
 // order lands in the lane and age bucket it was designed for. It exits non-zero
 // on any mismatch, so a payload that would not produce the intended state is
 // caught before anything touches the cluster.
 //
 // Run it from `app/` so the relative imports resolve.
 
-import { normalizeDelivery } from '../src/normalize.ts';
-import { rebuildProjection } from '../src/projection.ts';
-import { deriveOrderLane, ageBucketKey, ageHours } from '../src/orders.ts';
-import { FULFILLMENT_DEADLINE_MS } from '../src/detector.ts';
+import { normalizeDelivery } from '../src/ingest/normalize.ts';
+import { rebuildProjection } from '../src/ingest/projection.ts';
+import { deriveOrderLane, ageBucketKey, ageHours } from '../src/domain/orders.ts';
+import { FULFILLMENT_DEADLINE_MS } from '../src/domain/detector.ts';
 
 // ─── args ─────────────────────────────────────────────────────────────────────
 
@@ -168,7 +168,7 @@ const SPECS = [
 	// Cancelled BEFORE payment. This reads as `unpaid`, not `cancelled` — and
 	// that is deliberate, not a bug: deriveOrderLane checks paidAt first, on the
 	// stated rule that "an unpaid order is unpaid regardless of anything else"
-	// (src/orders.ts). Kept in the seed precisely because it is the surprising
+	// (src/domain/orders.ts). Kept in the seed precisely because it is the surprising
 	// case, and worth having on screen to judge whether that ordering reads right.
 	{ lane: 'unpaid', createdH: 30, cancelledH: 28, items: [shipItem(SKUS[3])], unpaid: true },
 

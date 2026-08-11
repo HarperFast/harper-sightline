@@ -11,7 +11,7 @@ import {
 	periodStartFor,
 	shouldBuild,
 	type DigestInput,
-} from '../src/digest.ts';
+} from '../src/digest/digest.ts';
 
 const DAY = 86_400_000;
 // Wednesday 2026-08-05T14:30:00Z — deliberately mid-day and mid-week so period
@@ -63,7 +63,7 @@ test('build only for an active subscription with an address, once per period', (
 });
 
 // Restates shouldBuild across a period boundary for the build loop's benefit
-// (src/digestBuild.ts) — already covered above by the '...once per period'
+// (src/digest/digestBuild.ts) — already covered above by the '...once per period'
 // test, so this pins the behavior explicitly rather than adding new coverage.
 test('a period that has already been built is not rebuilt, whatever the clock says', () => {
 	const periodStart = periodStartFor('daily', NOW);
@@ -257,7 +257,7 @@ test('an outbox row carries no address anywhere in it, so clearing or uninstalli
 	assert.doesNotMatch(JSON.stringify(row), /[^\s"@]+@[^\s"@]+\.[^\s"@]+/);
 });
 
-// Restates the id's determinism for the build loop's benefit (src/digestBuild.ts):
+// Restates the id's determinism for the build loop's benefit (src/digest/digestBuild.ts):
 // this is what makes an overlapping tick/thread/node upsert rather than duplicate.
 // Already implied by the previous test's `row.id` assertion.
 test('an outbox id is stable for a period, so a rebuild overwrites rather than duplicating', () => {

@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { runStateBackfill, BACKFILL_BATCH, BACKFILL_CHECKPOINT_ID, type BackfillDeps } from '../src/stateBackfill.ts';
-import { listOrders, getSummary, computeFlows } from '../src/queries.ts';
-import { deriveOrderLane } from '../src/orders.ts';
-import type { OrderProjection } from '../src/model.ts';
+import { runStateBackfill, BACKFILL_BATCH, BACKFILL_CHECKPOINT_ID, type BackfillDeps } from '../src/jobs/stateBackfill.ts';
+import { listOrders, getSummary, computeFlows } from '../src/api/queries.ts';
+import { deriveOrderLane } from '../src/domain/orders.ts';
+import type { OrderProjection } from '../src/domain/model.ts';
 
 // The one-time backfill of the derived `state` column on projections written
 // before that column existed. Deps-injected, so this runs in plain node with

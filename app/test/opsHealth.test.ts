@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { computeOpsHealth, BACKLOG_STALE_MS, RECONCILE_STALE_MS, type OpsHealthDeps } from '../src/opsHealth.ts';
-import type { QueryTable } from '../src/queries.ts';
+import { computeOpsHealth, BACKLOG_STALE_MS, RECONCILE_STALE_MS, type OpsHealthDeps } from '../src/observability/opsHealth.ts';
+import type { QueryTable } from '../src/api/queries.ts';
 
 const NOW = 10_000_000_000;
 const MIN = 60_000;

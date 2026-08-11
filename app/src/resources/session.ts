@@ -1,5 +1,5 @@
 import { Resource } from 'harper';
-import { ensureShopRecord } from '../lifecycle.ts';
+import { ensureShopRecord } from '../shopify/lifecycle.ts';
 import { identity, sessionPayload } from './auth.ts';
 
 export class Session extends Resource {

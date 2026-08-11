@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REDACT_TARGETS, RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from '../src/ledgerTargets.ts';
-import { OUTBOX_RETENTION_DAYS } from '../src/retention.ts';
+import { REDACT_TARGETS, RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from '../src/retention/ledgerTargets.ts';
+import { OUTBOX_RETENTION_DAYS } from '../src/retention/retention.ts';
 
 // ledgerTargets.ts wires DigestSubscription/DigestOutbox into REDACT_TARGETS,
 // RETENTION_TARGETS, and OUTBOX_RETENTION_TARGETS by hand. Their correctness is

@@ -12,11 +12,11 @@ import {
 	getSetup,
 	listOrders,
 	getOrderDetail,
-} from '../src/queries.ts';
-import { detectorKey } from '../src/detector.ts';
-import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/apiContract.ts';
-import { EXPORT_COLUMNS } from '../src/csv.ts';
-import { applySubscriptionUpdate } from '../src/digestSubscription.ts';
+} from '../src/api/queries.ts';
+import { detectorKey } from '../src/domain/detector.ts';
+import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/api/apiContract.ts';
+import { EXPORT_COLUMNS } from '../src/api/csv.ts';
+import { applySubscriptionUpdate } from '../src/digest/digestSubscription.ts';
 
 // Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
 // `victim` and `attacker`. The attacker deliberately (a) reuses the victim's

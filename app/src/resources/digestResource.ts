@@ -1,6 +1,6 @@
 import { Resource } from 'harper';
 import { DigestSubscriptions as DigestSubscriptionsTable } from '../db.ts';
-import { applySubscriptionUpdate, toSubscriptionView } from '../digestSubscription.ts';
+import { applySubscriptionUpdate, toSubscriptionView } from '../digest/digestSubscription.ts';
 import { writeAudit } from '../audit.ts';
 import { identity } from './auth.ts';
 import { httpError } from './http.ts';

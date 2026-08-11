@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createShopifyIdentityAdapter } from '../src/identity.ts';
+import { createShopifyIdentityAdapter } from '../src/auth/identity.ts';
 import { mintToken, validClaims } from './mintToken.ts';
 
 const API_KEY = 'e446bda5edb3ee3bae6e0ba280ef8b12';

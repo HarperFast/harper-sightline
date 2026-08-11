@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from '../src/processor.ts';
-import { purgeExpired, cutoffMs, DAY_MS, type RetentionTarget } from '../src/retention.ts';
+import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from '../src/ingest/processor.ts';
+import { purgeExpired, cutoffMs, DAY_MS, type RetentionTarget } from '../src/retention/retention.ts';
 import { FakeTable } from './fakeTable.ts';
-import { listEvents, getSummary } from '../src/queries.ts';
-import { MAX_LIMIT } from '../src/apiContract.ts';
+import { listEvents, getSummary } from '../src/api/queries.ts';
+import { MAX_LIMIT } from '../src/api/apiContract.ts';
 
 // Reliability & capacity tests (#24). These prove the correctness invariants at
 // volume locally; the true production-like gates (10-min 100 rps burst, encrypted

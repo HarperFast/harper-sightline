@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { requireRealSecrets, InsecureSecretError } from '../src/secretsPolicy.ts';
-import { readShopifySecret } from '../src/readSecret.ts';
-import { encryptToken } from '../src/crypto.ts';
+import { requireRealSecrets, InsecureSecretError } from '../src/secrets/secretsPolicy.ts';
+import { readShopifySecret } from '../src/secrets/readSecret.ts';
+import { encryptToken } from '../src/secrets/crypto.ts';
 
 // Save/restore the env this suite mutates so it can't leak into other tests.
 function withEnv(vars: Record<string, string | undefined>, fn: () => void | Promise<void>): Promise<void> {

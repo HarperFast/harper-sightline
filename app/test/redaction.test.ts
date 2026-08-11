@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { redactShop, redactOrders, type RedactTarget } from '../src/redaction.ts';
+import { redactShop, redactOrders, type RedactTarget } from '../src/privacy/redaction.ts';
 import { FakeTable } from './fakeTable.ts';
 
 function buildTargets() {

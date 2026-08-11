@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from '../src/orders.ts';
-import type { OrderProjection } from '../src/model.ts';
+import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from '../src/domain/orders.ts';
+import type { OrderProjection } from '../src/domain/model.ts';
 
 const NOW = 1_775_000_000_000;
 const HOUR = 3_600_000;

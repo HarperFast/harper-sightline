@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { verifyWebhookHmac } from '../src/webhookHmac.ts';
+import { verifyWebhookHmac } from '../src/shopify/webhookHmac.ts';
 
 const SECRET = 'shpss_test';
 const body = '{"id":123,"topic":"orders/paid"}';

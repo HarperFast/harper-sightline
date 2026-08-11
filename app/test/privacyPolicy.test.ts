@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { privacyPolicyHtml, POLICY_ENTITY } from '../src/privacyPolicy.ts';
+import { privacyPolicyHtml, POLICY_ENTITY } from '../src/privacy/privacyPolicy.ts';
 import { readFileSync } from 'node:fs';
-import { supportContact, supportConfigured, DEFAULT_SUPPORT_EMAIL } from '../src/support.ts';
-import { WINDOW_DAYS } from '../src/apiContract.ts';
-import { EXCLUDED_CUSTOMER_FIELDS } from '../src/queries.ts';
+import { supportContact, supportConfigured, DEFAULT_SUPPORT_EMAIL } from '../src/privacy/support.ts';
+import { WINDOW_DAYS } from '../src/api/apiContract.ts';
+import { EXCLUDED_CUSTOMER_FIELDS } from '../src/api/queries.ts';
 
 // The privacy policy is a PUBLIC, legally-consequential document that must not
 // drift from what the code actually does. These tests pin the claims that would
@@ -166,7 +166,7 @@ test('the notification-email retention figure matches the digest outbox retentio
 	// "30 days" is Notifications screen wording (web/src/view.ts's "stores it for
 	// 30 days, then removes it") — the policy must agree with it in substance and
 	// in number, not just gesture at "a while". privacyPolicy.ts renders both
-	// mentions from the same imported OUTBOX_RETENTION_DAYS (src/retention.ts), so
+	// mentions from the same imported OUTBOX_RETENTION_DAYS (src/retention/retention.ts), so
 	// there is one real number behind both, not two literals that could drift
 	// apart independently.
 	assert.match(section[1], /30 days/);

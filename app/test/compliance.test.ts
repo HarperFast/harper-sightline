@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleCompliance, type ComplianceDeps } from '../src/compliance.ts';
+import { handleCompliance, type ComplianceDeps } from '../src/privacy/compliance.ts';
 
 function spyDeps() {
 	const calls: Array<{ fn: string; args: unknown[] }> = [];

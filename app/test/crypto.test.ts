@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encryptToken, decryptToken } from '../src/crypto.ts';
+import { encryptToken, decryptToken } from '../src/secrets/crypto.ts';
 
 test('encrypts and decrypts a token round-trip', () => {
 	const env = encryptToken('shpat_secret_value');

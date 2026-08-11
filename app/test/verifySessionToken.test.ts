@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifySessionToken } from '../src/verifySessionToken.ts';
+import { verifySessionToken } from '../src/auth/verifySessionToken.ts';
 import { mintToken, validClaims } from './mintToken.ts';
 
 const SECRET = 'test-secret';

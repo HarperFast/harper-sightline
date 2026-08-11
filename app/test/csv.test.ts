@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collectExportRows, csvCell, csvRow, EXPORT_COLUMNS, exportFilename, MAX_EXPORT_ROWS, toCsv } from '../src/csv.ts';
+import { collectExportRows, csvCell, csvRow, EXPORT_COLUMNS, exportFilename, MAX_EXPORT_ROWS, toCsv } from '../src/api/csv.ts';
 
 test('plain values are unquoted', () => {
 	assert.equal(csvCell('TSHIRT'), 'TSHIRT');

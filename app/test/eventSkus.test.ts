@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { eventSkuRows, stripSkus, writeEventWithSkus, type WritableTable } from '../src/eventSkus.ts';
-import type { NormalizedEvent } from '../src/normalize.ts';
-import type { EventSku, OperationalEvent } from '../src/model.ts';
+import { eventSkuRows, stripSkus, writeEventWithSkus, type WritableTable } from '../src/ingest/eventSkus.ts';
+import type { NormalizedEvent } from '../src/ingest/normalize.ts';
+import type { EventSku, OperationalEvent } from '../src/domain/model.ts';
 
 const NOW = 1_775_000_000_000;
 

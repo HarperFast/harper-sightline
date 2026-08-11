@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { synthesizeEvents } from '../src/reconcile.ts';
+import { synthesizeEvents } from '../src/shopify/reconcile.ts';
 import {
 	toReconcileOrder,
 	numericId,
@@ -9,8 +9,8 @@ import {
 	fetchInventoryItems,
 	fetchLocations,
 	type ReconcileOrder,
-} from '../src/adminApi.ts';
-import { rebuildProjection } from '../src/projection.ts';
+} from '../src/shopify/adminApi.ts';
+import { rebuildProjection } from '../src/ingest/projection.ts';
 
 test('numericId extracts the numeric order id from a gid', () => {
 	assert.equal(numericId('gid://shopify/Order/7518851989809'), '7518851989809');

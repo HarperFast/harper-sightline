@@ -54,7 +54,9 @@ jobs:
         run: npm audit --audit-level=high
       # Secret scan: fail on any committed Shopify access token (shpat_*, which must
       # NEVER be committed) or an app secret (shpss_*) outside the known, tracked dev
-      # fallback in src/readSecret.ts (rotation tracked in docs/security-review.md).
+      # fallback in src/secrets/readSecret.ts (rotation tracked in
+      # docs/security-review.md). Keep this path in step with the file: the exclude is
+      # matched literally, so a move turns the scan red rather than silently blind.
       - name: Secret scan
         run: |
           set -euo pipefail
@@ -63,7 +65,7 @@ jobs:
             echo "::error::Committed Shopify access token (shpat_) found."; exit 1
           fi
           leaked=$(git grep -lE 'shpss_[0-9a-f]{32}' -- . \
-            ':(exclude)app/src/readSecret.ts' \
+            ':(exclude)app/src/secrets/readSecret.ts' \
             ':(exclude)docs/security-review.md' \
             ':(exclude).github/workflows/ci.yml' || true)
           if [ -n "$leaked" ]; then

@@ -1,5 +1,5 @@
 import { Resource } from 'harper';
-import { listFindings, getFindingDetail } from '../queries.ts';
+import { listFindings, getFindingDetail } from '../api/queries.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId } from './http.ts';
 import { FindingsQ, ExpectationsQ, ProjectionsQ } from './tables.ts';

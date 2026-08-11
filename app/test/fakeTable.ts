@@ -1,4 +1,4 @@
-import type { PurgeableTable, SearchQuery } from '../src/retention.ts';
+import type { PurgeableTable, SearchQuery } from '../src/retention/retention.ts';
 
 // In-memory table for time-controlled tests. Implements the search/delete/get
 // surface used by retention, redaction, and the read layer. Supports the

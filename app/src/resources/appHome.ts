@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import { Resource } from 'harper';
-import { ensureShopRecord, ensureCredential } from '../lifecycle.ts';
-import { readShopifySecret } from '../readSecret.ts';
-import { verifySessionToken } from '../verifySessionToken.ts';
-import { resolveAssetUrl } from '../assetPath.ts';
+import { ensureShopRecord, ensureCredential } from '../shopify/lifecycle.ts';
+import { readShopifySecret } from '../secrets/readSecret.ts';
+import { verifySessionToken } from '../auth/verifySessionToken.ts';
+import { resolveAssetUrl } from './assetPath.ts';
 import { API_KEY, sessionPayload } from './auth.ts';
 
 // The built SPA lives at the component root, two levels up from src/resources/.
@@ -54,7 +54,7 @@ export class AppHome extends Resource {
 			// defaults
 		}
 
-		// Real static asset. resolveAssetUrl (src/assetPath.ts) is the containment
+		// Real static asset. resolveAssetUrl (src/resources/assetPath.ts) is the containment
 		// boundary: this branch reads a file off disk for an UNAUTHENTICATED caller,
 		// so it must never resolve outside web/dist/assets/ in any encoding.
 		const assetUrl = resolveAssetUrl(pathname, WEB_DIST);

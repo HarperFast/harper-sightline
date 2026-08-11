@@ -1,14 +1,14 @@
-// Guards schema.graphql (the SDL) against src/model.ts (the hand-maintained
+// Guards schema.graphql (the SDL) against src/domain/model.ts (the hand-maintained
 // TypeScript mirror every resource/worker imports). model.ts can't be
 // imported to check this at runtime -- TS interfaces are erased by the time
 // the file executes, so there is nothing to introspect -- so both files are
 // read and parsed as SOURCE TEXT: schema.graphql with a small hand-written
 // parser (this project has no GraphQL parser dependency and must not gain
-// one), and src/model.ts with the real TypeScript compiler, via the
+// one), and src/domain/model.ts with the real TypeScript compiler, via the
 // `typescript` package's sync compiler API (`typescript/unstable/sync`),
 // which also resolves cross-file type aliases (e.g. OrderProjection.state's
 // `ProjectionState`, which is an alias for `OrderLane` defined in
-// src/orders.ts).
+// src/domain/orders.ts).
 //
 // Why this exists: every test in this suite writes through an in-memory
 // FakeTable, never a real Harper table. A column renamed or retyped on only
@@ -74,17 +74,17 @@ import {
 
 const appDir = fileURLToPath(new URL('..', import.meta.url));
 const schemaPath = fileURLToPath(new URL('../schema.graphql', import.meta.url));
-const modelPath = fileURLToPath(new URL('../src/model.ts', import.meta.url));
+const modelPath = fileURLToPath(new URL('../src/domain/model.ts', import.meta.url));
 
 // Fixtures for the "fails loudly" tests below. These are never written to
 // disk -- typescript/unstable/fs's createVirtualFileSystem serves this
 // content in place of a real file. Deliberately on a SEPARATE API instance
-// from the one that reads src/model.ts: the virtual filesystem is a closed
+// from the one that reads src/domain/model.ts: the virtual filesystem is a closed
 // world (its directoryExists/fileExists never fall through to the real
 // disk, even though readFile does), so sharing one API instance between it
 // and the real project breaks the real project's tsconfig discovery and
 // cross-file resolution -- confirmed experimentally; OrderProjection.state's
-// `ProjectionState` (an alias into src/orders.ts) silently degraded to `any`
+// `ProjectionState` (an alias into src/domain/orders.ts) silently degraded to `any`
 // when both lived on one instance. The fixtures below are self-contained
 // (no imports), so the closed world is no limitation for them.
 const unsupportedMemberPath = appDir + 'test/__schemaMirror_fixture_unsupportedMember.ts';
@@ -190,7 +190,7 @@ function parseSchemaTables(sdl: string, sourceLabel: string): Map<string, Schema
 	return tables;
 }
 
-// ─── src/model.ts side: the real TypeScript compiler ───────────────────────
+// ─── src/domain/model.ts side: the real TypeScript compiler ───────────────────────
 
 type ModelField = { optional: boolean; isList: boolean; scalar: 'string' | 'number' | 'boolean' };
 
@@ -305,10 +305,10 @@ function diffSchemaAndModel(schemaTables: Map<string, SchemaTable>, modelInterfa
 
 	for (const name of tableNames) {
 		if (!interfaceNames.has(name))
-			issues.push(`@table ${name} in schema.graphql has no matching "export interface ${name}" in src/model.ts`);
+			issues.push(`@table ${name} in schema.graphql has no matching "export interface ${name}" in src/domain/model.ts`);
 	}
 	for (const name of interfaceNames) {
-		if (!tableNames.has(name)) issues.push(`"export interface ${name}" in src/model.ts has no matching @table in schema.graphql`);
+		if (!tableNames.has(name)) issues.push(`"export interface ${name}" in src/domain/model.ts has no matching @table in schema.graphql`);
 	}
 
 	for (const [name, schemaFields] of schemaTables) {
@@ -319,11 +319,11 @@ function diffSchemaAndModel(schemaTables: Map<string, SchemaTable>, modelInterfa
 		const modelFieldNames = new Set(modelFields.keys());
 		for (const field of schemaFieldNames) {
 			if (!modelFieldNames.has(field))
-				issues.push(`${name}.${field}: declared in schema.graphql, missing from the ${name} interface in src/model.ts`);
+				issues.push(`${name}.${field}: declared in schema.graphql, missing from the ${name} interface in src/domain/model.ts`);
 		}
 		for (const field of modelFieldNames) {
 			if (!schemaFieldNames.has(field))
-				issues.push(`${name}.${field}: declared in the ${name} interface in src/model.ts, missing from schema.graphql`);
+				issues.push(`${name}.${field}: declared in the ${name} interface in src/domain/model.ts, missing from schema.graphql`);
 		}
 
 		for (const field of schemaFieldNames) {
@@ -333,17 +333,17 @@ function diffSchemaAndModel(schemaTables: Map<string, SchemaTable>, modelInterfa
 			if (schemaField.required === modelField.optional) {
 				issues.push(
 					`${name}.${field}: nullability mismatch -- schema.graphql marks it ${schemaField.required ? 'required (!)' : 'nullable'}, ` +
-						`src/model.ts marks it ${modelField.optional ? 'optional (?)' : 'required'}`,
+						`src/domain/model.ts marks it ${modelField.optional ? 'optional (?)' : 'required'}`,
 				);
 			}
 			if (schemaField.isList !== modelField.isList) {
 				issues.push(
-					`${name}.${field}: list mismatch -- schema.graphql says ${schemaField.isList ? 'a list' : 'a scalar'}, src/model.ts says ${modelField.isList ? 'a list' : 'a scalar'}`,
+					`${name}.${field}: list mismatch -- schema.graphql says ${schemaField.isList ? 'a list' : 'a scalar'}, src/domain/model.ts says ${modelField.isList ? 'a list' : 'a scalar'}`,
 				);
 			}
 			if (schemaField.scalar !== modelField.scalar) {
 				issues.push(
-					`${name}.${field}: type mismatch -- schema.graphql is ${schemaField.scalar}-like, src/model.ts is ${modelField.scalar}-like`,
+					`${name}.${field}: type mismatch -- schema.graphql is ${schemaField.scalar}-like, src/domain/model.ts is ${modelField.scalar}-like`,
 				);
 			}
 		}
@@ -353,14 +353,14 @@ function diffSchemaAndModel(schemaTables: Map<string, SchemaTable>, modelInterfa
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
-test('schema.graphql and src/model.ts agree on every @table type', () => {
+test('schema.graphql and src/domain/model.ts agree on every @table type', () => {
 	const schemaTables = parseSchemaTables(readFileSync(schemaPath, 'utf8'), 'schema.graphql');
 	const project = snapshot.getDefaultProjectForFile(modelPath);
-	assert.ok(project, 'could not resolve a TypeScript project for src/model.ts');
-	const modelInterfaces = loadModelInterfaces(project, modelPath, 'src/model.ts');
+	assert.ok(project, 'could not resolve a TypeScript project for src/domain/model.ts');
+	const modelInterfaces = loadModelInterfaces(project, modelPath, 'src/domain/model.ts');
 
 	const issues = diffSchemaAndModel(schemaTables, modelInterfaces);
-	assert.equal(issues.length, 0, `schema.graphql / src/model.ts drift:\n${issues.join('\n')}`);
+	assert.equal(issues.length, 0, `schema.graphql / src/domain/model.ts drift:\n${issues.join('\n')}`);
 });
 
 test('an unparseable field declaration in the SDL fails loudly rather than passing silently', () => {

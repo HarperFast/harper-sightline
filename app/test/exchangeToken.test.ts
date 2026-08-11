@@ -1,6 +1,6 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { exchangeOfflineToken, refreshOfflineToken } from '../src/exchangeToken.ts';
+import { exchangeOfflineToken, refreshOfflineToken } from '../src/shopify/exchangeToken.ts';
 
 const realFetch = globalThis.fetch;
 afterEach(() => {

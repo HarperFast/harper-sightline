@@ -1,6 +1,6 @@
 import { Resource } from 'harper';
-import { privacyPolicyHtml } from '../privacyPolicy.ts';
-import { supportContact } from '../support.ts';
+import { privacyPolicyHtml } from '../privacy/privacyPolicy.ts';
+import { supportContact } from '../privacy/support.ts';
 
 // The public privacy policy (#26). Deliberately UNAUTHENTICATED: the App Store
 // listing links to it and a reviewer must be able to read it without installing

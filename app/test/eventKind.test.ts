@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { eventKind } from '../src/eventKind.ts';
+import { eventKind } from '../src/domain/eventKind.ts';
 
-// Every case below is derived from what src/reconcile.ts and src/normalize.ts
+// Every case below is derived from what src/shopify/reconcile.ts and src/ingest/normalize.ts
 // actually write, not copied from a brief:
-//   reconciliation (src/reconcile.ts synthesizeEvents):
+//   reconciliation (src/shopify/reconcile.ts synthesizeEvents):
 //     paid      → domain 'order',       topic 'orders/paid',      state 'paid'
 //     refunded  → domain 'order',       topic (none),             state 'refunded'
 //     cancelled → domain 'order',       topic 'orders/cancelled', state 'cancelled'
 //     fulfilled → domain 'fulfillment', topic (none),             state 'success'
-//   webhook (src/normalize.ts):
+//   webhook (src/ingest/normalize.ts):
 //     normalizeOrder (orders/paid topic, financial_status 'paid'):
 //                 domain 'order', topic 'orders/paid', state 'paid'
 //     normalizeRefund (refunds/create topic):

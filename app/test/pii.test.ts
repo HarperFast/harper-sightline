@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripPii } from '../src/pii.ts';
+import { stripPii } from '../src/privacy/pii.ts';
 
 test('removes every PII container key', () => {
 	const payload = {

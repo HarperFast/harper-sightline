@@ -6,7 +6,7 @@ import {
 	isThrottledAdminError,
 	PermanentAdminApiError,
 	ThrottledAdminApiError,
-} from '../src/adminApi.ts';
+} from '../src/shopify/adminApi.ts';
 
 // C1: read_products/read_locations were added to the Admin API's scopes, but a
 // scope mismatch must never look like an ordinary transient failure — it can

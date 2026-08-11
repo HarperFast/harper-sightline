@@ -3,8 +3,8 @@
 // content-type handler are in place before anything can log or parse a request.
 import { contentTypes } from 'harper';
 import '../../jobs.ts'; // starts the background processing loop on component load
-import { log } from '../observe.ts';
-import { installHarperLogSink } from '../harperLogSink.ts';
+import { log } from '../observability/observe.ts';
+import { installHarperLogSink } from '../observability/harperLogSink.ts';
 
 // Route logs into Harper's logger before anything else logs, so the ops.snapshot
 // heartbeat and every error line are reachable via the operations API's read_log

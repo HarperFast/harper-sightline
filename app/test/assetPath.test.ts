@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveAssetUrl } from '../src/assetPath.ts';
+import { resolveAssetUrl } from '../src/resources/assetPath.ts';
 
 // AppHome serves the built SPA's assets straight off disk, so the ONLY thing
 // standing between an unauthenticated GET and an arbitrary file read is the

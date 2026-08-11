@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { gatherDigestInput, TOP_AWAITING } from '../src/digestData.ts';
-import { getSummary, type QueryTable } from '../src/queries.ts';
+import { gatherDigestInput, TOP_AWAITING } from '../src/digest/digestData.ts';
+import { getSummary, type QueryTable } from '../src/api/queries.ts';
 
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -55,7 +55,7 @@ function tables() {
 			},
 			// The three rows below are awaiting-negative for a reason OTHER than
 			// "not paid" or "already fulfilled" — the reasons `isAwaitingConfirmation`
-			// (src/orders.ts) has its own clauses for. Without them, a predicate change
+			// (src/domain/orders.ts) has its own clauses for. Without them, a predicate change
 			// on either surface that drops one of those clauses but keeps `paidAt !==
 			// undefined && fulfilledAt === undefined` is count-preserving on this
 			// fixture and slips past the equality assertion below undetected. They must
@@ -164,7 +164,7 @@ function tables() {
 			{
 				// resourceId/topic/state are what eventKind reads to determine a kind
 				// (and what the caller needs to build a (resourceId, kind) key) — every
-				// real reconciliation row carries them (src/reconcile.ts's reconEvent
+				// real reconciliation row carries them (src/shopify/reconcile.ts's reconEvent
 				// always sets resourceId), so a fixture row without them is not a
 				// realistic "no matching webhook" gap, it is an untestable one.
 				eventId: 'recon:s1:o9:paid',
@@ -397,7 +397,7 @@ function eventsOnly(rows: Array<Record<string, unknown>>) {
 function paidPair(resourceId: string, reconAt: number, webhookAt: number): Array<Record<string, unknown>> {
 	return [
 		{
-			// synthesizeEvents (src/reconcile.ts) dates a `paid` event from the order's
+			// synthesizeEvents (src/shopify/reconcile.ts) dates a `paid` event from the order's
 			// createdAt, not from the payment.
 			eventId: `recon:s1:${resourceId}:paid`,
 			shopId: 's1',

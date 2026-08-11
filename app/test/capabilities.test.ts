@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { capabilitiesFor, requireCapability, type Capability } from '../src/capabilities.ts';
+import { capabilitiesFor, requireCapability, type Capability } from '../src/auth/capabilities.ts';
 
 test('MVP grants record only, denies every recovery/write capability', () => {
 	const c = capabilitiesFor('demo-shop.myshopify.com');

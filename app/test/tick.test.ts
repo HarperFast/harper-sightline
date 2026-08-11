@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTicker } from '../src/tick.ts';
-import { ADMIN_TIMEOUT_MS, fetchOrdersUpdatedSince } from '../src/adminApi.ts';
+import { createTicker } from '../src/jobs/tick.ts';
+import { ADMIN_TIMEOUT_MS, fetchOrdersUpdatedSince } from '../src/shopify/adminApi.ts';
 
 // The failure this guards against: a background loop whose pass never settles
 // leaves its "one at a time" flag set forever, so every later tick returns early

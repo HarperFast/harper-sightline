@@ -1,6 +1,6 @@
 import { Resource } from 'harper';
 import { getOpsHealth } from '../../jobs.ts';
-import { opsTokenAccepted } from '../opsAuth.ts';
+import { opsTokenAccepted } from '../auth/opsAuth.ts';
 import { httpError } from './http.ts';
 
 // Operator-facing health, gated on a shared secret rather than a merchant

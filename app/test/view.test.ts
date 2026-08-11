@@ -59,7 +59,7 @@ import {
 	useShopTimeZone,
 	zoneText,
 } from '../web/src/view.ts';
-import { AGE_BUCKETS } from '../src/orders.ts';
+import { AGE_BUCKETS } from '../src/domain/orders.ts';
 
 // UI tests. view.ts is pure — every screen is a function from data to markup — so
 // these run in plain node with no browser, DOM shim, or extra dependency. They
@@ -1392,7 +1392,7 @@ test('the screen states plainly, in its own banner, that digests are stored (for
 	const banner = html.match(/<s-banner tone="info" heading="Digests are being prepared[^"]*">[\s\S]*?<\/s-banner>/);
 	assert.ok(banner, 'the delivery-status banner must be present');
 	assert.match(banner![0], /not yet|will not be sent/i);
-	// The outbox's 30-day retention (OUTBOX_RETENTION_DAYS, src/retention.ts)
+	// The outbox's 30-day retention (OUTBOX_RETENTION_DAYS, src/retention/retention.ts)
 	// purges a pending, unsent row exactly like a sent one — there is no sender, so
 	// every digest built today is deleted, unsent, in 30 days. The banner must say
 	// so, or a merchant is left assuming a stored digest is kept indefinitely and

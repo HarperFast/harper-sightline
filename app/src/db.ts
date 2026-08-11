@@ -15,7 +15,7 @@ import type {
 	EventSku,
 	InventoryItem,
 	ShopLocation,
-} from './model.ts';
+} from './domain/model.ts';
 
 // Table handles, resolved from the named sightline_* databases. Centralized so
 // the database grouping lives in one place (see schema.graphql).

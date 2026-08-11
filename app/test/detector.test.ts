@@ -10,8 +10,8 @@ import {
 	DETECTOR_FAILED,
 	FAILED_RULE,
 	evaluateFailedFulfillment,
-} from '../src/detector.ts';
-import type { Expectation, GapFinding, OrderProjection } from '../src/model.ts';
+} from '../src/domain/detector.ts';
+import type { Expectation, GapFinding, OrderProjection } from '../src/domain/model.ts';
 
 const PAID = 1_000_000_000_000;
 const DUE = PAID + FULFILLMENT_DEADLINE_MS; // the moment the deadline is reached

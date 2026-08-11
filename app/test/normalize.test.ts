@@ -1,8 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { stripPii } from '../src/pii.ts';
-import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError, MAX_EVENT_SKUS, type DeliveryMeta } from '../src/normalize.ts';
+import { stripPii } from '../src/privacy/pii.ts';
+import {
+	normalizeDelivery,
+	isOperationalTopic,
+	PermanentNormalizeError,
+	MAX_EVENT_SKUS,
+	type DeliveryMeta,
+} from '../src/ingest/normalize.ts';
 
 // The single API version we pin (shopify-contract §1). Fixtures live under this
 // directory; add a sibling directory to cover a future version.
