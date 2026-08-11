@@ -133,7 +133,14 @@ export async function hydrateSkus(
 	const byEvent = new Map<string, string[]>();
 	for await (const row of eventSkus.search({
 		conditions: ids.map((id) => ({ attribute: 'eventId', value: id })),
-		operator: 'or',
+		// Harper REJECTS an `or` over fewer than two conditions rather than treating
+		// it as a degenerate single match (resources/Table.ts, prepareConditions), so
+		// a one-event hydrate must be an ordinary `and` over its single condition.
+		// Sending `or` unconditionally 500'd every event-detail request — which always
+		// hydrates exactly one event — plus any list page or CSV export that happened
+		// to contain exactly one event. FakeTable now enforces the same rule, so this
+		// cannot regress silently again.
+		operator: ids.length > 1 ? 'or' : 'and',
 		select: ['eventId', 'sku', 'shopId'],
 	})) {
 		if (row.shopId !== shopId) continue;
