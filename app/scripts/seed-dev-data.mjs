@@ -222,11 +222,7 @@ function buildOrder(spec) {
 	};
 
 	// orders/create — always, so the recorder sees the order exist.
-	pushDelivery(
-		'orders/create',
-		{ ...base, updated_at: iso(createdAt), financial_status: 'pending', fulfillment_status: null },
-		createdAt,
-	);
+	pushDelivery('orders/create', { ...base, updated_at: iso(createdAt), financial_status: 'pending', fulfillment_status: null }, createdAt);
 
 	// orders/paid — unless the order is meant to stay unpaid.
 	if (!spec.unpaid) {
@@ -276,11 +272,7 @@ function buildOrder(spec) {
 			},
 			at,
 		);
-		pushDelivery(
-			'orders/updated',
-			{ ...base, updated_at: iso(at), financial_status: 'paid', fulfillment_status: 'fulfilled' },
-			at,
-		);
+		pushDelivery('orders/updated', { ...base, updated_at: iso(at), financial_status: 'paid', fulfillment_status: 'fulfilled' }, at);
 	}
 
 	// A refund making the order fully refunded.
@@ -298,11 +290,7 @@ function buildOrder(spec) {
 			},
 			at,
 		);
-		pushDelivery(
-			'orders/updated',
-			{ ...base, updated_at: iso(at), financial_status: 'refunded', fulfillment_status: null },
-			at,
-		);
+		pushDelivery('orders/updated', { ...base, updated_at: iso(at), financial_status: 'refunded', fulfillment_status: null }, at);
 	}
 
 	// A cancellation.
