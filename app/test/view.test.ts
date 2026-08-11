@@ -26,6 +26,15 @@ import {
 	eventDetailView,
 	eventQuery,
 	eventsView,
+	EVENT_TOPICS,
+	EVENT_FILTER_DEFS,
+	ORDER_FILTER_DEFS,
+	ORDER_FILTER_KEYS,
+	activeChips,
+	filterChips,
+	filterHash,
+	dayStartMs,
+	dayEndMs,
 	FINDINGS_BOUNDARY,
 	FINDING_DISCLAIMER,
 	findingDetailView,
@@ -202,13 +211,16 @@ test('findings show which detector produced them', () => {
 	);
 });
 
-test('the findings list offers a detector filter', () => {
+test('the findings list offers a detector filter, populated and reflecting the URL', () => {
 	const html = findingsListView({ detector: 'fulfillment_attempt_failed' }, [], NOW, '');
 	// Scoped to the f-detector select itself, so a coincidental match elsewhere on
-	// the page (e.g. a different control) can't make this pass.
+	// the page (e.g. a different control) can't make this pass. The selection lives
+	// on the select's `value`, and the choices are `s-option` children — a plain
+	// `<option>` is not part of the Polaris contract and renders as an EMPTY
+	// dropdown, which is what every filter on every screen did.
 	assert.match(
 		html,
-		/<s-select id="f-detector" label="Type">[\s\S]*?<option value="fulfillment_attempt_failed" selected>[\s\S]*?<\/s-select>/,
+		/<s-select id="f-detector" label="Type" value="fulfillment_attempt_failed">[\s\S]*?<s-option value="fulfillment_attempt_failed">Attempt did not succeed<\/s-option>[\s\S]*?<\/s-select>/,
 	);
 });
 
@@ -221,7 +233,7 @@ test('the finding detail evidence table names which detector produced it', () =>
 		undefined,
 		'',
 	);
-	assert.match(html, /<s-table-row><s-table-cell>Type<\/s-table-cell><s-table-cell>Attempt did not succeed<\/s-table-cell><\/s-table-row>/);
+	assert.equal(fieldValue(html, 'Type'), 'Attempt did not succeed');
 });
 
 test('the findings list states the claim boundary', () => {
@@ -426,6 +438,18 @@ function gridItem(html: string, label: string): string {
 	return found!;
 }
 
+// A label/value pair as fields() renders it: a subdued label cell followed by its
+// value cell. Asserted as one unit so a value can never be matched against the
+// wrong label — the same discipline as gridItem above.
+function fieldValue(html: string, label: string): string {
+	const pattern = new RegExp(
+		`<s-grid-item><s-text color="subdued">${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</s-text></s-grid-item>\\s*<s-grid-item>([\\s\\S]*?)</s-grid-item>`,
+	);
+	const found = pattern.exec(html);
+	assert.ok(found, `no field labelled "${label}"`);
+	return found![1];
+}
+
 test('the overview stat tiles link into the worklist, each to its own count', () => {
 	const html = overviewView({ ...OVERVIEW_BASE, summary: summary() });
 	// summary()'s orders are { tracked: 4, paid: 3, fulfilled: 2, awaitingConfirmation: 1 }.
@@ -486,8 +510,8 @@ test('the integrity section states what a direct-check discovery does and does n
 	// verified nothing about WHERE the number rendered — swapping the two integrity
 	// counts would still have passed it.
 	assert.match(html, /<s-banner tone="info" heading="3 change\(s\) found by direct check">/);
-	assert.match(html, /<s-table-cell>Arrived as a webhook<\/s-table-cell><s-table-cell>40<\/s-table-cell>/);
-	assert.match(html, /<s-table-cell>Found by direct check<\/s-table-cell><s-table-cell>3<\/s-table-cell>/);
+	assert.equal(fieldValue(html, 'Arrived as a webhook'), '40');
+	assert.equal(fieldValue(html, 'Found by direct check'), '3');
 	assert.match(html, /direct check/i);
 	// It must NOT claim Shopify failed, or that other apps missed anything.
 	assert.doesNotMatch(html, /Shopify failed|never delivered to your|your vendors did not/i);
@@ -616,15 +640,58 @@ test('active filters are reflected back into the controls', () => {
 		false,
 		'',
 	);
-	assert.ok(html.includes('<option value="24h" selected>'));
-	assert.ok(html.includes('<option value="fulfillment" selected>'));
-	assert.ok(html.includes('<option value="reconciliation" selected>'));
-	assert.ok(html.includes('value="fulfillments/create"'));
+	// Each select carries its current choice as `value` — the property main.ts reads
+	// back — so prefilling from the URL and reading the control are one mechanism.
+	assert.ok(html.includes('id="f-range" label="Time" value="24h"'));
+	assert.ok(html.includes('id="f-domain" label="Domain" value="fulfillment"'));
+	assert.ok(html.includes('id="f-source" label="Evidence source" value="reconciliation"'));
+	assert.ok(html.includes('id="f-topic" label="Topic" value="fulfillments/create"'));
 	assert.ok(html.includes('value="SKU-1"'));
-	assert.ok(
-		html.includes('id="f-state" label="State" placeholder="error" value="error"'),
-		'a failed attempt can be found directly by state',
-	);
+	assert.match(html, /id="f-state" label="State" value="error"/, 'a failed attempt can be found directly by state');
+});
+
+test('every filter dropdown is actually populated, with Polaris s-option children', () => {
+	// The defect this pins: plain `<option>` children render an EMPTY dropdown, so
+	// every filter on every screen offered no choices at all. A dropdown that renders
+	// but cannot be opened is worse than a missing control — it reads as "no data".
+	const screens = [eventsView({}, [], false, ''), ordersView({}, [], false, ''), findingsListView({}, [], NOW, '')];
+	for (const html of screens) {
+		assert.doesNotMatch(html, /<option[\s>]/, 'a bare <option> is not part of the s-select contract');
+		for (const select of html.match(/<s-select[\s\S]*?<\/s-select>/g) ?? []) {
+			const options = select.match(/<s-option /g) ?? [];
+			assert.ok(options.length >= 2, `a select with ${options.length} option(s) offers nothing to choose: ${select.slice(0, 80)}`);
+		}
+	}
+});
+
+test('the State and Topic filters are dropdowns over the values Shopify can actually store', () => {
+	const html = eventsView({}, [], false, '');
+	// Both were free-text boxes, where a merchant had to already know Shopify's
+	// vocabulary — and guessing 'failed' instead of 'failure' returned an empty page
+	// that looks exactly like "nothing went wrong".
+	const state = /<s-select id="f-state"[\s\S]*?<\/s-select>/.exec(html)?.[0] ?? '';
+	for (const value of ['paid', 'partially_refunded', 'success', 'error', 'failure', 'cancelled', 'restocked']) {
+		assert.ok(state.includes(`<s-option value="${value}">`), `the State filter must offer ${value}`);
+	}
+	// The option's label IS its stored value: a prettified label that differs from
+	// what it sends would make an empty result look like an empty ledger.
+	assert.ok(state.includes('<s-option value="failure">failure</s-option>'));
+	// Grouped only as a finding aid, and a value two vocabularies share is listed once.
+	assert.ok(state.includes('<s-option-group label="Payment">'));
+	assert.equal(state.match(/<s-option value="pending">/g)?.length, 1, 'no duplicate values across groups');
+
+	const topic = /<s-select id="f-topic"[\s\S]*?<\/s-select>/.exec(html)?.[0] ?? '';
+	for (const value of EVENT_TOPICS.slice(1).map(([v]) => v)) {
+		assert.ok(topic.includes(`<s-option value="${value}">`), `the Topic filter must offer ${value}`);
+	}
+});
+
+test('the events screen offers real date pickers for an explicit window', () => {
+	const html = eventsView({ from: '2026-03-30', to: '2026-03-31' }, [], false, '');
+	assert.match(html, /<s-date-field id="f-from" label="From"[^>]*value="2026-03-30"/);
+	assert.match(html, /<s-date-field id="f-to" label="To"[^>]*value="2026-03-31"/);
+	// And says which zone the days belong to, since a date is meaningless without one.
+	assert.match(html, /Dates are whole days in [^<]+\. The ledger holds the last 7 days\./);
 });
 
 test('eventQuery turns a symbolic range into a window floor', () => {
@@ -1037,7 +1104,7 @@ test('the order detail formats the waiting time exactly as the worklist does', (
 	// "1d 6h" for the same value.
 	const detail = orderDetailView(orderDetail({ state: 'awaiting', ageHours: 30 }), '');
 	const list = ordersView({}, [order({ state: 'awaiting', ageHours: 30 })], false, '');
-	assert.match(detail, /<s-table-cell>1d 6h<\/s-table-cell>/);
+	assert.equal(fieldValue(detail, 'Waiting since payment'), '1d 6h');
 	assert.doesNotMatch(detail, />30h</, 'the raw-hours format is gone from the detail screen');
 	assert.ok(list.includes('<s-table-cell>1d 6h</s-table-cell>'));
 	// And the same lane gate applies, so the two screens agree about that too.
@@ -1047,10 +1114,10 @@ test('the order detail formats the waiting time exactly as the worklist does', (
 test('"Needs shipping" says nothing Sightline did not observe', () => {
 	// requiresFulfillment is only ever latched TRUE, so undefined means "no
 	// fulfillment-eligible units observed" — not "this order needs no shipping".
-	assert.match(orderDetailView(orderDetail({ requiresFulfillment: true }), ''), /Needs shipping<\/s-table-cell><s-table-cell>Yes</);
-	assert.match(
-		orderDetailView(orderDetail({ requiresFulfillment: undefined, state: 'no_fulfillment_expected' }), ''),
-		/Needs shipping<\/s-table-cell><s-table-cell>—</,
+	assert.equal(fieldValue(orderDetailView(orderDetail({ requiresFulfillment: true }), ''), 'Needs shipping'), 'Yes');
+	assert.equal(
+		fieldValue(orderDetailView(orderDetail({ requiresFulfillment: undefined, state: 'no_fulfillment_expected' }), ''), 'Needs shipping'),
+		'—',
 		'an unobserved eligibility is an em dash, not a "No" that asserts it',
 	);
 });
@@ -1068,7 +1135,7 @@ test('a digital order is never labelled as fulfilled, and its label claims nothi
 	// itself ("needs no shipping").
 	assert.doesNotMatch(html, /needs no shipping|no shipping required|digital/i);
 	// The same label reaches the Lane select, so the filter reads like the badge.
-	assert.match(html, /<option value="no_fulfillment_expected">no fulfillment expected<\/option>/);
+	assert.match(html, /<s-option value="no_fulfillment_expected">no fulfillment expected<\/s-option>/);
 });
 
 test('the overview flow lanes include the no-fulfillment-expected lane, linked to the set it counts', () => {
@@ -1101,8 +1168,8 @@ test('the worklist names the column it is sorted on, and the sort control agrees
 	// see; naming the column makes the ordering checkable on screen.
 	const html = ordersView({}, [order({ lastEventAt: NOW - 2 * HOUR })], false, '');
 	assert.ok(html.includes('<s-table-header format="base">Last activity</s-table-header>'), 'the sort key has a column');
-	assert.match(html, /<option value="newest"[^>]*>Latest activity first<\/option>/);
-	assert.match(html, /<option value="oldest"[^>]*>Earliest activity first<\/option>/);
+	assert.match(html, /<s-option value="newest">Latest activity first<\/s-option>/);
+	assert.match(html, /<s-option value="oldest">Earliest activity first<\/s-option>/);
 	assert.doesNotMatch(html, /Newest first|Oldest first/, 'no label claims an ordering by payment');
 });
 
@@ -1111,9 +1178,9 @@ test('the orders screen offers lane, age and sort filters reflected in the URL',
 	assert.match(html, /id="f-state"/);
 	assert.match(html, /id="f-minAgeHours"/);
 	assert.match(html, /id="f-sort"/);
-	assert.match(html, /value="awaiting" selected/);
-	assert.match(html, /value="24" selected/);
-	assert.match(html, /value="oldest" selected/);
+	assert.match(html, /id="f-state" label="Lane" value="awaiting"/);
+	assert.match(html, /id="f-minAgeHours" label="Age" value="24"/);
+	assert.match(html, /id="f-sort" label="Sort" value="oldest"/);
 });
 
 test('an empty worklist says so rather than rendering an empty table', () => {
@@ -1233,11 +1300,11 @@ test('order detail never claims a downstream party failed', () => {
 
 test('a hostile order name cannot inject markup on the order detail screen', () => {
 	// orderLabel() surfaces the name twice — the page heading (page()) and the
-	// fields table (fields()) — and both must escape it independently.
+	// label/value grid (fields()) — and both must escape it independently.
 	const html = orderDetailView(orderDetail({ orderName: '"><script>alert(1)</script>' }), '');
 	assert.doesNotMatch(html, /<script>alert/);
 	assert.match(html, /heading="Order &quot;&gt;&lt;script&gt;/, 'the page heading escapes the name');
-	assert.match(html, /<s-table-cell>&quot;&gt;&lt;script&gt;/, 'the fields table escapes the name');
+	assert.equal(fieldValue(html, 'Order'), '&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;', 'the label/value grid escapes the name');
 });
 
 test('every list screen offers a CSV export', () => {
@@ -1261,14 +1328,18 @@ function digestSettings(over: Partial<DigestSettings> = {}): DigestSettings {
 test('the notifications screen offers an address, a cadence, and a save action', () => {
 	const html = notificationsView(digestSettings(), NOW, '');
 	assert.match(html, /id="f-email"/);
-	assert.match(html, /id="f-cadence"/);
+	// Populated with s-option children like every other select — a bare <option> is
+	// invisible to Polaris, which is what left every dropdown in the app empty.
+	assert.match(html, /<s-select id="f-cadence" label="Frequency" value="daily"><s-option value="daily">Daily<\/s-option>/);
 	assert.match(html, /data-save-digest/);
 });
 
 test('an active subscription shows its address and current cadence selected', () => {
 	const html = notificationsView(digestSettings({ email: 'ops@merchant.example', cadence: 'weekly', status: 'active' }), NOW, '');
 	assert.match(html, /ops@merchant\.example/);
-	assert.match(html, /value="weekly" selected/);
+	// The selection lives on the select's own `value` — the property main.ts reads
+	// back — not as `selected` on a child, so prefill and read-back are one mechanism.
+	assert.match(html, /id="f-cadence" label="Frequency" value="weekly"/);
 	// Pinned to the badge markup itself: `assert.match(html, /active/)` (the
 	// brief's original assertion) is also satisfied by the substring inside
 	// "inactive", so it cannot tell a correct badge from an inverted one.
@@ -1441,4 +1512,135 @@ test('a checked subscription’s status line says when it was last checked, not 
 	assert.ok(statusLine, 'the status line must be present');
 	assert.match(statusLine![0], /Last checked .*ago/);
 	assert.doesNotMatch(statusLine![0], /prepared/i);
+});
+
+// ── active filters ───────────────────────────────────────────────────────────
+
+test('filterHash rebuilds a view URL, optionally dropping one filter', () => {
+	const params = { state: 'awaiting', minAgeHours: '24', sort: 'oldest' };
+	assert.equal(filterHash('/orders', params, ORDER_FILTER_KEYS), '#/orders?state=awaiting&minAgeHours=24&sort=oldest');
+	assert.equal(filterHash('/orders', params, ORDER_FILTER_KEYS, 'minAgeHours'), '#/orders?state=awaiting&sort=oldest');
+	assert.equal(filterHash('/orders', {}, ORDER_FILTER_KEYS), '#/orders', 'no filters means the bare path, not a trailing ?');
+	// Only keys the view actually carries; a stray param cannot ride along.
+	assert.equal(filterHash('/orders', { state: 'awaiting', evil: 'x' }, ORDER_FILTER_KEYS), '#/orders?state=awaiting');
+});
+
+test('each chip names its filter in merchant wording and links to the view without it', () => {
+	const chips = activeChips('/events', { range: '24h', domain: 'fulfillment', sku: 'SKU-1' }, EVENT_FILTER_DEFS);
+	assert.deepEqual(
+		chips.map((c) => c.text),
+		['Time: Last 24 hours', 'Domain: Fulfillment', 'SKU: SKU-1'],
+		'labels, not raw keys and values',
+	);
+	// Removing one keeps the others.
+	assert.equal(chips[0].href, '#/events?domain=fulfillment&sku=SKU-1');
+	assert.equal(chips[1].href, '#/events?range=24h&sku=SKU-1');
+});
+
+test('the chip row counts the filters, removes one at a time, and clears all', () => {
+	const html = filterChips('/events', { range: '1h', state: 'error' }, EVENT_FILTER_DEFS);
+	assert.match(html, />2 filters</);
+	assert.match(html, /<s-clickable-chip[^>]*removable[^>]*data-remove-filter="range"[^>]*href="#\/events\?state=error"/);
+	assert.match(html, /<s-clickable-chip[^>]*data-remove-filter="state"[^>]*href="#\/events\?range=1h"/);
+	assert.match(html, /accessibilityLabel="Remove filter Time: Last hour"/, 'the × says what it removes');
+	assert.match(html, /<s-link href="#\/events" data-clear-filters>Clear all<\/s-link>/);
+	// One filter is "1 filter", and no filters renders nothing at all rather than an
+	// empty rail.
+	assert.match(filterChips('/events', { state: 'error' }, EVENT_FILTER_DEFS), />1 filter</);
+	assert.equal(filterChips('/events', {}, EVENT_FILTER_DEFS), '');
+});
+
+test('clearing the worklist filters keeps the sort, which is not a filter', () => {
+	const html = filterChips('/orders', { state: 'awaiting', sort: 'oldest' }, ORDER_FILTER_DEFS, ORDER_FILTER_KEYS);
+	// Clear all drops what the chips show and nothing else — a merchant clearing a
+	// lane filter has not asked to be re-sorted.
+	assert.match(html, /data-clear-filters>Clear all/);
+	assert.match(html, /<s-link href="#\/orders\?sort=oldest"/);
+	assert.doesNotMatch(html, /data-remove-filter="sort"/, 'sort reorders the list, it does not hide anything');
+	// And removing the lane chip preserves the sort too.
+	assert.match(html, /data-remove-filter="state"[^>]*href="#\/orders\?sort=oldest"/);
+});
+
+test('the aging-bucket upper bound becomes visible and removable', () => {
+	// maxAgeHours reaches the worklist only from an Overview aging-bucket link and has
+	// no control of its own: before the chips it bounded the list from above with
+	// nothing on screen saying so, and no way out but editing the URL.
+	const html = ordersView({ state: 'awaiting', minAgeHours: '24', maxAgeHours: '48' }, [order()], false, '');
+	assert.match(html, /data-remove-filter="maxAgeHours"/);
+	assert.match(html, />Newer than: 48h since payment</);
+	assert.match(html, />Age: Paid over 24h ago</);
+});
+
+test('every list screen shows its active filters', () => {
+	assert.match(ordersView({ state: 'awaiting' }, [], false, ''), /data-remove-filter="state"/);
+	assert.match(findingsListView({ status: 'resolved' }, [], NOW, ''), /data-remove-filter="status"/);
+	assert.match(eventsView({ sku: 'SKU-1' }, [], false, ''), /data-remove-filter="sku"/);
+});
+
+// ── explicit date window ─────────────────────────────────────────────────────
+
+test('a From/To date pair bounds the query at the day edges in the active zone', () => {
+	try {
+		useShopTimeZone('Asia/Tokyo'); // UTC+9, no DST
+		const q = eventQuery({ from: '2026-03-30', to: '2026-03-31' }, NOW);
+		// 2026-03-30T00:00 in Tokyo is 2026-03-29T15:00Z.
+		assert.equal(new Date(Number(q.since)).toISOString(), '2026-03-29T15:00:00.000Z');
+		assert.equal(new Date(Number(q.until)).toISOString(), '2026-03-31T14:59:59.999Z');
+	} finally {
+		useShopTimeZone(undefined);
+	}
+});
+
+test('day bounds follow the zone across a DST transition', () => {
+	try {
+		// US DST began 2026-03-08. The 8th is a 23-hour day in New York, so a naive
+		// fixed-offset calculation lands an hour off on one side of it.
+		useShopTimeZone('America/New_York');
+		assert.equal(new Date(dayStartMs('2026-03-07')!).toISOString(), '2026-03-07T05:00:00.000Z', 'EST, UTC−5');
+		assert.equal(new Date(dayStartMs('2026-03-09')!).toISOString(), '2026-03-09T04:00:00.000Z', 'EDT, UTC−4');
+		assert.equal(
+			new Date(dayEndMs('2026-03-08')!).toISOString(),
+			'2026-03-09T03:59:59.999Z',
+			'the short day still ends at 23:59:59.999 local',
+		);
+	} finally {
+		useShopTimeZone(undefined);
+	}
+});
+
+test('an unparseable date is ignored rather than bounding the query at the epoch', () => {
+	assert.equal(dayStartMs(''), undefined);
+	assert.equal(dayStartMs('yesterday'), undefined);
+	assert.equal(dayStartMs('2026-3-1'), undefined, 'a partial date is not a date');
+	assert.deepEqual(eventQuery({ from: 'nonsense' }, NOW), {}, 'and never reaches the API as since=0');
+});
+
+test('an explicit From wins over a stale relative preset', () => {
+	try {
+		useShopTimeZone('UTC');
+		// The two controls clear each other in the UI, so both set at once means a
+		// hand-edited or stale URL — the more specific answer is the honest one.
+		const q = eventQuery({ range: '1h', from: '2026-03-30' }, NOW);
+		assert.equal(q.since, String(Date.UTC(2026, 2, 30)));
+		// A To on its own still leaves the preset in charge of the floor.
+		const withPreset = eventQuery({ range: '1h', to: '2026-03-31' }, NOW);
+		assert.equal(withPreset.since, String(NOW - HOUR));
+		assert.equal(withPreset.until, String(Date.UTC(2026, 2, 31, 23, 59, 59, 999)));
+	} finally {
+		useShopTimeZone(undefined);
+	}
+});
+
+// ── label/value blocks ───────────────────────────────────────────────────────
+
+test('label/value blocks no longer repeat "Field" and "Value" above every pair', () => {
+	// What the merchant saw: "Field / Shop", "Value / acme.myshopify.com" — the
+	// column headers of a one-subject list variant, printed once per row.
+	const html = privacyView(privacy(), NOW, '');
+	assert.doesNotMatch(html, /<s-table-header format="base">Field<\/s-table-header>/);
+	assert.doesNotMatch(html, /variant="list"/);
+	assert.equal(fieldValue(html, 'Shop'), 's.myshopify.com');
+	assert.equal(fieldValue(html, 'Retention'), '7 days, then permanently purged');
+	// Labels are subdued and the value keeps its own markup (badges, links, times).
+	assert.match(fieldValue(html, 'Granted access'), /<s-badge tone="info">read_orders<\/s-badge>/);
 });
