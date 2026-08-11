@@ -37,7 +37,26 @@ export class FakeTable implements PurgeableTable {
 		return query.operator === 'or' ? results.some(Boolean) : results.every(Boolean);
 	}
 
+	// Harper REFUSES these queries (resources/Table.ts, prepareConditions) rather
+	// than treating them as degenerate cases, so the fake must refuse them too.
+	// Accepting them made a real production defect invisible: hydrateSkus passed a
+	// single condition with `operator: 'or'`, which every event-detail request does,
+	// and this fake answered it happily while the live instance 500'd every time.
+	// A fake that is more permissive than the thing it stands in for does not
+	// simplify a test — it hides the contract.
+	private static validate(query: SearchQuery): void {
+		const count = query.conditions?.length ?? 0;
+		if (query.operator === 'or') {
+			if (count < 2) throw new Error('An "or" operator requires at least two conditions');
+		} else if (query.operator === undefined || query.operator === 'and') {
+			if (count < 1) throw new Error('An "and" operator requires at least one condition');
+		} else {
+			throw new Error('Invalid operator ' + query.operator);
+		}
+	}
+
 	async *search(query: SearchQuery & { sort?: { attribute: string; descending?: boolean } }): AsyncIterable<Record<string, unknown>> {
+		FakeTable.validate(query);
 		let matched = [...this.rows.values()].filter((row) => FakeTable.matches(row, query));
 		const sort = query.sort;
 		if (sort) {

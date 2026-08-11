@@ -28,6 +28,7 @@ import {
 	EVENT_FILTER_KEYS,
 	findingDetailView,
 	findingsListView,
+	FINDING_FILTER_KEYS,
 	notFoundView,
 	notificationsView,
 	orderDetailView,
@@ -75,6 +76,14 @@ function fieldValue(id: string): string {
 	return String(raw).trim();
 }
 
+function setFieldValue(id: string, value: string): void {
+	const el = document.getElementById(id) as (HTMLElement & { value?: unknown }) | null;
+	if (!el) return;
+	el.value = value;
+	if (value === '') el.removeAttribute('value');
+	else el.setAttribute('value', value);
+}
+
 // Submit a filter group on its button click and on Enter anywhere within it.
 function bindFilters(containerId: string, submit: () => void): void {
 	const container = document.getElementById(containerId);
@@ -86,6 +95,48 @@ function bindFilters(containerId: string, submit: () => void): void {
 			submit();
 		}
 	});
+}
+
+// Build the hash for a filter group by reading its controls. Shared by every list
+// screen so "which keys does this view carry" is stated once per screen and read
+// the same way.
+function submitFilters(path: string, keys: readonly string[]): void {
+	const query = new URLSearchParams();
+	for (const key of keys) {
+		const value = fieldValue(`f-${key}`);
+		if (value) query.set(key, value);
+	}
+	location.hash = `#${path}${query.toString() ? `?${query}` : ''}`;
+}
+
+// Each active-filter chip is a link to the same view without that filter, so a
+// plain click already does the right thing. `removable` chips also fire their own
+// `remove` event for the × — which is NOT a click — so it is bound to the same
+// destination rather than left as an affordance that does nothing.
+function bindChips(): void {
+	for (const chip of document.querySelectorAll<HTMLElement>('[data-remove-filter]')) {
+		chip.addEventListener('remove', () => {
+			const href = chip.getAttribute('href');
+			if (href) location.hash = href;
+		});
+	}
+}
+
+// The relative preset and the explicit From/To dates are two ways to say the same
+// thing, so setting either clears the other. Without this, a merchant who picked
+// "Last hour" over an existing date range would get the dates (which win in
+// eventQuery) and no visible reason why.
+function bindTimeControls(): void {
+	document.getElementById('f-range')?.addEventListener('change', () => {
+		if (!fieldValue('f-range')) return;
+		setFieldValue('f-from', '');
+		setFieldValue('f-to', '');
+	});
+	for (const id of ['f-from', 'f-to']) {
+		document.getElementById(id)?.addEventListener('change', () => {
+			if (fieldValue(id)) setFieldValue('f-range', '');
+		});
+	}
 }
 
 // Download the export as a blob. A direct link cannot carry the session-token
@@ -208,14 +259,9 @@ async function eventsList(params: Record<string, string>): Promise<void> {
 
 function paintEvents(params: Record<string, string>, contextHtml: string): void {
 	render(eventsView(params, eventItems, Boolean(eventCursor), contextHtml));
-	bindFilters('eventFilters', () => {
-		const q = new URLSearchParams();
-		for (const key of EVENT_FILTER_KEYS) {
-			const v = fieldValue(`f-${key}`);
-			if (v) q.set(key, v);
-		}
-		location.hash = `#/events${q.toString() ? `?${q}` : ''}`;
-	});
+	bindFilters('eventFilters', () => submitFilters('/events', EVENT_FILTER_KEYS));
+	bindTimeControls();
+	bindChips();
 	document.getElementById('loadMore')?.addEventListener('click', async () => {
 		const next = await apiEvents({ ...eventQueryActive, cursor: eventCursor });
 		eventItems.push(...next.items);
@@ -249,14 +295,17 @@ async function ordersList(params: Record<string, string>): Promise<void> {
 
 function paintOrders(params: Record<string, string>, contextHtml: string): void {
 	render(ordersView(params, orderItems, Boolean(orderCursor), contextHtml));
-	bindFilters('orderFilters', () => {
-		const q = new URLSearchParams();
-		for (const key of ORDER_FILTER_KEYS) {
-			const v = fieldValue(`f-${key}`);
-			if (v) q.set(key, v);
-		}
-		location.hash = `#/orders${q.toString() ? `?${q}` : ''}`;
-	});
+	// `maxAgeHours` has no control of its own — it arrives from an aging-bucket link
+	// — so reading the controls deliberately drops it: changing the Age select must
+	// not silently keep a bucket's upper bound. Its chip is how it stays visible and
+	// removable in the meantime.
+	bindFilters('orderFilters', () =>
+		submitFilters(
+			'/orders',
+			ORDER_FILTER_KEYS.filter((key) => key !== 'maxAgeHours'),
+		),
+	);
+	bindChips();
 	document.getElementById('loadMore')?.addEventListener('click', async () => {
 		const next = await apiOrders({ ...orderQueryActive, cursor: orderCursor });
 		orderItems.push(...next.items);
@@ -277,14 +326,8 @@ async function findingsList(params: Record<string, string>): Promise<void> {
 	const contextHtml = await strip();
 	const listPage = await apiFindings(params);
 	render(findingsListView(params, listPage.items, Date.now(), contextHtml));
-	bindFilters('findingFilters', () => {
-		const q = new URLSearchParams();
-		for (const key of ['status', 'detector']) {
-			const v = fieldValue(`f-${key}`);
-			if (v) q.set(key, v);
-		}
-		location.hash = `#/findings${q.toString() ? `?${q}` : ''}`;
-	});
+	bindFilters('findingFilters', () => submitFilters('/findings', FINDING_FILTER_KEYS));
+	bindChips();
 	bindExport(params);
 }
 

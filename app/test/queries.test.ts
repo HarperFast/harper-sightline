@@ -592,6 +592,42 @@ test('getEventDetail refuses cross-tenant access even with the correct id', asyn
 	assert.equal(ok?.affectedProjection, true);
 });
 
+// The live defect: every event-detail request hydrates exactly ONE event, and a
+// one-condition `or` is a query Harper refuses to run ("An "or" operator requires
+// at least two conditions"), so the detail screen 500'd for every event in the
+// ledger. The tests missed it because FakeTable did not enforce that rule — it now
+// does, which is what makes this test meaningful rather than decorative.
+test('a single-event hydrate is a query Harper will actually run', async () => {
+	const { events, projections, findings } = fixtures();
+	// Two index rows for the ONE event being hydrated: still a single condition, so
+	// this is the query shape the detail screen always issues.
+	const skus = skuFixtures();
+	await skus.put({
+		id: 's1:e1:MUG',
+		shopId: 's1',
+		eventId: 's1:e1',
+		sku: 'MUG',
+		domain: 'order',
+		topic: 'orders/paid',
+		source: 'webhook',
+		resourceId: 'o1',
+		occurredAt: NOW - 1000,
+		receivedAt: NOW - 1000,
+	});
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:e1', undefined, undefined, skus);
+	assert.equal(detail?.eventId, 's1:e1');
+	assert.deepEqual(detail?.skus, ['MUG', 'TSHIRT'], 'the full SKU list, sorted, hydrated from the index');
+});
+
+// Same single-condition path, reached from the list instead: a page (or a CSV
+// export) holding exactly one event hydrates through the identical call.
+test('a one-event page hydrates its SKUs', async () => {
+	const { events } = fixtures();
+	const page = await listEvents(events, 's1', NOW, { domain: 'fulfillment' }, skuFixtures());
+	assert.equal(page.items.length, 1, 'exactly one fulfillment event in the fixture');
+	assert.deepEqual(page.items[0].skus, ['TSHIRT']);
+});
+
 test('an inventory event detail names its SKU, product, and location', async () => {
 	const { events, projections, findings } = fixtures();
 	const items = new FakeTable('id', [{ id: 's1:inv9', shopId: 's1', inventoryItemId: 'inv9', sku: 'TSHIRT', productTitle: 'T-Shirt' }]);
