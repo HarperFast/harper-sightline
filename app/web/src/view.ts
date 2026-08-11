@@ -66,6 +66,59 @@ export function useShopTimeZone(timeZone: string | undefined): void {
 	}
 }
 
+// ── zoned day bounds ─────────────────────────────────────────────────────────
+// The From/To filters are DATES, and a date means a day in the zone this screen
+// renders times in — the store's zone when we know it. Treating "2026-08-08" as a
+// UTC day would silently shift the window by the store's offset, so a merchant in
+// Auckland filtering "today" would get most of yesterday.
+//
+// Offsets are read out of Intl rather than hardcoded, so DST is whatever the zone
+// actually did on that date. The second pass is what makes a DST boundary correct:
+// the first guess uses the offset in force at the naive instant, which is the wrong
+// side of the transition for the hours around it.
+function zoneOffsetMs(utcMs: number, timeZone: string | undefined): number {
+	// Intl formats no finer than a second, so the probe is truncated to a whole
+	// second and the offset is measured against THAT. Measuring against the original
+	// instant folded its milliseconds into the offset, which pushed the end-of-day
+	// bound (…T23:59:59.999) two seconds past midnight — into the next day, whose
+	// events then leaked into a "to yesterday" filter.
+	const probe = Math.floor(utcMs / 1000) * 1000;
+	const parts = new Intl.DateTimeFormat('en-US', {
+		timeZone,
+		hour12: false,
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit',
+	}).formatToParts(new Date(probe));
+	const at: Record<string, number> = {};
+	for (const part of parts) if (part.type !== 'literal') at[part.type] = Number(part.value);
+	// `hour` can format as 24 for midnight in some ICU versions; % 24 normalizes it.
+	return Date.UTC(at.year, at.month - 1, at.day, at.hour % 24, at.minute, at.second) - probe;
+}
+
+function zonedInstant(y: number, m: number, d: number, hh: number, mm: number, ss: number, ms: number): number {
+	const naive = Date.UTC(y, m - 1, d, hh, mm, ss, ms);
+	const firstGuess = naive - zoneOffsetMs(naive, activeTz);
+	return naive - zoneOffsetMs(firstGuess, activeTz);
+}
+
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// `YYYY-MM-DD` (what s-date-field emits) → the first/last instant of that day in
+// the active zone. An unparseable value yields undefined rather than an epoch-0
+// bound, so a half-typed date can never widen a query to the beginning of time.
+export function dayStartMs(date: string): number | undefined {
+	const m = DATE_ONLY.exec(date.trim());
+	return m ? zonedInstant(Number(m[1]), Number(m[2]), Number(m[3]), 0, 0, 0, 0) : undefined;
+}
+export function dayEndMs(date: string): number | undefined {
+	const m = DATE_ONLY.exec(date.trim());
+	return m ? zonedInstant(Number(m[1]), Number(m[2]), Number(m[3]), 23, 59, 59, 999) : undefined;
+}
+
 export function zoneLabel(): string {
 	return activeTz ?? VIEWER_TZ;
 }
@@ -143,13 +196,26 @@ export function table(headers: Array<{ label: string; numeric?: boolean }>, rows
 		: `<s-paragraph><s-text color="subdued">${esc(emptyMessage)}</s-text></s-paragraph>`;
 }
 
-// Label/value pairs. `variant="list"` keeps them stacked at every width, which is
-// the narrow-iframe behavior the spec asks for without any custom breakpoint.
+// Label/value pairs — an order's facts, a finding's evidence, the installation
+// summary. Deliberately NOT a table: these are one subject's attributes, not rows
+// of comparable records, and rendering them as `s-table variant="list"` repeated
+// the literal "Field" / "Value" column headers above every single pair, which is
+// how the Installation block came to read "Field: Shop / Value: acme.myshopify.com".
+//
+// A two-column grid instead: subdued label, value in its own aligned column. The
+// container query collapses it to stacked pairs in a narrow iframe, so the label
+// never squeezes its value to one word per line. Built from Polaris primitives, so
+// Admin's spacing tokens and dark mode still apply and no local CSS is involved.
 export function fields(rows: Array<[string, string]>): string {
-	const body = rows
-		.map(([label, value]) => `<s-table-row><s-table-cell>${esc(label)}</s-table-cell><s-table-cell>${value}</s-table-cell></s-table-row>`)
+	const cells = rows
+		.map(
+			([label, value]) => `<s-grid-item><s-text color="subdued">${esc(label)}</s-text></s-grid-item>
+			<s-grid-item>${value}</s-grid-item>`,
+		)
 		.join('');
-	return `<s-table variant="list"><s-table-header-row><s-table-header format="base">Field</s-table-header><s-table-header format="base">Value</s-table-header></s-table-header-row><s-table-body>${body}</s-table-body></s-table>`;
+	// small-200 / base are the same spacing tokens the rest of the app already uses,
+	// so the block sits on Admin's scale rather than inventing its own.
+	return `<s-grid gridTemplateColumns="@container (inline-size > 460px) minmax(0, 14rem) minmax(0, 1fr), minmax(0, 1fr)" rowGap="small-200" columnGap="base">${cells}</s-grid>`;
 }
 
 export function statGrid(tiles: Array<[string, number]>): string {
@@ -655,27 +721,122 @@ export function overviewView(d: OverviewData): string {
 // ── events ───────────────────────────────────────────────────────────────────
 export const DOMAINS = ['', 'order', 'fulfillment', 'inventory', 'refund'];
 export const SOURCES = ['', 'webhook', 'reconciliation'];
-// Time filter kept as a symbolic range in the URL rather than a frozen timestamp,
-// so a shared/bookmarked filter stays meaningful (screen spec §3: filters are
-// reflected in the URL).
+// The retention/read window, in days. The server is authoritative (apiContract's
+// WINDOW_DAYS, echoed per response as `summary.windowDays`) and the screens that
+// have a summary use that; this constant is only for the screens that do not, and
+// it must not drift from the 'Last 7 days' preset below.
+export const WINDOW_DAYS = 7;
+// The relative presets. Kept as a symbolic range in the URL rather than a frozen
+// timestamp, so a shared/bookmarked filter stays meaningful (screen spec §3:
+// filters are reflected in the URL). An absolute window is the From/To pair below.
 export const RANGES: Array<[string, string, number]> = [
 	['', 'Any time in window', 0],
 	['1h', 'Last hour', 3_600_000],
 	['24h', 'Last 24 hours', 86_400_000],
 	['7d', 'Last 7 days', 604_800_000],
 ];
-export const EVENT_FILTER_KEYS = ['range', 'domain', 'topic', 'resourceId', 'sku', 'source', 'state'];
+// The topics Sightline actually subscribes to (shopify.app.toml). A closed set, so
+// the control is a dropdown rather than a text field a merchant can only fill
+// correctly by already knowing Shopify's topic strings. Reconciliation-recovered
+// events reuse these same strings (src/reconcile.ts), so the list covers both
+// evidence sources.
+export const EVENT_TOPICS: Array<[string, string]> = [
+	['', 'Any topic'],
+	['orders/create', 'orders/create'],
+	['orders/paid', 'orders/paid'],
+	['orders/updated', 'orders/updated'],
+	['orders/cancelled', 'orders/cancelled'],
+	['fulfillments/create', 'fulfillments/create'],
+	['fulfillments/update', 'fulfillments/update'],
+	['refunds/create', 'refunds/create'],
+	['inventory_levels/update', 'inventory_levels/update'],
+];
 
-// Translate the UI filter params into API query params (range → since).
+// `state` holds SHOPIFY'S OWN status string, copied through normalization
+// unchanged (src/normalize.ts): an order event carries `financial_status` (falling
+// back to `fulfillment_status`), a fulfillment event carries `status`, a refund
+// event is latched to 'refunded', and an inventory event has none. So the field is
+// a closed vocabulary from three sources — a dropdown, not the free-text box it
+// was, where a merchant had to guess 'failure' vs 'failed'.
+//
+// The values are shown exactly as stored, never prettified: this filter matches a
+// stored string, and a label that differs from the value it sends would make an
+// empty result look like an empty ledger. Values shared between vocabularies
+// ('pending' is both a financial and a fulfillment status) are listed ONCE — the
+// groups help a merchant find a value, while the filter is still a single
+// `state=<value>` that matches wherever that string was stored.
+export const EVENT_STATE_GROUPS: Array<[string, Array<[string, string]>]> = [
+	['', [['', 'Any state']]],
+	[
+		'Payment',
+		[
+			['pending', 'pending'],
+			['authorized', 'authorized'],
+			['partially_paid', 'partially_paid'],
+			['paid', 'paid'],
+			['partially_refunded', 'partially_refunded'],
+			['refunded', 'refunded'],
+			['voided', 'voided'],
+		],
+	],
+	[
+		'Fulfillment attempt',
+		[
+			['open', 'open'],
+			['success', 'success'],
+			['error', 'error'],
+			['failure', 'failure'],
+			['cancelled', 'cancelled'],
+		],
+	],
+	[
+		'Order fulfillment',
+		[
+			['fulfilled', 'fulfilled'],
+			['partial', 'partial'],
+			['restocked', 'restocked'],
+		],
+	],
+];
+
+// `from`/`to` are explicit calendar dates; `range` is the relative preset. Both are
+// in the URL so a filtered view stays shareable either way.
+export const EVENT_FILTER_KEYS = ['range', 'from', 'to', 'domain', 'topic', 'resourceId', 'sku', 'source', 'state'];
+
+// Translate the UI filter params into API query params: `range` → since, or an
+// explicit `from`/`to` date pair → since/until at the day's edges in the active
+// zone. An explicit From wins over the preset — the two controls clear each other
+// in the UI, so both being set at once means a stale URL, and the more specific
+// answer is the honest one to serve.
 export function eventQuery(params: Record<string, string>, now: number): Record<string, string> {
 	const q: Record<string, string> = {};
 	for (const key of ['domain', 'topic', 'resourceId', 'sku', 'source', 'state']) {
 		if (params[key]) q[key] = params[key];
 	}
-	const range = RANGES.find(([value]) => value && value === params.range);
-	if (range) q.since = String(now - range[2]);
+	const from = params.from ? dayStartMs(params.from) : undefined;
+	const to = params.to ? dayEndMs(params.to) : undefined;
+	if (from !== undefined) q.since = String(from);
+	if (to !== undefined) q.until = String(to);
+	if (from === undefined) {
+		const range = RANGES.find(([value]) => value && value === params.range);
+		if (range) q.since = String(now - range[2]);
+	}
 	return q;
 }
+
+// The events screen's filters, named for the merchant. Drives the chip row, and
+// (via filterHash) every removal link on it.
+export const EVENT_FILTER_DEFS: FilterDef[] = [
+	{ key: 'range', label: 'Time', value: (raw) => RANGES.find(([value]) => value === raw)?.[1] ?? raw },
+	{ key: 'from', label: 'From' },
+	{ key: 'to', label: 'To' },
+	{ key: 'domain', label: 'Domain', value: (raw) => DOMAIN_LABEL[raw] ?? raw },
+	{ key: 'topic', label: 'Topic' },
+	{ key: 'resourceId', label: 'Order / resource' },
+	{ key: 'sku', label: 'SKU' },
+	{ key: 'source', label: 'Evidence source' },
+	{ key: 'state', label: 'State' },
+];
 
 // Prefer the full list; fall back to the scalar (single-SKU events); then an em
 // dash. Before this, a multi-SKU event rendered blank — so a SKU search returned
@@ -685,8 +846,139 @@ export function skuCell(e: EventItem): string {
 	return e.sku ? esc(e.sku) : '—';
 }
 
-function selectOptions(values: readonly string[], selected: string, anyLabel: string): string {
-	return values.map((v) => `<option value="${esc(v)}"${v === selected ? ' selected' : ''}>${esc(v || anyLabel)}</option>`).join('');
+// ── filter controls ──────────────────────────────────────────────────────────
+// Polaris `s-select` takes `s-option` CHILDREN. A plain `<option>` is not part of
+// the component's contract and renders as nothing at all — every filter dropdown
+// in the app was empty for exactly that reason, on every screen.
+//
+// The current choice is carried as `value` on the SELECT (the documented property,
+// and the one main.ts's fieldValue() reads back) rather than as `selected` on a
+// child, so prefilling from the URL and reading the control back are the same
+// mechanism instead of two that can disagree.
+export function optionList(options: ReadonlyArray<readonly [string, string]>): string {
+	return options.map(([value, label]) => `<s-option value="${esc(value)}">${esc(label)}</s-option>`).join('');
+}
+
+export function selectField(
+	id: string,
+	label: string,
+	options: ReadonlyArray<readonly [string, string]>,
+	value: string,
+	details?: string,
+): string {
+	return `<s-select id="${esc(id)}" label="${esc(label)}" value="${esc(value)}"${details ? ` details="${esc(details)}"` : ''}>${optionList(options)}</s-select>`;
+}
+
+// A grouped select, for a long list whose values come from more than one
+// vocabulary. The groups are a finding aid only — the filter is still a single
+// `state=<value>`, so a value that two groups could both claim is listed once.
+export function groupedSelectField(
+	id: string,
+	label: string,
+	groups: ReadonlyArray<readonly [string, ReadonlyArray<readonly [string, string]>]>,
+	value: string,
+	details?: string,
+): string {
+	const body = groups
+		.map(([groupLabel, options]) =>
+			groupLabel ? `<s-option-group label="${esc(groupLabel)}">${optionList(options)}</s-option-group>` : optionList(options),
+		)
+		.join('');
+	return `<s-select id="${esc(id)}" label="${esc(label)}" value="${esc(value)}"${details ? ` details="${esc(details)}"` : ''}>${body}</s-select>`;
+}
+
+// Turn a bare value list into [value, label] pairs, with the empty value carrying
+// the "any" wording. Keeps the exported vocabularies (DOMAINS, STATUSES, …) as the
+// single source of truth for what a filter accepts.
+export function labelled(
+	values: readonly string[],
+	anyLabel: string,
+	label: (value: string) => string = (v) => v,
+): Array<[string, string]> {
+	return values.map((value) => [value, value ? label(value) : anyLabel]);
+}
+
+// ── active filters ───────────────────────────────────────────────────────────
+// Which filters are in force has to be visible on the screen, not only in a URL
+// the merchant cannot see inside an Admin iframe — and each one has to be
+// removable. Two of these are otherwise invisible: `maxAgeHours` reaches the
+// worklist only from an aging-bucket link and has no control of its own, and a
+// filter carried in a shared link belongs to whoever opened it, not whoever set it.
+
+// A filter's merchant-facing name and how to render its value. `chipLabel` is
+// separate from the control's own labelling because a chip has to read as a
+// sentence fragment on its own ("Time: Last 24 hours").
+export interface FilterDef {
+	key: string;
+	label: string;
+	value?: (raw: string) => string;
+}
+
+export interface Chip {
+	key: string;
+	text: string;
+	href: string;
+}
+
+// The URL for a view with a given filter set, optionally dropping one key. Every
+// filter link on a screen — the chips' removal targets, "Clear all", and the submit
+// handler in main.ts — is built from this one function, so they cannot disagree
+// about what a filtered URL looks like.
+export function filterHash(path: string, params: Record<string, string>, keys: readonly string[], without?: string): string {
+	const query = new URLSearchParams();
+	for (const key of keys) {
+		if (key !== without && params[key]) query.set(key, params[key]);
+	}
+	const search = query.toString();
+	return `#${path}${search ? `?${search}` : ''}`;
+}
+
+// `keys` is the view's FULL set of URL keys, not just the chip-able ones, so
+// removing a filter preserves the rest of the view's state. Passing only the chip
+// keys would make the orders list silently forget its Sort every time a lane chip
+// was dismissed.
+export function activeChips(
+	path: string,
+	params: Record<string, string>,
+	defs: readonly FilterDef[],
+	keys: readonly string[] = defs.map((d) => d.key),
+): Chip[] {
+	return defs
+		.filter((def) => Boolean(params[def.key]))
+		.map((def) => ({
+			key: def.key,
+			text: `${def.label}: ${def.value ? def.value(params[def.key]) : params[def.key]}`,
+			href: filterHash(path, params, keys, def.key),
+		}));
+}
+
+// The chip row. Each chip both LINKS to the same view without that filter and
+// carries `removable`, so the × and the chip body do the same single thing; there
+// is no dead zone and no state to keep in sync. Nothing renders when no filter is
+// set — an empty "Filters" rail would be noise on a first visit.
+export function filterChips(
+	path: string,
+	params: Record<string, string>,
+	defs: readonly FilterDef[],
+	keys: readonly string[] = defs.map((d) => d.key),
+): string {
+	const chips = activeChips(path, params, defs, keys);
+	if (chips.length === 0) return '';
+	const rendered = chips
+		.map(
+			(chip) =>
+				`<s-clickable-chip color="base" removable data-remove-filter="${esc(chip.key)}" href="${esc(chip.href)}" accessibilityLabel="Remove filter ${esc(chip.text)}">${esc(chip.text)}</s-clickable-chip>`,
+		)
+		.join('');
+	// "Clear all" drops exactly what the chips show and keeps everything else this
+	// view carries (the orders list's Sort), so it reads as "clear the filters", not
+	// "reset the screen".
+	const kept = keys.filter((key) => !defs.some((def) => def.key === key));
+	return `<s-stack direction="inline" gap="small-200" alignItems="center">
+		<s-text color="subdued">${chips.length === 1 ? '1 filter' : `${chips.length} filters`}</s-text>
+		${rendered}
+		<s-link href="${esc(filterHash(path, params, kept))}" data-clear-filters>Clear all</s-link>
+	</s-stack>`;
 }
 
 export function eventsView(params: Record<string, string>, items: EventItem[], hasMore: boolean, strip: string): string {
@@ -703,24 +995,46 @@ export function eventsView(params: Record<string, string>, items: EventItem[], h
 		</s-table-row>`,
 		)
 		.join('');
-	const rangeOptions = RANGES.map(
-		([value, label]) => `<option value="${esc(value)}"${value === (params.range ?? '') ? ' selected' : ''}>${esc(label)}</option>`,
-	).join('');
+	// Both pickers describe days in the zone the screen renders in, and the ledger
+	// only holds the last seven of them — said once, next to the controls, rather
+	// than encoded as a `disallow` range whose syntax we would be guessing at (a
+	// wrong one silently disables the whole calendar).
+	const dateHelp = `<s-paragraph><s-text color="subdued">Dates are whole days in ${esc(zoneLabel())}. The ledger holds the last ${WINDOW_DAYS} days.</s-text></s-paragraph>`;
 	return page(
 		'Events',
 		`${strip}
 		<s-section heading="Search the seven-day ledger">
-			<s-stack id="eventFilters" direction="inline" gap="base" alignItems="end">
-				<s-select id="f-range" label="Time">${rangeOptions}</s-select>
-				<s-select id="f-domain" label="Domain">${selectOptions(DOMAINS, params.domain ?? '', 'Any domain')}</s-select>
-				<s-text-field id="f-topic" label="Topic" placeholder="orders/paid" value="${esc(params.topic ?? '')}"></s-text-field>
-				<s-text-field id="f-resourceId" label="Order / resource ID" value="${esc(params.resourceId ?? '')}"></s-text-field>
-				<s-text-field id="f-sku" label="SKU" value="${esc(params.sku ?? '')}"></s-text-field>
-				<s-select id="f-source" label="Evidence source">${selectOptions(SOURCES, params.source ?? '', 'Any source')}</s-select>
-				<s-text-field id="f-state" label="State" placeholder="error" value="${esc(params.state ?? '')}"></s-text-field>
-				<s-button variant="primary" data-submit>Search</s-button>
-				${exportButton('events')}
+			<s-stack id="eventFilters" direction="block" gap="base">
+				<s-stack direction="inline" gap="base" alignItems="end">
+					${selectField(
+						'f-range',
+						'Time',
+						RANGES.map(([value, label]) => [value, label]),
+						params.range ?? '',
+					)}
+					<s-date-field id="f-from" label="From" placeholder="Any" value="${esc(params.from ?? '')}"></s-date-field>
+					<s-date-field id="f-to" label="To" placeholder="Any" value="${esc(params.to ?? '')}"></s-date-field>
+				</s-stack>
+				${dateHelp}
+				<s-stack direction="inline" gap="base" alignItems="end">
+					${selectField(
+						'f-domain',
+						'Domain',
+						labelled(DOMAINS, 'Any domain', (v) => DOMAIN_LABEL[v] ?? v),
+						params.domain ?? '',
+					)}
+					${selectField('f-topic', 'Topic', EVENT_TOPICS, params.topic ?? '')}
+					${groupedSelectField('f-state', 'State', EVENT_STATE_GROUPS, params.state ?? '', 'Shopify’s own status value')}
+					${selectField('f-source', 'Evidence source', labelled(SOURCES, 'Any source'), params.source ?? '')}
+				</s-stack>
+				<s-stack direction="inline" gap="base" alignItems="end">
+					<s-text-field id="f-resourceId" label="Order / resource ID" value="${esc(params.resourceId ?? '')}"></s-text-field>
+					<s-text-field id="f-sku" label="SKU" value="${esc(params.sku ?? '')}"></s-text-field>
+					<s-button variant="primary" data-submit>Search</s-button>
+					${exportButton('events')}
+				</s-stack>
 			</s-stack>
+			${filterChips('/events', params, EVENT_FILTER_DEFS)}
 		</s-section>
 		<s-section>
 			${table(
@@ -825,6 +1139,24 @@ export const ORDER_AGES: Array<[string, string]> = [
 // the bucket's upper bound rather than silently keeping it.
 export const ORDER_FILTER_KEYS = ['state', 'minAgeHours', 'maxAgeHours', 'sort'];
 
+// The worklist's chips. `sort` is deliberately absent: it reorders the list, it
+// does not narrow it, so it is not something a merchant needs to "clear" — and a
+// chip offering to remove it would imply the list is being hidden from them.
+//
+// `maxAgeHours` IS here, and this is the only place it becomes visible: it arrives
+// only from an aging-bucket link and has no control of its own, so before the chips
+// a merchant who followed "Under 24h" saw a worklist quietly bounded from above
+// with nothing on screen saying so, and no way back other than editing the URL.
+export const ORDER_FILTER_DEFS: FilterDef[] = [
+	{ key: 'state', label: 'Lane', value: laneLabel },
+	{
+		key: 'minAgeHours',
+		label: 'Age',
+		value: (raw) => ORDER_AGES.find(([value]) => value === raw)?.[1] ?? `paid over ${raw}h ago`,
+	},
+	{ key: 'maxAgeHours', label: 'Newer than', value: (raw) => `${raw}h since payment` },
+];
+
 export function orderQuery(params: Record<string, string>): Record<string, string> {
 	const q: Record<string, string> = {};
 	for (const key of ORDER_FILTER_KEYS) {
@@ -882,28 +1214,19 @@ export function ordersView(params: Record<string, string>, items: OrderItem[], h
 		</s-table-row>`,
 		)
 		.join('');
-	const stateOptions = ORDER_STATES.map(
-		(v) => `<option value="${esc(v)}"${v === (params.state ?? '') ? ' selected' : ''}>${esc(v ? laneLabel(v) : 'Any lane')}</option>`,
-	).join('');
-	const ageOptions = ORDER_AGES.map(
-		([v, label]) => `<option value="${esc(v)}"${v === (params.minAgeHours ?? '') ? ' selected' : ''}>${esc(label)}</option>`,
-	).join('');
-	const sortOptions = ORDER_SORTS.map(
-		([v, label]) => `<option value="${esc(v)}"${v === (params.sort ?? 'newest') ? ' selected' : ''}>${esc(label)}</option>`,
-	).join('');
-
 	return page(
 		'Orders',
 		`${strip}
 		<s-section heading="Orders Sightline is tracking">
 			<s-paragraph><s-text color="subdued">Every order observed in the last 7 days, with how long it has been waiting since payment. Sightline is read-only — nothing here changes your store.</s-text></s-paragraph>
 			<s-stack id="orderFilters" direction="inline" gap="base" alignItems="end">
-				<s-select id="f-state" label="Lane">${stateOptions}</s-select>
-				<s-select id="f-minAgeHours" label="Age">${ageOptions}</s-select>
-				<s-select id="f-sort" label="Sort">${sortOptions}</s-select>
+				${selectField('f-state', 'Lane', labelled(ORDER_STATES, 'Any lane', laneLabel), params.state ?? '')}
+				${selectField('f-minAgeHours', 'Age', ORDER_AGES, params.minAgeHours ?? '')}
+				${selectField('f-sort', 'Sort', ORDER_SORTS, params.sort ?? 'newest')}
 				<s-button variant="primary" data-submit>Filter</s-button>
 				${exportButton('orders')}
 			</s-stack>
+			${filterChips('/orders', params, ORDER_FILTER_DEFS, ORDER_FILTER_KEYS)}
 		</s-section>
 		<s-section>
 			${table(
@@ -1039,6 +1362,12 @@ export function detectorLabel(detector: string | undefined): string {
 	return DETECTOR_LABELS[detector] ?? detector;
 }
 
+export const FINDING_FILTER_KEYS = ['status', 'detector'];
+export const FINDING_FILTER_DEFS: FilterDef[] = [
+	{ key: 'status', label: 'Status' },
+	{ key: 'detector', label: 'Type', value: detectorLabel },
+];
+
 // Which finding-detail copy applies is a single fact, not three independently
 // -drifting checks: the ABSENCE detector ('fulfillment_confirmation', or no
 // `detector` at all on rows written before that column existed) is the only one
@@ -1070,11 +1399,12 @@ export function findingsListView(params: Record<string, string>, items: FindingI
 		<s-section>
 			<s-paragraph><s-text color="subdued">${esc(FINDINGS_BOUNDARY)}</s-text></s-paragraph>
 			<s-stack id="findingFilters" direction="inline" gap="base" alignItems="end">
-				<s-select id="f-status" label="Status">${selectOptions(STATUSES, params.status ?? '', 'Any status')}</s-select>
-				<s-select id="f-detector" label="Type">${selectOptions(DETECTORS, params.detector ?? '', 'Any type')}</s-select>
+				${selectField('f-status', 'Status', labelled(STATUSES, 'Any status'), params.status ?? '')}
+				${selectField('f-detector', 'Type', labelled(DETECTORS, 'Any type', detectorLabel), params.detector ?? '')}
 				<s-button variant="primary" data-submit>Filter</s-button>
 				${exportButton('findings')}
 			</s-stack>
+			${filterChips('/findings', params, FINDING_FILTER_DEFS)}
 		</s-section>
 		<s-section>
 			${table(

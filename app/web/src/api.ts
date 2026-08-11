@@ -15,13 +15,31 @@ declare global {
 
 const nativeFetch = (): typeof fetch => (window.__sightlineFetch ?? window.fetch).bind(window);
 
+// What a failing response actually says. Harper reports an error as
+// `{type, code, title, status, instance}` — the message is in `title` — and our own
+// resources throw with a plain message that serializes as a bare JSON string. This
+// used to read only `error`, which neither shape has, so EVERY failure reached the
+// merchant as a bare "500" with no cause: diagnosing a real one (a query Harper
+// refused to run) cost a round trip through the live instance. Empty on an
+// unreadable body, so the status alone is still shown rather than nothing.
+export function errorDetail(body: unknown): string {
+	if (typeof body === 'string') return body.trim();
+	if (body && typeof body === 'object') {
+		const { title, error, message } = body as { title?: unknown; error?: unknown; message?: unknown };
+		for (const candidate of [title, error, message]) {
+			if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+		}
+	}
+	return '';
+}
+
 async function get<T>(path: string): Promise<T> {
 	const token = await shopify.idToken();
 	const res = await nativeFetch()(path, { headers: { 'X-Shopify-Session-Token': token } });
 	if (!res.ok) {
 		let detail = '';
 		try {
-			detail = ((await res.json()) as { title?: string; error?: string }).error ?? '';
+			detail = errorDetail(await res.json());
 		} catch {
 			// no JSON body
 		}
