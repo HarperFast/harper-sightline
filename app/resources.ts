@@ -8,6 +8,7 @@ import { ensureShopRecord, ensureCredential } from './src/lifecycle.ts';
 import { verifyWebhookHmac } from './src/webhookHmac.ts';
 import { acceptDelivery } from './src/webhookIngress.ts';
 import { stripPii } from './src/pii.ts';
+import { resolveAssetUrl } from './src/assetPath.ts';
 import {
 	Events as EventsTable,
 	Findings as FindingsTable,
@@ -584,10 +585,13 @@ export class ShopifyWebhook extends Resource {
 	}
 }
 
+// The Vite build output. Every path served below is resolved against this base.
+const WEB_DIST = new URL('./web/dist/', import.meta.url);
+
 // The built SPA, loaded once at component start.
 let INDEX_HTML = '<!doctype html><meta charset="utf-8"><title>Sightline</title>';
 try {
-	INDEX_HTML = readFileSync(new URL('./web/dist/index.html', import.meta.url), 'utf8');
+	INDEX_HTML = readFileSync(new URL('index.html', WEB_DIST), 'utf8');
 } catch {
 	// dist not present (e.g. pre-build) — keep the placeholder
 }
@@ -626,10 +630,13 @@ export class AppHome extends Resource {
 			// defaults
 		}
 
-		// Real static asset (no path traversal; only under /assets/).
-		if (pathname.startsWith('/assets/') && !pathname.includes('..')) {
+		// Real static asset. resolveAssetUrl (src/assetPath.ts) is the containment
+		// boundary: this branch reads a file off disk for an UNAUTHENTICATED caller,
+		// so it must never resolve outside web/dist/assets/ in any encoding.
+		const assetUrl = resolveAssetUrl(pathname, WEB_DIST);
+		if (assetUrl) {
 			try {
-				const file = readFileSync(new URL(`./web/dist${pathname}`, import.meta.url));
+				const file = readFileSync(assetUrl);
 				return new Response(file, { status: 200, headers: { 'content-type': MIME[extname(pathname)] ?? 'application/octet-stream' } });
 			} catch {
 				// fall through to the SPA
