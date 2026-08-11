@@ -386,8 +386,7 @@ Implementation must re-check versioned details at issue start. Current architect
 ## 19. Handoff artifacts
 
 - This architecture and delivery plan.
-- [Issue-ready backlog](./free_mvp_issue_backlog.md).
 - [Screen specification](./free_mvp_screen_spec.md).
 - Original product brief and App Store concept retained as source material.
 
-The next repository operation is to create GitHub labels, milestones, and issues from the issue-ready backlog after a remote repository is configured.
+The issue-ready backlog this plan produced was filed as GitHub issues #4–#27 and then deleted; the [issue list](https://github.com/HarperFast/harper-sightline/issues?q=is%3Aissue) is the live record.

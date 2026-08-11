@@ -4,14 +4,8 @@
 !.env.example
 node_modules/
 web/
-!spikes/auth/web/
 !app/web/
 coverage/
-
-# Spike-local Harper runtime state
-spikes/**/.harper-local/
-spikes/**/hdb/
-spikes/**/*.local.env
 
 # Isolated worktrees and subagent-driven-development scratch (never committed)
 .claude/worktrees/

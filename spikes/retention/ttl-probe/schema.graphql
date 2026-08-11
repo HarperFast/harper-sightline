@@ -1,7 +1,0 @@
-# Short-TTL table to characterize Harper expiration/eviction on a source-less
-# table with a secondary index. expiration=5s, eviction=0 (physical removal at
-# expiration), scan every 2s.
-type SpikecTtl @table(expiration: 5, eviction: 0, scanInterval: 2) @export {
-	id: ID @primaryKey
-	shopId: String @indexed
-}

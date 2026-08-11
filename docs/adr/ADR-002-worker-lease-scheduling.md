@@ -3,7 +3,7 @@
 - Status: **Accepted** (Spike B complete)
 - Date: 2026-08-04
 - Phase: 0 (risk retirement), GitHub issue #2 (worker portion)
-- Evidence: `spikes/worker/` (7 unit tests + live restart-recovery, 4-worker concurrency, and lease proofs), `spikes/worker/RUNTIME-NOTES.md`
+- Evidence: the throwaway `spikes/worker/` component — 7 unit tests plus live restart-recovery, 4-worker concurrency, and lease proofs, with findings in its `RUNTIME-NOTES.md`. Deleted after Phase 0; read it at `git show 2bfe12b:spikes/worker`. The decision below, and `app/jobs.ts`, are what carried forward.
 - Runtime proven against: Harper **5.2.0** on Fabric (2-node replicated cluster), via the operations API
 - Builds on: [ADR-001](./ADR-001-authentication.md) atomic single-winner insert
 

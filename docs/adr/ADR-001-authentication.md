@@ -3,7 +3,7 @@
 - Status: **Accepted** (Spike A complete; one confirmatory step — real App Bridge token from Admin — deferred, see §7)
 - Date: 2026-08-04
 - Phase: 0 (risk retirement), GitHub issue #2
-- Evidence: `spikes/auth/` (11 offline tests + 3 live integration tests), `spikes/auth/RUNTIME-NOTES.md`, `spikes/auth/live/atomicClaim.mjs`
+- Evidence: the throwaway `spikes/auth/` component — 11 offline tests, 3 live integration tests, and an atomic-claim proof, with findings in its `RUNTIME-NOTES.md`. Deleted after Phase 0; read it at `git show a57a74b:spikes/auth` (`git log --diff-filter=D -- spikes/auth` for the removal). The decision below, and `app/`, are what carried forward.
 - Runtime proven against: Harper **5.2.0** on Fabric (`ayoo.josh-test.harperfabric.com`), Node 24.18.0
 
 ## Context
