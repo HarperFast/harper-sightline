@@ -9,7 +9,8 @@
 | Gate | Target | Status | Evidence |
 |---|---|---|---|
 | Webhook ack latency | p95 < 1s, always < 5s (Shopify timeout) | Tool committed; run at staged (#25) | `scripts/loadtest.mjs` (`npm run loadtest`) |
-| 10-min 100 rps burst, no loss | 0 lost accepted deliveries over the burst | Tool committed; run at staged (#25) | `scripts/loadtest.mjs` reports loss + percentiles |
+| 10-min 100 rps burst, no loss | 0 rejected deliveries **and** the backlog drains back to baseline with no new dead letters | Tool committed; run at staged (#25) | `scripts/loadtest.mjs` — ack percentiles **plus** a drain phase polling `/api/v1/ops` |
+| Processing keeps up with ingest | observed drain rate ≥ offered rate | Tool committed; **expected to be the binding constraint** — see §5.1 | `scripts/loadtest.mjs` reports drain rate vs offered rate |
 | No loss + catch-up after restart | every accepted delivery eventually processed | **PASS (local)** | `reliability.test.ts` restart + idempotent-redelivery cases |
 | High-volume 7-day query latency, bounded memory | p95 < 500ms, memory-bounded | **PASS (local)**, staged confirm at #25 | `reliability.test.ts` — page clamped to `MAX_LIMIT`, not the whole ledger |
 | 7-day purge at volume | expired physically removed, 0 residue | **PASS (local)** | `reliability.test.ts` purge case; `retention.test.ts` |
@@ -33,12 +34,14 @@ These are correctness-at-volume proofs; absolute timings are informational (they
 
 ```
 SIGHTLINE_BASE=https://<staging-host> \
-SHOPIFY_API_SECRET=<app secret> \
+SHOPIFY_API_SECRET=<app secret> SIGHTLINE_OPS_TOKEN=<ops token> \
 LOAD_RPS=100 LOAD_DURATION=600 \
 NODE_TLS_REJECT_UNAUTHORIZED=0 npm run loadtest
 ```
 
-Fires HMAC-signed webhooks at `/webhooks/shopify/events`, reports ack p50/p95/max, per-status counts, and loss, and exits non-zero if any gate fails (p95 ≥ 1s, max ≥ 5s, or any non-2xx). After a burst, verify no accepted delivery was lost by comparing `sent` to the processed+dead-letter counts via the `ops.snapshot` (issue #22) and the `WebhookDelivery` table.
+Fires HMAC-signed webhooks at `/webhooks/shopify/events`, reports ack p50/p95/max and per-status counts, then **waits for the accepted backlog to return to its pre-burst level**, reporting the drain time and the observed drain rate. Exits non-zero if any gate fails.
+
+The drain phase is the point. Acking fast is exactly what the design guarantees by deferring all work to the worker (ADR-002), so an ack-only harness cannot fail for the reason that matters: before this, `LOAD PASS` printed on a run where every delivery was accepted and none was ever processed. Verifying drain no longer requires reading `ops.snapshot` by hand — `/api/v1/ops` serves the same `computeOpsHealth` object over HTTP, gated on `SIGHTLINE_OPS_TOKEN`, and because it reads replicated tables rather than one node's log it reports the whole cluster's backlog. The harness **refuses to run** without that token rather than falling back to the ack-only measurement it used to over-trust.
 
 ## 4. Backup & restore procedure (run at staged, #25)
 
@@ -60,6 +63,15 @@ Recovery interplay: because capture is durable and reconciliation backfills from
 - **High-volume inventory is the watched cost** (plan §13/§17): `inventory_levels/update` can be voluminous. Monitored via the `ops.snapshot` event counts; if it dominates, an ingest filter or shorter inventory retention is the lever (extension seam, not MVP).
 - **Query memory is bounded** by cursor pagination (`MAX_LIMIT` per page, keyset over a small over-fetch buffer) — a large ledger never materializes in one response. Aggregates (`summary`/`flows`) iterate the shop's window; acceptable at MVP volumes, revisit with the staged high-volume fixture.
 - **Ingress is O(1) per webhook** before ack (verify HMAC, idempotent insert, fast 2xx); normalization is deferred to the worker, keeping ack latency flat under burst.
+
+### 5.1 Ingest and drain capacity are not matched (open question for #25)
+
+Ack capacity and drain capacity are set by different things, and the gap is large enough that the staged burst is really a test of the second:
+
+- `processAcceptedBatch` takes **50 rows per tick** (`src/processor.ts`) on a **10-second** interval (`INTERVAL_MS`, `jobs.ts`) — about **5 deliveries/second per worker thread**. The loop runs on every worker thread on every node (jobs.ts is imported per thread, and the work is idempotent so concurrent ticks are safe), so aggregate throughput is roughly `5/s × threads × nodes`.
+- A 10-minute 100 rps burst offers **60,000 deliveries**. Draining that needs ~12,000 thread-seconds at the rate above, so unless the target cluster has ~20 worker threads participating, the backlog grows for the whole burst and drains long after it ends.
+
+This is not a defect on its own — the backlog is durable, ordering is not required, and `BACKLOG_STALE_MS` already alerts when the oldest unprocessed delivery exceeds 5 minutes. But it does mean **100 rps sustained is an ingest figure, not a throughput figure**, and the honest gate is the drain rate the harness now reports. If the staged run fails `drain>=offered`, the levers in order of bluntness are: raise the batch limit, shorten the interval, or accept a documented drain lag with the backlog alert as the safety net. Pick one against a real measurement rather than in advance.
 
 ## 6. Open items (→ #25)
 

@@ -1,22 +1,35 @@
 // Webhook ingress load harness (#24). Fires a burst of HMAC-signed webhooks at
-// /webhooks/shopify/events and reports ack-latency percentiles + loss against the
-// plan §13 gates. This is a MANUAL / staged tool — the production-like 10-minute
-// 100 rps burst runs against the staged environment (#25), not in CI.
+// /webhooks/shopify/events, then proves the accepted work actually DRAINED.
+// This is a MANUAL / staged tool — the production-like 10-minute 100 rps burst
+// runs against the staged environment (#25), not in CI.
 //
 //   SIGHTLINE_BASE=https://<host> \
-//   SHOPIFY_API_SECRET=<app secret> \
+//   SHOPIFY_API_SECRET=<app secret> SIGHTLINE_OPS_TOKEN=<ops token> \
 //   LOAD_RPS=100 LOAD_DURATION=600 \
 //   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/loadtest.mjs
 //
-// Gates (plan §13): ack p95 < 1000ms, ack max < 5000ms (Shopify's timeout), 0 loss.
+// WHY the drain phase exists: acking fast is exactly what the design guarantees by
+// deferring all work to the worker (ADR-002), so ack latency alone cannot fail.
+// Measuring only the ack meant this harness printed LOAD PASS on a run where every
+// delivery was accepted and NONE was ever processed — a silent, total loss of the
+// product's actual promise. Draining is the guarantee worth gating.
+//
+// Gates: ack p95 < 1s, ack max < 5s (Shopify's timeout), 0 rejected deliveries,
+// the backlog returns to its pre-burst level, no new dead letters, and the
+// observed drain rate keeps up with the offered rate.
 import { createHmac } from 'node:crypto';
 
 const base = process.env.SIGHTLINE_BASE ?? 'https://ayoo.josh-test.harperfabric.com';
 const secret = process.env.SHOPIFY_API_SECRET;
+const opsToken = process.env.SIGHTLINE_OPS_TOKEN;
 const shop = process.env.LOAD_SHOP ?? 'load-test.myshopify.com';
 const rps = Number(process.env.LOAD_RPS ?? 100);
 const durationSec = Number(process.env.LOAD_DURATION ?? 60);
 const topic = process.env.LOAD_TOPIC ?? 'orders/updated';
+// How long to wait for the backlog to return to its pre-burst level, and how
+// often to sample it. Processing is a periodic batch, so samples are coarse.
+const drainTimeoutSec = Number(process.env.LOAD_DRAIN_TIMEOUT ?? 900);
+const drainPollMs = Number(process.env.LOAD_DRAIN_POLL_MS ?? 5000);
 
 // Gates.
 const P95_MS = 1000;
@@ -26,7 +39,26 @@ if (!secret) {
 	console.error('SHOPIFY_API_SECRET is required to sign webhooks. Refusing to run.');
 	process.exit(2);
 }
+// Refusing rather than degrading is deliberate: a run that cannot read the
+// backlog can only re-report the ack latency this harness already over-trusted,
+// and would print a PASS that means nothing.
+if (!opsToken) {
+	console.error('SIGHTLINE_OPS_TOKEN is required to verify the burst drained. Refusing to run a drain-blind load test.');
+	process.exit(2);
+}
 process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
+
+// Operator health (backlog + dead letters), cluster-wide because it is derived
+// from replicated tables rather than one node's log.
+async function readOps() {
+	const r = await fetch(`${base}/api/v1/ops`, { headers: { 'x-sightline-ops-token': opsToken } });
+	if (r.status === 404) {
+		throw new Error('/api/v1/ops returned 404 — SIGHTLINE_OPS_TOKEN is unset or too short (>= 32 chars) on the target instance');
+	}
+	if (!r.ok) throw new Error(`/api/v1/ops returned ${r.status}`);
+	const health = await r.json();
+	return { accepted: health.backlog.accepted, deadLetter: health.deadLetter.count, oldestAgeMs: health.backlog.oldestAgeMs };
+}
 
 function sign(body) {
 	return createHmac('sha256', secret).update(Buffer.from(body, 'utf8')).digest('base64');
@@ -59,8 +91,59 @@ function pct(sorted, p) {
 	return sorted[i];
 }
 
+// Wait for the accepted backlog to fall back to its pre-burst level, sampling as
+// it goes so the drain RATE is measured rather than assumed. Returns the samples
+// and whether it got there inside the timeout.
+async function waitForDrain(baselineAccepted) {
+	const startedAt = performance.now();
+	const samples = [];
+	let drained = false;
+	while ((performance.now() - startedAt) / 1000 < drainTimeoutSec) {
+		const ops = await readOps();
+		samples.push({ atSec: (performance.now() - startedAt) / 1000, ...ops });
+		if (ops.accepted <= baselineAccepted) {
+			drained = true;
+			break;
+		}
+		const shown = samples.length;
+		if (shown === 1 || shown % 6 === 0) {
+			console.log(
+				`  draining: backlog=${ops.accepted} (baseline ${baselineAccepted}) oldest=${ops.oldestAgeMs ?? 0}ms deadLetter=${ops.deadLetter}`,
+			);
+		}
+		await new Promise((r) => setTimeout(r, drainPollMs));
+	}
+	return { drained, samples };
+}
+
+// Deliveries cleared per second, measured between the first and last samples.
+// `reason` matters as much as the number: an unmeasurable rate because nothing was
+// ever queued is a pass, while an unmeasurable rate because the backlog never
+// moved is the worst possible result and must not be reported as "kept up".
+function drainProgress(samples, baselineAccepted) {
+	if (samples.length === 0) return { rate: null, reason: 'no-samples' };
+	const first = samples[0];
+	if (first.accepted <= baselineAccepted) return { rate: null, reason: 'nothing-queued' };
+	if (samples.length < 2) return { rate: null, reason: 'too-few-samples' };
+	const last = samples[samples.length - 1];
+	const cleared = first.accepted - last.accepted;
+	const seconds = last.atSec - first.atSec;
+	if (seconds <= 0) return { rate: null, reason: 'too-few-samples' };
+	if (cleared <= 0) return { rate: 0, reason: 'no-progress' };
+	return { rate: cleared / seconds, reason: 'measured' };
+}
+
+function describeDrainRate({ rate, reason }) {
+	if (reason === 'nothing-queued') return 'n/a — processing kept up with ingest in real time, nothing queued';
+	if (reason === 'no-progress') return `0/s vs ${rps}/s offered — the backlog did not move at all`;
+	if (rate === null) return 'n/a — too few samples to measure';
+	return `${rate.toFixed(1)}/s vs ${rps}/s offered`;
+}
+
 async function main() {
 	console.log(`Load: ${rps} rps for ${durationSec}s against ${base} (topic ${topic})`);
+	const baseline = await readOps();
+	console.log(`pre-burst: backlog=${baseline.accepted} deadLetter=${baseline.deadLetter}`);
 	const latencies = [];
 	let sent = 0;
 	let lost = 0;
@@ -91,9 +174,34 @@ async function main() {
 	console.log(`sent=${sent} lost=${lost} statuses=${JSON.stringify(Object.fromEntries(statuses))}`);
 	console.log(`ack latency ms: p50=${p50.toFixed(1)} p95=${p95.toFixed(1)} max=${max.toFixed(1)}`);
 
-	const pass = lost === 0 && p95 < P95_MS && max < MAX_MS;
+	// ── drain: the half that actually proves the deferred work happened ──────────
+	console.log(`\nwaiting up to ${drainTimeoutSec}s for the backlog to return to ${baseline.accepted}...`);
+	const { drained, samples } = await waitForDrain(baseline.accepted);
+	const finalOps = samples.length > 0 ? samples[samples.length - 1] : await readOps();
+	const drainSec = samples.length > 0 ? samples[samples.length - 1].atSec : 0;
+	const progress = drainProgress(samples, baseline.accepted);
+	const deadLetterDelta = finalOps.deadLetter - baseline.deadLetter;
+	// A drain slower than ingest means the backlog grows without bound under
+	// sustained load, so the burst only "passed" because it ended. Only a genuinely
+	// empty queue is exempt.
+	const keepsUp = progress.reason === 'nothing-queued' ? true : progress.rate !== null && progress.rate >= rps;
+
 	console.log(
-		`\nGATES: p95<${P95_MS} ${p95 < P95_MS ? 'PASS' : 'FAIL'} · max<${MAX_MS} ${max < MAX_MS ? 'PASS' : 'FAIL'} · loss=0 ${lost === 0 ? 'PASS' : 'FAIL'}`,
+		`drain: ${drained ? `complete in ~${drainSec.toFixed(1)}s` : `INCOMPLETE — backlog still ${finalOps.accepted} after ${drainTimeoutSec}s`}`,
+	);
+	console.log(`drain rate: ${describeDrainRate(progress)}`);
+	console.log(`dead letters: ${baseline.deadLetter} -> ${finalOps.deadLetter} (delta ${deadLetterDelta})`);
+
+	const pass = lost === 0 && p95 < P95_MS && max < MAX_MS && drained && deadLetterDelta === 0 && keepsUp;
+	console.log(
+		[
+			`\nGATES: p95<${P95_MS} ${p95 < P95_MS ? 'PASS' : 'FAIL'}`,
+			`max<${MAX_MS} ${max < MAX_MS ? 'PASS' : 'FAIL'}`,
+			`rejected=0 ${lost === 0 ? 'PASS' : 'FAIL'}`,
+			`drained ${drained ? 'PASS' : 'FAIL'}`,
+			`deadLetterDelta=0 ${deadLetterDelta === 0 ? 'PASS' : 'FAIL'}`,
+			`drain>=offered ${keepsUp ? 'PASS' : 'FAIL'}`,
+		].join(' · '),
 	);
 	console.log(pass ? 'LOAD PASS' : 'LOAD FAIL');
 	process.exit(pass ? 0 : 1);

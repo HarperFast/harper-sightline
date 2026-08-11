@@ -190,6 +190,12 @@ export const M = {
 	reconcileOrders: 'reconcile.orders',
 	reconcileMs: 'reconcile.ms',
 	reconcileError: 'reconcile.error',
+	// Shopify rate-limited the sweep. Split out of reconcileError because it means
+	// something different operationally: a fault vs. asking for more than the
+	// shop's quota grants. A sustained non-zero count here (with reconcile cursors
+	// still advancing) is the signal to shrink the page size or lengthen the
+	// interval, not to go looking for a bug.
+	reconcileThrottled: 'reconcile.throttled',
 	// Retention purge. (Residue/backlog are point-in-time gauges, reported by the
 	// ops.snapshot from computeOpsHealth — not cumulative counters.)
 	purgeDeleted: 'purge.deleted',

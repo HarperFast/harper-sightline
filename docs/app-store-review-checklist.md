@@ -31,9 +31,10 @@ A production install on dev-fallback secrets is not a launch candidate, so (2) g
 | No write scopes / no store mutation | ✅ | `scopes = "read_orders,read_fulfillments,read_inventory,read_products,read_locations"`; all write capabilities hard-`false` in `src/capabilities.ts` |
 | Performance: fast webhook ack | ✅ | Ack p95 gate documented and tested (#24, `docs/reliability-report.md`) |
 | Pinned API version | ✅ | `api_version = "2026-07"`; quarterly bump is a standing operational task (threat model §5) |
-| **Load burst + backup/restore drills** | ☐ | Tooled and documented in #24, deferred to live infra. `npm run loadtest`; restore procedure in `docs/reliability-report.md` |
+| **Load burst + backup/restore drills** | ☐ | Tooled and documented in #24, deferred to live infra. `npm run loadtest` now also proves the burst **drained** (backlog returns to baseline, no new dead letters, drain rate ≥ offered rate) rather than only that it was acked — see `docs/reliability-report.md` §3 and the capacity caveat in §5.1. Restore procedure in the same doc |
 | **Rollback verified** | ☐ | Path is "deploy an earlier ref" (`docs/deployment.md`); never exercised end to end |
-| **Staging smoke: reconciliation + uninstall** | ☐ | `scripts/smoke.mjs` covers health, session, setup, summary, privacy, findings, policy, webhook HMAC — not reconciliation or uninstall |
+| **Staging smoke: uninstall** | 🟡 | **Covered:** `SMOKE_UNINSTALL=1 npm run smoke` bootstraps a throwaway shop, posts a signed `app/uninstalled`, and polls `/api/v1/setup` until the shop reads as no longer installed — so it asserts the state change, not just the ack. Opt-in because it writes state. **Needs:** the flag set in the staged deploy run |
+| **Staging smoke: reconciliation** | ☐ | Still uncovered. Reconciliation needs a real offline Admin token, which the synthetic smoke shop has no way to obtain — this one can only be exercised against a genuinely installed store, so it belongs to the §4 walkthrough rather than to `smoke.mjs` |
 
 ## 2. Protected Customer Data
 

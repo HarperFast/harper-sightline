@@ -12,7 +12,7 @@ export const ADMIN_TIMEOUT_MS = 30_000;
 
 interface GraphqlBody<T> {
 	data?: T;
-	errors?: Array<{ message: string }>;
+	errors?: Array<{ message: string; extensions?: { code?: unknown } }>;
 }
 
 // A GraphQL error whose message says the token's scopes don't cover the field
@@ -39,6 +39,30 @@ export function isPermanentAdminError(err: unknown): boolean {
 	return typeof err === 'object' && err !== null && (err as { permanent?: unknown }).permanent === true;
 }
 
+// Shopify rate limiting. Transient — always worth retrying — but distinguishable
+// from a fault, because "throttled" is a capacity signal (we are asking for more
+// than the shop's quota grants) while a 500 is an outage. Both previously landed
+// in the same reconcile.error counter, which made a shop whose backfill could not
+// fit inside its quota indistinguishable from a Shopify blip in ops.snapshot.
+// Deliberately carries no retry-after delay: the reconcile sweep aborts and the
+// 10-minute cron retries, an interval already far longer than Shopify's
+// seconds-scale throttle window, and sweepOrdersSince persists partial progress
+// so each retry resumes rather than replays. Sleeping inside the sweep would
+// stall a tick to no benefit.
+export class ThrottledAdminApiError extends Error {
+	readonly throttled = true;
+	readonly statusCode: number | undefined;
+	constructor(message: string, statusCode?: number) {
+		super(message);
+		this.name = 'ThrottledAdminApiError';
+		this.statusCode = statusCode;
+	}
+}
+
+export function isThrottledAdminError(err: unknown): boolean {
+	return typeof err === 'object' && err !== null && (err as { throttled?: unknown }).throttled === true;
+}
+
 // Low-level transport. Injectable `fetchImpl` for tests.
 export async function adminGraphql<T>(
 	shop: string,
@@ -57,6 +81,7 @@ export async function adminGraphql<T>(
 		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) {
+		if (res.status === 429) throw new ThrottledAdminApiError(`admin graphql ${res.status}`, res.status);
 		const e = new Error(`admin graphql ${res.status}`) as Error & { statusCode: number };
 		e.statusCode = res.status;
 		throw e;
@@ -65,6 +90,12 @@ export async function adminGraphql<T>(
 	if (body.errors?.length) {
 		const message = body.errors.map((x) => x.message).join('; ');
 		if (ACCESS_DENIED_RE.test(message)) throw new PermanentAdminApiError(`admin graphql errors: ${message}`);
+		// A GraphQL throttle is an HTTP 200 carrying extensions.code, so the status
+		// line above cannot see it. Matched on the code, not the message, because the
+		// code is the contractual signal.
+		if (body.errors.some((x) => String(x.extensions?.code).toUpperCase() === 'THROTTLED')) {
+			throw new ThrottledAdminApiError(`admin graphql errors: ${message}`);
+		}
 		throw new Error(`admin graphql errors: ${message}`);
 	}
 	if (!body.data) throw new Error('admin graphql: empty data');

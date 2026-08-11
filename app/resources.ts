@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import { Resource, contentTypes } from 'harper';
-import './jobs.ts'; // starts the background processing loop on component load
+import { getOpsHealth } from './jobs.ts'; // importing also starts the background loops on component load
 import { createShopifyIdentityAdapter } from './src/identity.ts';
 import { capabilitiesFor } from './src/capabilities.ts';
 import { ensureShopRecord, ensureCredential } from './src/lifecycle.ts';
 import { verifyWebhookHmac } from './src/webhookHmac.ts';
+import { opsTokenAccepted } from './src/opsAuth.ts';
 import { acceptDelivery } from './src/webhookIngress.ts';
 import { stripPii } from './src/pii.ts';
 import {
@@ -116,6 +117,29 @@ export class Health extends Resource {
 	}
 	get() {
 		return { ok: true, service: 'sightline', version: VERSION };
+	}
+}
+
+// Operator-facing health, gated on a shared secret rather than a merchant
+// session — the callers are the load harness and the post-deploy checks, not a
+// merchant in the admin. Answers from tables (see getOpsHealth), so on a
+// multi-node cluster any node reports the whole cluster's backlog.
+//
+// Payload carries no merchant-identifying data by construction (opsHealth.ts is
+// cross-shop counts and ages), and the route 404s — rather than 401s — when the
+// token is missing or wrong, so an unconfigured environment does not advertise
+// that the endpoint exists.
+export class OpsResource extends Resource {
+	static path = '/api/v1/ops';
+	allowRead() {
+		return true;
+	}
+	async get() {
+		const ctx = this.getContext();
+		if (!opsTokenAccepted(ctx.headers.get('x-sightline-ops-token'), process.env.SIGHTLINE_OPS_TOKEN)) {
+			throw httpError('not found', 404);
+		}
+		return getOpsHealth();
 	}
 }
 
