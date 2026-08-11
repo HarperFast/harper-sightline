@@ -37,7 +37,7 @@ import {
 	type DigestBuildResult,
 } from './src/digestBuild.ts';
 import { log, metrics, M } from './src/observe.ts';
-import { computeOpsHealth } from './src/opsHealth.ts';
+import { computeOpsHealth, type OpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
 import type { QueryTable } from './src/queries.ts';
 
@@ -596,8 +596,13 @@ const OPS_SNAPSHOT_INTERVAL_MS = 60_000; // once a minute
 const OPS_SNAPSHOT_INITIAL_DELAY_MS = 20_000;
 const snapshotTicker = ticker('ops.snapshot', 5 * 60_000);
 
-export async function runOpsSnapshot(now = Date.now()): Promise<void> {
-	const health = await computeOpsHealth(
+// The same table wiring the snapshot uses, exposed so the ops endpoint
+// (/api/v1/ops in resources.ts) answers from tables rather than from a log line.
+// That distinction matters on a multi-node cluster: tables are replicated, so any
+// node reports the whole cluster's backlog, whereas a log read only ever sees the
+// node that happened to answer.
+export function getOpsHealth(now = Date.now()): Promise<OpsHealth> {
+	return computeOpsHealth(
 		{
 			deliveries: Deliveries as unknown as QueryTable,
 			checkpoints: Checkpoints as unknown as QueryTable,
@@ -605,6 +610,10 @@ export async function runOpsSnapshot(now = Date.now()): Promise<void> {
 		},
 		now,
 	);
+}
+
+export async function runOpsSnapshot(now = Date.now()): Promise<void> {
+	const health = await getOpsHealth(now);
 	log(health.healthy ? 'info' : 'warn', 'ops.snapshot', { health, metrics: metrics.snapshot() });
 }
 

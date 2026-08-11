@@ -45,6 +45,7 @@ Three logical environments; each is a GitHub **Environment** with its own secret
 | `SIGHTLINE_SUPPORT_EMAIL` | app runtime | **Optional override.** Defaults in code to `support@harperdb.io` — the contact is product metadata, identical in every environment, so it ships committed and a deploy cannot forget it and leave merchants with no recourse. Override only for a staging or white-label deployment. |
 | `SIGHTLINE_SUPPORT_URL` | app runtime | Optional help-centre URL, shown alongside the email |
 | `SIGHTLINE_POLICY_UPDATED` | app runtime | Effective date shown on `/privacy-policy`. Set once the policy passes legal review; until then the page reads "Not yet published" |
+| `SIGHTLINE_OPS_TOKEN` | app runtime + `loadtest.mjs` | **Optional.** Shared secret for the operator-only `/api/v1/ops` health endpoint, which is how `loadtest.mjs` proves a burst actually drained. Must be ≥ 32 chars (`openssl rand -hex 16`); anything shorter is treated as unset. While unset the route 404s, so an environment that never opts in does not expose it |
 
 Runtime secrets the *component* reads (`SHOPIFY_API_SECRET`, `SIGHTLINE_TOKEN_KEY`,
 `SIGHTLINE_REQUIRE_SECRETS`) live on the **Fabric instance** (Harper native secrets /
