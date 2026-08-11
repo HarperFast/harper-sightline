@@ -31,6 +31,14 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 
 ## Standards
 
+`jobs.ts` and `resources.ts` import the Harper runtime, so nothing in them is
+unit-testable. Every background sweep therefore keeps its logic in a
+deps-injected `src/` module — `processor.ts`, `inventoryEnrich.ts`,
+`stateBackfill.ts`, `purgeCycle.ts`, `reconcileSweep.ts` — and `jobs.ts` wires
+the real tables, Admin API calls, and tickers. When a sweep needs a behavior
+guarantee tested (retry, convergence, idempotency), move the loop into `src/`
+rather than testing around it.
+
 TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
 `format:write` (prettier), `lint:required` (oxlint), `typecheck` (tsc), `test`
 (node --test). See /docs and the ADRs for the decisions this app must honor.
@@ -57,6 +65,12 @@ dashboards/alerts under #25.
   reconciliation staleness, reauth). `jobs.ts` runs it once a minute as the
   `ops.snapshot` heartbeat (emitted at `warn` when unhealthy so alerts can key
   off it). This is distinct from the per-shop merchant-facing `getSummary`.
+  The same object is served over HTTP at `/api/v1/ops`, gated by
+  `src/opsAuth.ts` on the `SIGHTLINE_OPS_TOKEN` shared secret and 404-ing when
+  unset. Prefer it over log scraping for anything programmatic: it reads
+  replicated tables, so any node answers for the whole cluster, whereas
+  `read_log` only ever sees the node that happened to serve the request.
+  `scripts/loadtest.mjs` uses it to prove a burst drained.
 - **Runbooks**: `/docs/runbooks/` — one per alert condition, with an
   alert→runbook→owner map in its README. Alert conditions name the exact
   metric/`ops.snapshot` field to watch.
