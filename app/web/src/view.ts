@@ -1722,3 +1722,32 @@ export function parseHash(hash: string): { path: string; params: Record<string, 
 	for (const [k, v] of new URLSearchParams(query ?? '')) params[k] = v;
 	return { path: path || '/', params };
 }
+
+// The app answers to BOTH a hash route and a real path, because Admin's own
+// sidebar leaves us no choice: `s-app-nav` requires each link to be "a relative
+// path within your app" (`/orders`) and navigates to it client-side. Fragment
+// hrefs are not part of that contract — Admin rendered our `#/orders` links in the
+// sidebar and clicking them did nothing at all, while the in-page nav (same
+// routes, same SPA) worked, because only the hash form ever reached the router.
+//
+// The hash WINS whenever one is present, which keeps every in-app link, bookmark
+// and shared filter URL working exactly as before. It is also safe against a stale
+// fragment: History-API navigation to `/privacy` replaces the whole URL, fragment
+// included, so a hash left over from in-app navigation cannot outvote a sidebar
+// click.
+//
+// Query params are read from the path's own search string, which inside Admin also
+// carries Shopify's embed params (shop, host, id_token, embedded, …). Harmless:
+// every screen reads only the filter keys it declares, so the rest are ignored
+// rather than mistaken for filters.
+export function parseRoute(location: { pathname: string; search: string; hash: string }): {
+	path: string;
+	params: Record<string, string>;
+} {
+	if (location.hash && location.hash !== '#') return parseHash(location.hash);
+	const params: Record<string, string> = {};
+	for (const [k, v] of new URLSearchParams(location.search ?? '')) params[k] = v;
+	// A trailing slash is the same route ('/orders/' is not an order id).
+	const path = (location.pathname || '/').replace(/\/+$/, '') || '/';
+	return { path, params };
+}

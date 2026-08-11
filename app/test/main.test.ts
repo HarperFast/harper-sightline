@@ -139,3 +139,95 @@ test('a successful save re-renders with the confirmation', async () => {
 	assert.equal(banner.querySelector('s-paragraph')?.textContent?.trim(), 'Saved.');
 	assert.ok(win.document.querySelector('[data-save-digest]'));
 });
+
+// ── routing ──────────────────────────────────────────────────────────────────
+// Admin's own sidebar (`s-app-nav`) requires each link to be a real path within
+// the app and navigates to it client-side. Our links were fragments and the
+// router only listened for `hashchange`, so every sidebar entry rendered and did
+// nothing when clicked while the identical in-page links worked. Both halves of
+// that failure live in main.ts's wiring — the router's input and the events it
+// listens to — so both are exercised here through a real boot.
+
+const PRIVACY = {
+	shop: 's.myshopify.com',
+	retentionDays: 7,
+	storesCustomerPii: false,
+	scopes: ['read_orders'],
+	dataCategories: ['order ids'],
+	excludedFields: ['email'],
+	deletion: { shop: 'purged on uninstall' },
+	footprint: { events: 1, orders: 1, findings: 0 },
+	webhooks: { received: 1, processed: 1, deadLettered: 0, healthy: true },
+	reconciliation: { ageMs: 0, stale: false, state: 'ready' },
+};
+
+async function bootAt(url: string): Promise<Window> {
+	const win = new Window({ url });
+	win.document.body.innerHTML = '<div id="app"></div>';
+	(globalThis as unknown as { window: unknown }).window = win;
+	(globalThis as unknown as { document: unknown }).document = win.document;
+	(globalThis as unknown as { location: unknown }).location = win.location;
+	(globalThis as unknown as { history: unknown }).history = win.history;
+	(globalThis as unknown as { shopify: unknown }).shopify = { idToken: async () => 'test-id-token' };
+
+	win.fetch = (async (path: unknown) => {
+		const p = String(path);
+		if (p.startsWith('/api/v1/privacy')) return jsonResponse(200, PRIVACY);
+		if (p.startsWith('/api/v1/orders')) return jsonResponse(200, { items: [] });
+		if (p.startsWith('/api/v1/setup')) {
+			return jsonResponse(200, { shop: 's', complete: true, steps: [], eventsObserved: true, action: 'none' });
+		}
+		return jsonResponse(500, {});
+	}) as unknown as Window['fetch'];
+
+	await import(`../web/src/main.ts?instance=${instanceCounter++}`);
+	return win;
+}
+
+const heading = (win: Window): string | null | undefined => win.document.querySelector('s-page')?.getAttribute('heading');
+
+test('a real path renders that screen — what an Admin sidebar link actually loads', async () => {
+	// Admin appends its own embed params; they must not be mistaken for filters, and
+	// the path alone must decide the screen.
+	const win = await bootAt('https://sightline.test/privacy?shop=acme.myshopify.com&embedded=1&id_token=x');
+	await waitFor(() => heading(win) === 'Privacy and app health');
+	assert.equal(heading(win), 'Privacy and app health');
+});
+
+test('a client-side pushState — what the sidebar does on click — re-routes', async () => {
+	const win = await bootAt('https://sightline.test/');
+	await waitFor(() => Boolean(heading(win)));
+	// pushState fires no popstate event, so a router listening only for navigation
+	// events sees nothing: the URL changes and the screen does not. That is exactly
+	// how the sidebar links read as dead.
+	win.history.pushState({}, '', '/orders');
+	await waitFor(() => heading(win) === 'Orders');
+	assert.equal(heading(win), 'Orders');
+});
+
+test('a path route does not get hijacked to the setup screen', async () => {
+	// boot() lands first-time visitors on /setup while the initial check runs. It
+	// used to test `location.hash`, so with path routing every sidebar link on an
+	// incomplete-setup shop would have been swallowed by the setup screen.
+	const win = new Window({ url: 'https://sightline.test/orders' });
+	win.document.body.innerHTML = '<div id="app"></div>';
+	(globalThis as unknown as { window: unknown }).window = win;
+	(globalThis as unknown as { document: unknown }).document = win.document;
+	(globalThis as unknown as { location: unknown }).location = win.location;
+	(globalThis as unknown as { history: unknown }).history = win.history;
+	(globalThis as unknown as { shopify: unknown }).shopify = { idToken: async () => 'test-id-token' };
+	win.fetch = (async (path: unknown) => {
+		const p = String(path);
+		if (p.startsWith('/api/v1/orders')) return jsonResponse(200, { items: [] });
+		// An INCOMPLETE setup — the condition that triggers the redirect.
+		if (p.startsWith('/api/v1/setup')) {
+			return jsonResponse(200, { shop: 's', complete: false, steps: [], eventsObserved: false, action: 'none' });
+		}
+		return jsonResponse(500, {});
+	}) as unknown as Window['fetch'];
+
+	await import(`../web/src/main.ts?instance=${instanceCounter++}`);
+	await waitFor(() => heading(win) === 'Orders');
+	assert.equal(heading(win), 'Orders');
+	assert.equal(win.location.pathname, '/orders', 'and the URL was not rewritten');
+});

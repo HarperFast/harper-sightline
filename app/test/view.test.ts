@@ -49,6 +49,7 @@ import {
 	ordersView,
 	overviewView,
 	parseHash,
+	parseRoute,
 	privacyView,
 	saveErrorAction,
 	setShop,
@@ -1659,4 +1660,37 @@ test('label/value blocks no longer repeat "Field" and "Value" above every pair',
 	assert.equal(fieldValue(html, 'Retention'), '7 days, then permanently purged');
 	// Labels are subdued and the value keeps its own markup (badges, links, times).
 	assert.match(fieldValue(html, 'Granted access'), /<s-badge tone="info">read_orders<\/s-badge>/);
+});
+
+// ── routing ──────────────────────────────────────────────────────────────────
+
+test('a route comes from the hash when there is one, and from the real path otherwise', () => {
+	// Admin's sidebar navigates to a real path (`s-app-nav` takes no fragments), while
+	// every in-app link, bookmark and shared filter URL is a hash. Both have to work.
+	assert.deepEqual(parseRoute({ pathname: '/', search: '', hash: '#/orders?state=awaiting' }), {
+		path: '/orders',
+		params: { state: 'awaiting' },
+	});
+	assert.deepEqual(parseRoute({ pathname: '/orders', search: '?state=awaiting', hash: '' }), {
+		path: '/orders',
+		params: { state: 'awaiting' },
+	});
+	// The hash wins when both are present. It cannot be a STALE hash outvoting a
+	// sidebar click: History navigation to '/privacy' replaces the whole URL,
+	// fragment included.
+	assert.equal(parseRoute({ pathname: '/privacy', search: '', hash: '#/events' }).path, '/events');
+});
+
+test('a path route tolerates what Admin actually puts in the URL', () => {
+	// Embed params ride along on every load; screens read only the filter keys they
+	// declare, so these are ignored rather than mistaken for filters.
+	const route = parseRoute({ pathname: '/events', search: '?shop=acme.myshopify.com&embedded=1&id_token=jwt', hash: '' });
+	assert.equal(route.path, '/events');
+	assert.deepEqual(eventQuery(route.params, NOW), {}, 'no embed param becomes a query filter');
+	// A bare root, an empty hash, and a trailing slash are all the same route.
+	assert.equal(parseRoute({ pathname: '/', search: '', hash: '' }).path, '/');
+	assert.equal(parseRoute({ pathname: '/', search: '', hash: '#' }).path, '/');
+	assert.equal(parseRoute({ pathname: '/orders/', search: '', hash: '' }).path, '/orders');
+	// A path with an id still routes to the detail screen.
+	assert.equal(parseRoute({ pathname: '/orders/1234', search: '', hash: '' }).path, '/orders/1234');
 });

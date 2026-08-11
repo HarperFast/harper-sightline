@@ -36,7 +36,7 @@ import {
 	ordersView,
 	ORDER_FILTER_KEYS,
 	overviewView,
-	parseHash,
+	parseRoute,
 	privacyView,
 	saveErrorAction,
 	setShop,
@@ -376,7 +376,7 @@ async function notifications(message?: { tone: string; text: string }): Promise<
 
 // ── router ───────────────────────────────────────────────────────────────────
 async function route(): Promise<void> {
-	const { path, params } = parseHash(location.hash);
+	const { path, params } = parseRoute(location);
 	setActiveNav(path);
 	try {
 		const eventId = path.match(/^\/events\/(.+)$/);
@@ -416,11 +416,29 @@ async function boot(): Promise<void> {
 		// Not connected — the screens surface their own auth/error state.
 	}
 	window.addEventListener('hashchange', () => void route());
+	// Admin's sidebar (`s-app-nav`) navigates client-side to a real path, so the
+	// router has to hear about History-API navigation too — a hashchange listener
+	// alone is why those links appeared inert.
+	//
+	// `popstate` covers browser back/forward and any navigation that dispatches it.
+	// A `pushState` does NOT fire popstate, so it is wrapped to announce itself:
+	// without that, a sidebar click that pushes '/orders' would change the URL and
+	// leave the screen untouched — the same silent no-op, one layer down. Only
+	// pushState is wrapped, deliberately: this module's own replaceState (below) must
+	// stay silent, since route() is called explicitly right after it.
+	window.addEventListener('popstate', () => void route());
+	const pushState = history.pushState.bind(history);
+	history.pushState = (...args: Parameters<typeof history.pushState>) => {
+		pushState(...args);
+		void route();
+	};
 
 	// First open lands on the setup screen while the initial check runs, so the app
 	// explains itself instead of showing an empty overview that looks like "no
 	// gaps" (screen spec §1). Any explicit route wins — this never traps the user.
-	if (!location.hash || location.hash === '#/' || location.hash === '#') {
+	// "Explicit" now includes a real path: a sidebar link to /orders must not be
+	// hijacked to the setup screen.
+	if (parseRoute(location).path === '/') {
 		let setup: Setup | null = null;
 		try {
 			setup = await apiSetup();

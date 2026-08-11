@@ -128,18 +128,24 @@
 		<!-- Native Admin navigation: these render in Shopify's own app nav, not in
 		     the iframe. The first entry configures the home route and is not itself
 		     rendered (rel="home").
+		     Each href MUST be a real path within the app ("/orders"), never a
+		     fragment: that is s-app-nav's documented contract, and it navigates to
+		     the path client-side. These were "#/orders", so Admin rendered six links
+		     that did nothing when clicked while the identical routes in the in-page
+		     nav below worked. The SPA answers to both forms (view.ts parseRoute), so
+		     the two navs agree; test/appNav.test.ts pins the href format.
 		     NOTE: s-app-nav only renders inside real Admin, and it is not verifiable
 		     from local dev — so the in-page nav below is kept as a guaranteed
-		     fallback. Once s-app-nav is confirmed in the live embed, drop `.appnav`
-		     and its markup. -->
+		     fallback. Once s-app-nav is confirmed working in the live embed, drop
+		     `.appnav` and its markup. -->
 		<s-app-nav>
 			<s-link href="/" rel="home">Sightline</s-link>
-			<s-link href="#/">Overview</s-link>
-			<s-link href="#/orders">Orders</s-link>
-			<s-link href="#/events">Events</s-link>
-			<s-link href="#/findings">Findings</s-link>
-			<s-link href="#/notifications">Notifications</s-link>
-			<s-link href="#/privacy">Privacy</s-link>
+			<s-link href="/">Overview</s-link>
+			<s-link href="/orders">Orders</s-link>
+			<s-link href="/events">Events</s-link>
+			<s-link href="/findings">Findings</s-link>
+			<s-link href="/notifications">Notifications</s-link>
+			<s-link href="/privacy">Privacy</s-link>
 		</s-app-nav>
 		<nav class="appnav" aria-label="Sightline sections">
 			<s-link href="#/" data-nav="/">Overview</s-link>
