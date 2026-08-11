@@ -25,8 +25,9 @@ import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/ledgerTargets
 import { runPurgeCycle } from './src/purgeCycle.ts';
 import { getUsableAccessToken, isAuthError } from './src/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/tokenDeps.ts';
-import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations } from './src/adminApi.ts';
+import { fetchOrdersUpdatedSince, fetchShopTimezone, fetchInventoryItems, fetchLocations, isThrottledAdminError } from './src/adminApi.ts';
 import { synthesizeEvents } from './src/reconcile.ts';
+import { sweepOrdersSince } from './src/reconcileSweep.ts';
 import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/inventoryEnrich.ts';
 import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/stateBackfill.ts';
 import {
@@ -36,7 +37,7 @@ import {
 	type DigestBuildResult,
 } from './src/digestBuild.ts';
 import { log, metrics, M } from './src/observe.ts';
-import { computeOpsHealth } from './src/opsHealth.ts';
+import { computeOpsHealth, type OpsHealth } from './src/opsHealth.ts';
 import { createTicker } from './src/tick.ts';
 import type { QueryTable } from './src/queries.ts';
 
@@ -347,23 +348,34 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 	const checkpointId = `reconcile:${shopId}`;
 	const checkpoint = await Checkpoints.get(checkpointId);
 	const sinceMs = checkpoint?.cursor ? Number(checkpoint.cursor) : now - RECONCILE_BACKFILL_MS;
-	let cursor: string | undefined;
-	let latest = sinceMs;
-	let orders = 0;
-	do {
-		const page = await fetchOrdersUpdatedSince(shopId, token, sinceMs, cursor);
-		for (const order of page.orders) {
-			for (const event of synthesizeEvents(shopId, order)) {
-				await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
-			}
-			await updateOrderProjection(shopId, order.orderId);
-			await runDetectorForOrder(shopId, order.orderId, now);
-			if (order.updatedAt && order.updatedAt > latest) latest = order.updatedAt;
-			orders += 1;
-		}
-		cursor = page.nextCursor;
-	} while (cursor);
-	await Checkpoints.put({ id: checkpointId, cursor: String(latest), updatedAt: now });
+	// Paging lives in src/reconcileSweep.ts so the convergence guarantee (progress
+	// is persisted even when a page fetch throws) is unit-testable without the
+	// Harper runtime.
+	const sweep = await sweepOrdersSince(
+		{
+			fetchPage: (since, pageCursor) => fetchOrdersUpdatedSince(shopId, token, since, pageCursor),
+			async applyOrder(order) {
+				for (const event of synthesizeEvents(shopId, order)) {
+					await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
+				}
+				await updateOrderProjection(shopId, order.orderId);
+				await runDetectorForOrder(shopId, order.orderId, now);
+			},
+			// A partial pass advances `cursor` but must leave `updatedAt` alone —
+			// that field is computeOpsHealth's reconcile-staleness signal, so
+			// stamping it here would make a shop that never finishes a pass look
+			// fresh. Preserving the prior value (undefined when a shop has never
+			// completed one) keeps such a shop correctly counted as stale.
+			saveCheckpoint: (cursorMs, complete) =>
+				Checkpoints.put({
+					id: checkpointId,
+					cursor: String(cursorMs),
+					updatedAt: complete ? now : checkpoint?.updatedAt,
+				}),
+		},
+		sinceMs,
+	);
+	const orders = sweep.orders;
 	// Durable per-shop completion marker. This is what the merchant-facing setup
 	// stepper and the Overview's "reconciled N ago" / stale banner read (#16
 	// follow-ups) — the checkpoint alone is an internal cursor, and a shop is only
@@ -399,8 +411,16 @@ function reconcileTick(): void {
 			metrics.inc(M.reconcileOrders, r.orders);
 			if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
 		} catch (e: unknown) {
-			metrics.inc(M.reconcileError);
-			log('error', 'reconcile.error', { message: (e as Error).message });
+			// A throttle is a capacity signal, not a fault: the sweep persisted its
+			// partial progress and the next tick resumes, so it is counted (and
+			// logged at warn) separately from a genuine reconcile failure.
+			if (isThrottledAdminError(e)) {
+				metrics.inc(M.reconcileThrottled);
+				log('warn', 'reconcile.throttled', { message: (e as Error).message });
+			} else {
+				metrics.inc(M.reconcileError);
+				log('error', 'reconcile.error', { message: (e as Error).message });
+			}
 		}
 	});
 }
@@ -576,8 +596,13 @@ const OPS_SNAPSHOT_INTERVAL_MS = 60_000; // once a minute
 const OPS_SNAPSHOT_INITIAL_DELAY_MS = 20_000;
 const snapshotTicker = ticker('ops.snapshot', 5 * 60_000);
 
-export async function runOpsSnapshot(now = Date.now()): Promise<void> {
-	const health = await computeOpsHealth(
+// The same table wiring the snapshot uses, exposed so the ops endpoint
+// (/api/v1/ops in resources.ts) answers from tables rather than from a log line.
+// That distinction matters on a multi-node cluster: tables are replicated, so any
+// node reports the whole cluster's backlog, whereas a log read only ever sees the
+// node that happened to answer.
+export function getOpsHealth(now = Date.now()): Promise<OpsHealth> {
+	return computeOpsHealth(
 		{
 			deliveries: Deliveries as unknown as QueryTable,
 			checkpoints: Checkpoints as unknown as QueryTable,
@@ -585,6 +610,10 @@ export async function runOpsSnapshot(now = Date.now()): Promise<void> {
 		},
 		now,
 	);
+}
+
+export async function runOpsSnapshot(now = Date.now()): Promise<void> {
+	const health = await getOpsHealth(now);
 	log(health.healthy ? 'info' : 'warn', 'ops.snapshot', { health, metrics: metrics.snapshot() });
 }
 

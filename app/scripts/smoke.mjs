@@ -14,6 +14,7 @@ const base = process.env.SIGHTLINE_BASE ?? 'https://ayoo.josh-test.harperfabric.
 const secret = process.env.SHOPIFY_API_SECRET;
 const apiKey = process.env.SHOPIFY_API_KEY ?? 'e446bda5edb3ee3bae6e0ba280ef8b12';
 const smokeShop = process.env.SMOKE_SHOP ?? 'sightline-smoke.myshopify.com';
+const defaultSmokeShop = smokeShop;
 
 let ok = true;
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
@@ -28,14 +29,17 @@ async function req(path, { method = 'GET', headers = {}, body } = {}) {
 	if (body !== undefined) opts.body = body;
 	try {
 		const r = await fetch(`${base}${path}`, opts);
-		return { status: r.status, body: (await r.text()).slice(0, 200).replace(/\n/g, ' ') };
+		const text = await r.text();
+		// `body` stays truncated for log lines; `bodyFull` is for callers that need
+		// to parse the response (a truncated JSON body is not parseable).
+		return { status: r.status, body: text.slice(0, 200).replace(/\n/g, ' '), bodyFull: text };
 	} catch (e) {
-		return { status: 0, body: e.code ?? e.message };
+		return { status: 0, body: e.code ?? e.message, bodyFull: '' };
 	}
 }
 
 // A Shopify session JWT signed with the app secret (matches verifySessionToken).
-function mintSessionToken() {
+function mintSessionToken(smokeShop = defaultSmokeShop) {
 	const now = Math.floor(Date.now() / 1000);
 	const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
 	const claims = b64url(
@@ -123,6 +127,69 @@ if (secret) {
 			body: wbody,
 		});
 		check('POST /webhooks/shopify/events signed = 2xx', accepted.status >= 200 && accepted.status < 300, String(accepted.status));
+	}
+
+	// ── app/uninstalled round-trip (app-store-review-checklist §1) ────────────────
+	// Shopify's reviewer WILL uninstall the app, and uninstall is the one lifecycle
+	// path that revokes the offline token and stops all Admin API work, so a
+	// regression here is both a review failure and a "kept a credential we have no
+	// right to" problem. Opt-in because it writes state, and it uses a shop domain
+	// unique to this run: ensureShopRecord only creates a shop when one is missing,
+	// so re-running against a fixed domain would start from an already-uninstalled
+	// shop and assert nothing. Leaves one uninstalled Shop row per run (staging).
+	if (process.env.SMOKE_UNINSTALL === '1') {
+		const uninstallShopDomain = `sightline-smoke-uninstall-${Date.now().toString(36)}.myshopify.com`;
+		const uninstallAuth = { 'X-Shopify-Session-Token': mintSessionToken(uninstallShopDomain) };
+
+		// Session bootstraps the shop record as active — the state uninstall must clear.
+		const bootstrapped = await req('/api/v1/session', { headers: uninstallAuth });
+		check('uninstall: session bootstraps the throwaway shop = 200', bootstrapped.status === 200, String(bootstrapped.status));
+
+		const before = await req('/api/v1/setup', { headers: uninstallAuth });
+		let installedBefore = false;
+		try {
+			installedBefore = JSON.parse(before.bodyFull ?? before.body).installed === true;
+		} catch {
+			// fall through — reported by the check below
+		}
+		check('uninstall: shop reads as installed before the webhook', installedBefore, before.body.slice(0, 120));
+
+		const ubody = JSON.stringify({ shop_domain: uninstallShopDomain, smoke: true });
+		const uhmac = createHmac('sha256', secret).update(Buffer.from(ubody, 'utf8')).digest('base64');
+		const uninstallAck = await req('/webhooks/shopify/events', {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				'x-shopify-hmac-sha256': uhmac,
+				'x-shopify-shop-domain': uninstallShopDomain,
+				'x-shopify-webhook-id': `smoke-uninstall-${Date.now()}`,
+				'x-shopify-topic': 'app/uninstalled',
+			},
+			body: ubody,
+		});
+		check(
+			'uninstall: POST app/uninstalled signed = 2xx',
+			uninstallAck.status >= 200 && uninstallAck.status < 300,
+			String(uninstallAck.status),
+		);
+
+		// Uninstall is applied by the background processing loop, not at ack time
+		// (ADR-002), so poll rather than assume. The loop ticks every 10s.
+		const deadline = Date.now() + Number(process.env.SMOKE_UNINSTALL_TIMEOUT_MS ?? 90_000);
+		let installedAfter = true;
+		let lastBody = '';
+		while (Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 5000));
+			const after = await req('/api/v1/setup', { headers: uninstallAuth });
+			lastBody = after.body;
+			try {
+				installedAfter = JSON.parse(after.bodyFull ?? after.body).installed !== false;
+			} catch {
+				installedAfter = true;
+			}
+			if (!installedAfter) break;
+		}
+		check('uninstall: shop is no longer installed once the delivery is processed', !installedAfter, lastBody.slice(0, 160));
 	}
 } else {
 	console.log('skip authenticated + signed-webhook checks (set SHOPIFY_API_SECRET to enable)');

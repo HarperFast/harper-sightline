@@ -15,6 +15,7 @@ import './src/resources/boot.ts';
 
 export { PrivacyPolicy } from './src/resources/privacyPolicy.ts';
 export { Health } from './src/resources/health.ts';
+export { OpsResource } from './src/resources/opsResource.ts';
 export { Session } from './src/resources/session.ts';
 
 // ── Read API (#15) ────────────────────────────────────────────────────────────
