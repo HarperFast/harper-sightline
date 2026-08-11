@@ -504,6 +504,22 @@ test('a zero-count day renders no bar height, so magnitude never overstates', ()
 	assert.ok(html.includes('style="height:100%"'), 'the peak day fills the track');
 });
 
+test('the chart names the days it is charting', () => {
+	// Seven unlabelled columns whose dates live only in a hover tooltip is not a date
+	// axis: "activity over time" has to say WHICH time without hovering seven cells.
+	const html = activityView(summary().activity);
+	const axis = /<div class="spark-axis"[\s\S]*?<\/div>/.exec(html)?.[0] ?? '';
+	const ticks = axis.match(/<span class="tick">([^<]*)<\/span>/g) ?? [];
+	assert.equal(ticks.length, summary().activity.buckets.length, 'one tick per bar, or a tick labels the wrong day');
+	// Terser than the tooltip's "Mon, Mar 30" — seven of these share the bar track.
+	assert.match(ticks[0] ?? '', /<span class="tick">\d{1,2}\/\d{1,2}<\/span>/);
+	// The ticks sit in the same flex track as the bars so they cannot drift out of
+	// alignment, and they are hidden from assistive tech because the graphic's
+	// aria-label and the table below already carry the dates.
+	assert.match(axis, /aria-hidden="true"/);
+	assert.match(axis, /<span class="spark-ticks">/);
+});
+
 test('the integrity section states what a direct-check discovery does and does not mean', () => {
 	const html = integrityView({ webhookEvents: 40, reconciliationOnlyEvents: 3 });
 	// Scoped to the banner heading and to each labelled row. `assert.match(html, /3/)`

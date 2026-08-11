@@ -51,6 +51,11 @@ let EXACT_FMT: Intl.DateTimeFormat;
 let CLOCK_FMT: Intl.DateTimeFormat;
 let DEADLINE_FMT: Intl.DateTimeFormat;
 let DAY_FMT: Intl.DateTimeFormat;
+// The axis tick under each bar. Deliberately terser than DAY_FMT ("3/30", not
+// "Mon, Mar 30"): seven of these share the bar track's width, and in a narrow
+// iframe the long form truncates to nothing legible. The full form stays on the
+// bar's own tooltip and on the table's column headers.
+let TICK_FMT: Intl.DateTimeFormat;
 
 function buildFormatters(timeZone: string | undefined): void {
 	// `timeZone: undefined` is how Intl asks for the runtime default, so one code
@@ -60,6 +65,7 @@ function buildFormatters(timeZone: string | undefined): void {
 	CLOCK_FMT = new Intl.DateTimeFormat(undefined, { timeStyle: 'short', timeZone });
 	DEADLINE_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone });
 	DAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone });
+	TICK_FMT = new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric', timeZone });
 	activeTz = timeZone;
 }
 buildFormatters(undefined);
@@ -537,6 +543,14 @@ export function activityView(a: Summary['activity']): string {
 			return `<div class="spark-row"><span class="spark-label">${esc(DOMAIN_LABEL[domain] ?? domain)}</span><span class="spark-bars">${bars}</span><span class="spark-total">${total}</span></div>`;
 		})
 		.join('');
+	// The day axis. Seven unlabelled columns named only in a hover tooltip is not a
+	// date axis — a chart of "activity over TIME" has to say which days those are
+	// without the merchant hovering seven cells or expanding the table. The ticks
+	// live in the same flex track as the bars (see `.spark-ticks`), so a tick cannot
+	// drift out of line with the bar it labels, and it is aria-hidden because the
+	// graphic's own aria-label and the table below already carry the dates.
+	const ticks = a.buckets.map((b) => `<span class="tick">${esc(TICK_FMT.format(new Date(b.startAt)))}</span>`).join('');
+	const axis = `<div class="spark-axis" aria-hidden="true"><span class="spark-label"></span><span class="spark-ticks">${ticks}</span><span class="spark-total"></span></div>`;
 	const label =
 		`Events per day over the last ${a.days} days. ` +
 		a.domains.map((d) => `${DOMAIN_LABEL[d] ?? d}: ${a.buckets.map((b) => Number(b[d] ?? 0)).join(', ')}`).join('. ');
@@ -550,7 +564,7 @@ export function activityView(a: Summary['activity']): string {
 		)
 		.join('');
 	return `<s-section heading="Activity over time">
-		<div class="spark" role="img" aria-label="${esc(label)}">${rows}</div>
+		<div class="spark" role="img" aria-label="${esc(label)}">${rows}${axis}</div>
 		<details class="alt"><summary>View activity as a table</summary>
 			<s-table variant="auto"><s-table-header-row><s-table-header format="base">Domain</s-table-header>${head}</s-table-header-row><s-table-body>${body}</s-table-body></s-table>
 		</details>

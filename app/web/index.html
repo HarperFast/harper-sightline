@@ -47,19 +47,59 @@
 				flex: 1 1 auto;
 				min-width: 0;
 			}
+			/* One day's track. The translucency belongs to a PSEUDO-ELEMENT, never to
+			   `.bar` itself: `opacity` on an element composites the element AND its
+			   descendants as one group, so `opacity: 0.12` here dimmed `.bar-fill` to
+			   the exact colour of the track it sits in. Every bar then rendered as an
+			   identical flat rectangle whatever its value — a chart that draws its
+			   data and hides it. The heights were always correct (view.test.ts pins
+			   0% and 100%); only the paint was wrong.
+			   Do not move `opacity` back onto `.bar`, and do not give `.bar-fill` an
+			   `opacity` either — see the guard in test/activityChart.test.ts. */
 			.bar {
+				position: relative;
 				flex: 1 1 0;
 				height: 100%;
 				display: flex;
 				align-items: flex-end;
+				border-radius: 2px;
+			}
+			.bar::before {
+				content: '';
+				position: absolute;
+				inset: 0;
 				background: currentColor;
 				opacity: 0.12;
 				border-radius: 2px;
 			}
+			/* Above the track, so a short bar is still legible against it. */
 			.bar-fill {
+				position: relative;
 				width: 100%;
 				background: currentColor;
 				border-radius: 2px;
+			}
+			/* The day axis: one tick per bar, in the same flex track as the bars so a
+			   tick cannot drift out of line with the bar it labels. */
+			.spark-axis {
+				display: flex;
+				align-items: flex-start;
+				gap: 0.75em;
+			}
+			.spark-ticks {
+				display: flex;
+				gap: 0.2em;
+				flex: 1 1 auto;
+				min-width: 0;
+			}
+			.tick {
+				flex: 1 1 0;
+				min-width: 0;
+				text-align: center;
+				font-size: 0.6875em;
+				opacity: 0.7;
+				overflow: hidden;
+				white-space: nowrap;
 			}
 			.spark-total {
 				flex: none;
