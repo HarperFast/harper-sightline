@@ -218,4 +218,13 @@ export const M = {
 	// A background loop's previous pass failed to settle within its stall budget
 	// and a new pass was started anyway (src/jobs/tick.ts). Non-zero means a loop hung.
 	tickStalled: 'tick.stalled',
+	// A read was refused by the per-shop request limiter, and an export by the
+	// tighter export limiter (src/auth/rateLimit.ts). Counted separately because
+	// they mean different things: the first is a caller asking far more often than a
+	// merchant can click, the second is repeated full-ledger exports. Either being
+	// non-zero in normal operation means the limit is wrong for real use — the
+	// limits are set to sit far above it — so this is the signal to raise them, not
+	// to leave a merchant throttled.
+	rateLimitedRequests: 'rate_limit.requests',
+	rateLimitedExports: 'rate_limit.exports',
 } as const;

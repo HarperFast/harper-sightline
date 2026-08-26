@@ -1018,7 +1018,17 @@ export function filterChips(
 	</s-stack>`;
 }
 
+// Is this screen showing a search, or its default view? A merchant arriving from
+// the nav has set nothing, and gets the plain recent-activity list; a merchant who
+// has filtered (or opened someone's filtered link) gets the controls already
+// expanded, because a filter that is in force with its control hidden is a screen
+// lying about why it is short.
+export function isFiltered(params: Record<string, string>, keys: readonly string[]): boolean {
+	return keys.some((key) => Boolean(params[key]));
+}
+
 export function eventsView(params: Record<string, string>, items: EventItem[], hasMore: boolean, strip: string): string {
+	const filtered = isFiltered(params, EVENT_FILTER_KEYS);
 	const rows = items
 		.map(
 			(e) => `<s-table-row>
@@ -1037,41 +1047,64 @@ export function eventsView(params: Record<string, string>, items: EventItem[], h
 	// than encoded as a `disallow` range whose syntax we would be guessing at (a
 	// wrong one silently disables the whole calendar).
 	const dateHelp = `<s-paragraph><s-text color="subdued">Dates are whole days in ${esc(zoneLabel())}. The ledger holds the last ${WINDOW_DAYS} days.</s-text></s-paragraph>`;
+	// The default view is a list, not a form. A merchant opening Events wants to see
+	// what happened in their store; seven filter fields ahead of the first row read
+	// as a developer console and asked them to describe what they wanted before they
+	// had seen anything. The filters are unchanged and all still here — they are
+	// behind one line the merchant can open, and they open themselves whenever a
+	// filter is actually in force (isFiltered).
+	//
+	// A native <details> rather than a Polaris component: it is the accessible
+	// disclosure the platform already ships (keyboard, screen-reader state, and
+	// find-in-page all work without our own handlers), it keeps every control in the
+	// DOM so main.ts reads the fields exactly as before, and the app already uses one
+	// for the activity table's text equivalent.
 	return page(
 		'Events',
 		`${strip}
-		<s-section heading="Search the seven-day ledger">
-			<s-stack id="eventFilters" direction="block" gap="base">
-				<s-stack direction="inline" gap="base" alignItems="end">
-					${selectField(
-						'f-range',
-						'Time',
-						RANGES.map(([value, label]) => [value, label]),
-						params.range ?? '',
-					)}
-					<s-date-field id="f-from" label="From" placeholder="Any" value="${esc(params.from ?? '')}"></s-date-field>
-					<s-date-field id="f-to" label="To" placeholder="Any" value="${esc(params.to ?? '')}"></s-date-field>
+		<s-section>
+			<s-paragraph><s-text color="subdued">${
+				filtered
+					? `Events matching your filters, newest first. Times in ${esc(zoneLabel())}.`
+					: `Everything Shopify has reported to Sightline in the last ${WINDOW_DAYS} days, newest first. Times in ${esc(zoneLabel())}.`
+			}</s-text></s-paragraph>
+			<details class="filter-disclosure" id="eventFilters"${filtered ? ' open' : ''}>
+				<summary>Search and filter${filtered ? '' : ' — by time, domain, topic, state, order or SKU'}</summary>
+				<s-stack direction="block" gap="base">
+					<s-stack direction="inline" gap="base" alignItems="end">
+						${selectField(
+							'f-range',
+							'Time',
+							RANGES.map(([value, label]) => [value, label]),
+							params.range ?? '',
+						)}
+						<s-date-field id="f-from" label="From" placeholder="Any" value="${esc(params.from ?? '')}"></s-date-field>
+						<s-date-field id="f-to" label="To" placeholder="Any" value="${esc(params.to ?? '')}"></s-date-field>
+					</s-stack>
+					${dateHelp}
+					<s-stack direction="inline" gap="base" alignItems="end">
+						${selectField(
+							'f-domain',
+							'Domain',
+							labelled(DOMAINS, 'Any domain', (v) => DOMAIN_LABEL[v] ?? v),
+							params.domain ?? '',
+							'What the event was about',
+						)}
+						${selectField('f-topic', 'Topic', EVENT_TOPICS, params.topic ?? '', 'The Shopify webhook that reported it')}
+						${groupedSelectField('f-state', 'State', EVENT_STATE_GROUPS, params.state ?? '', 'Shopify’s own status value')}
+						${selectField('f-source', 'Evidence source', labelled(SOURCES, 'Any source'), params.source ?? '', 'Webhook, or a direct check')}
+					</s-stack>
+					<s-stack direction="inline" gap="base" alignItems="end">
+						<s-text-field id="f-resourceId" label="Order / resource ID" placeholder="e.g. 5238106063001" details="Shopify’s numeric id, as in the order’s Admin URL — not #1023. Exact match." value="${esc(params.resourceId ?? '')}"></s-text-field>
+						<s-text-field id="f-sku" label="SKU" placeholder="e.g. TSHIRT-BLK-M" details="Exact SKU, as it appears on the product" value="${esc(params.sku ?? '')}"></s-text-field>
+						<s-button variant="primary" data-submit>Search</s-button>
+					</s-stack>
 				</s-stack>
-				${dateHelp}
-				<s-stack direction="inline" gap="base" alignItems="end">
-					${selectField(
-						'f-domain',
-						'Domain',
-						labelled(DOMAINS, 'Any domain', (v) => DOMAIN_LABEL[v] ?? v),
-						params.domain ?? '',
-					)}
-					${selectField('f-topic', 'Topic', EVENT_TOPICS, params.topic ?? '')}
-					${groupedSelectField('f-state', 'State', EVENT_STATE_GROUPS, params.state ?? '', 'Shopify’s own status value')}
-					${selectField('f-source', 'Evidence source', labelled(SOURCES, 'Any source'), params.source ?? '')}
-				</s-stack>
-				<s-stack direction="inline" gap="base" alignItems="end">
-					<s-text-field id="f-resourceId" label="Order / resource ID" value="${esc(params.resourceId ?? '')}"></s-text-field>
-					<s-text-field id="f-sku" label="SKU" value="${esc(params.sku ?? '')}"></s-text-field>
-					<s-button variant="primary" data-submit>Search</s-button>
-					${exportButton('events')}
-				</s-stack>
+			</details>
+			<s-stack direction="inline" gap="base" alignItems="center">
+				${filterChips('/events', params, EVENT_FILTER_DEFS)}
+				${exportButton('events')}
 			</s-stack>
-			${filterChips('/events', params, EVENT_FILTER_DEFS)}
 		</s-section>
 		<s-section>
 			${table(
@@ -1085,7 +1118,10 @@ export function eventsView(params: Record<string, string>, items: EventItem[], h
 					{ label: 'Source' },
 				],
 				rows,
-				'No events match.',
+				// Two different facts, and saying the wrong one is misleading: with no
+				// filter set there is nothing to "match" — the ledger is empty, which for
+				// a new install means "nothing has happened yet", not "your search failed".
+				filtered ? 'No events match these filters.' : `No events recorded in the last ${WINDOW_DAYS} days.`,
 			)}
 			${hasMore ? `<s-button id="loadMore">Load more</s-button>` : ''}
 		</s-section>`,
@@ -1416,25 +1452,72 @@ function isAbsenceFinding(f: { detector?: string }): boolean {
 	return f.detector === undefined || f.detector === 'fulfillment_confirmation';
 }
 
+// One order can carry more than one finding, and they are different observations:
+// the absence detector and the failed-attempt detector can both be true of the same
+// order (they are separate rows by construction — see detectorKey in src/detector.ts).
+// Rendered as two unrelated rows carrying the same order name, that scans as the
+// list having printed a duplicate, and a merchant who reads it that way distrusts
+// the whole screen.
+//
+// So rows for one order are made ADJACENT, and each says which of its group it is.
+// Purely presentational, and deliberately conservative: the ORDER of first
+// appearance is preserved, so whatever ordering the API returned still decides which
+// order comes first; nothing is merged, collapsed, hidden or re-sorted; every finding
+// keeps its own row, status, and link.
+export function groupFindingsByOrder<T extends { orderId: string }>(items: readonly T[]): T[] {
+	const groups = new Map<string, T[]>();
+	for (const item of items) {
+		const group = groups.get(item.orderId);
+		if (group) group.push(item);
+		else groups.set(item.orderId, [item]);
+	}
+	return [...groups.values()].flat();
+}
+
+// How many findings each order has IN THIS LIST — a count of what is on screen, not
+// a claim about the order, which is why the marker says "in this list".
+export function findingsPerOrder(items: readonly { orderId: string }[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const item of items) counts.set(item.orderId, (counts.get(item.orderId) ?? 0) + 1);
+	return counts;
+}
+
 export function findingsListView(params: Record<string, string>, items: FindingItem[], now: number, strip: string): string {
-	const rows = items
-		.map(
-			(x) => `<s-table-row>
-			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(findingLabel(x))}</s-link></s-table-cell>
+	const grouped = groupFindingsByOrder(items);
+	const counts = findingsPerOrder(grouped);
+	const shared = [...counts.values()].some((count) => count > 1);
+	const position = new Map<string, number>();
+	const rows = grouped
+		.map((x) => {
+			const total = counts.get(x.orderId) ?? 1;
+			const index = (position.get(x.orderId) ?? 0) + 1;
+			position.set(x.orderId, index);
+			// Shown on every row of a group rather than only the first: a positional
+			// convention is invisible to someone scanning one row, and this row has to
+			// stand on its own in a screen reader too.
+			const marker = total > 1 ? ` <s-text color="subdued">${index} of ${total} for this order</s-text>` : '';
+			return `<s-table-row>
+			<s-table-cell><s-link href="#/findings/${encodeURIComponent(x.id)}">${esc(findingLabel(x))}</s-link>${marker}</s-table-cell>
 			<s-table-cell>${esc(detectorLabel(x.detector))}</s-table-cell>
 			<s-table-cell>${ts(x.paidAt)}</s-table-cell>
 			<s-table-cell>${ts(x.deadline)}</s-table-cell>
 			<s-table-cell>${x.status === 'unconfirmed' ? esc(elapsed(x.detectedAt, now)) : '—'}</s-table-cell>
 			<s-table-cell>${badge(x.status)}</s-table-cell>
 			<s-table-cell>${adminOrderLink(x.orderId)}</s-table-cell>
-		</s-table-row>`,
-		)
+		</s-table-row>`;
+		})
 		.join('');
+	// Only when it is actually true of what is on screen. Standing copy explaining a
+	// situation the merchant is not looking at is noise.
+	const sharedNote = shared
+		? `<s-paragraph><s-text color="subdued">Some orders below have more than one finding — an order can be waiting for confirmation and also carry a fulfillment attempt that did not succeed. Findings for the same order are listed together; they are separate observations, not repeated rows.</s-text></s-paragraph>`
+		: '';
 	return page(
 		'Findings',
 		`${strip}
 		<s-section>
 			<s-paragraph><s-text color="subdued">${esc(FINDINGS_BOUNDARY)}</s-text></s-paragraph>
+			${sharedNote}
 			<s-stack id="findingFilters" direction="inline" gap="base" alignItems="end">
 				${selectField('f-status', 'Status', labelled(STATUSES, 'Any status'), params.status ?? '')}
 				${selectField('f-detector', 'Type', labelled(DETECTORS, 'Any type', detectorLabel), params.detector ?? '')}
@@ -1636,7 +1719,38 @@ export function saveErrorAction(message: string): SaveErrorAction {
 	return detail ? { kind: 'banner', text: detail } : { kind: 'banner', text: 'Could not save. Please try again.' };
 }
 
+// The same decision for a failed export. The download runs from a click handler, so
+// like the digest save it never passes through route()'s error handling and has to
+// ask for the wording itself — and unlike every other read, the merchant sees the
+// result of this one in an alert, not on the screen.
+//
+// A 429 is the case that made this worth stating: the server says how long to wait
+// (src/auth/rateLimit.ts), and "Export failed. Try again" would have thrown that
+// away and invited the merchant to keep clicking into the limit.
+export function exportErrorMessage(message: string): string {
+	if (/^401\b/.test(message)) return 'Export failed: you were signed out. Reload the page and try again.';
+	const seconds = message.match(/^429\b.*?retry in (\d+)s/)?.[1];
+	if (seconds) return `Too many exports in a row. Wait ${seconds} seconds and try again.`;
+	if (/^429\b/.test(message)) return 'Too many exports in a row. Wait a minute and try again.';
+	return 'Export failed. Try again, or reload the page if you were signed out.';
+}
+
 // ── privacy ──────────────────────────────────────────────────────────────────
+// What "Granted access" says before Shopify's own scope list has been recorded for
+// this shop. The list arrives with the token exchange and is written to the Shop
+// record (src/shopify/lifecycle.ts recordExchangeOutcome) — which nothing on the
+// managed-install path used to do, so this branch was not a brief "pending" state
+// but the permanent one.
+//
+// The old copy — "read-only scopes pending confirmation" — described that state
+// accurately and read, to a merchant, like a stuck app reporting its own bug.
+// This states what Sightline asks for at install (shopify.app.toml, and the same
+// list the privacy policy publishes) without claiming Shopify has confirmed it back:
+// a merchant cannot install the app with less, so it is a fact about the app, not a
+// guess about the install.
+export const REQUESTED_ACCESS =
+	'Read-only access to orders, fulfillments, inventory, products and locations — the access Sightline asks for at install. It never requests write access of any kind.';
+
 export function privacyView(p: Privacy, now: number, strip: string): string {
 	return page(
 		'Privacy and app health',
@@ -1653,7 +1767,7 @@ export function privacyView(p: Privacy, now: number, strip: string): string {
 					'Granted access',
 					p.scopes.length
 						? p.scopes.map((s) => `<s-badge tone="info">${esc(s)}</s-badge>`).join(' ')
-						: `<s-text color="subdued">read-only scopes pending confirmation</s-text>`,
+						: `<s-text color="subdued">${esc(REQUESTED_ACCESS)}</s-text>`,
 				],
 				['Retention', `${p.retentionDays} days, then permanently purged`],
 				[

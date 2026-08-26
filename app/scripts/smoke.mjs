@@ -6,7 +6,9 @@
 //   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/smoke.mjs
 // Without SHOPIFY_API_SECRET/KEY the authenticated + signed-webhook checks are
 // skipped (the unauthenticated subset still runs). SMOKE_WEBHOOK=1 opts in to a
-// signed webhook round-trip (writes a synthetic delivery — staging only).
+// signed webhook round-trip (writes a synthetic delivery — staging only), and
+// SMOKE_RATE_LIMIT=1 opts in to the export rate-limit check (single-node targets
+// only — see the comment at that check).
 import { createHmac } from 'node:crypto';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
@@ -110,6 +112,33 @@ if (secret) {
 
 	const findings = await req('/api/v1/findings', { headers: auth });
 	check('GET /api/v1/findings authenticated = 200', findings.status === 200, String(findings.status));
+
+	// Opt-in: prove the per-shop export limit is real on the deployed instance
+	// (security review F7). Opt-in, and not part of the default gate, for one
+	// reason: the counters are per WORKER PROCESS, and a Fabric cluster puts several
+	// behind one hostname — round-robined requests would each be counted by a
+	// different node, so the trip point is limit x nodes and a default-on check would
+	// fail spuriously on a multi-node target. Set SMOKE_RATE_LIMIT=1 against a
+	// single-node instance to verify it end to end.
+	//
+	// Uses a throwaway shop domain: a verified token is all the limiter keys on, the
+	// export reads an empty ledger, and no row is written — so this cannot burn the
+	// real smoke shop's budget for the next run, or leave anything behind.
+	if (process.env.SMOKE_RATE_LIMIT === '1') {
+		const rateShop = `sightline-smoke-rate-${Date.now().toString(36)}.myshopify.com`;
+		const rateAuth = { 'X-Shopify-Session-Token': mintSessionToken(rateShop) };
+		const statuses = [];
+		for (let i = 0; i < 13; i++) {
+			const r = await req('/api/v1/export/findings.csv', { headers: rateAuth });
+			statuses.push(r.status);
+			if (r.status === 429) break;
+		}
+		const limited = statuses.includes(429);
+		check('GET /api/v1/export repeated = 429 once the per-shop limit is spent', limited, `statuses ${statuses.join(',')}`);
+		// 429, never 401 — the SPA turns a 401 into "your session expired,
+		// reauthorize", which would send a throttled merchant into a loop.
+		check('rate-limited export is not reported as an expired session', !statuses.includes(401), `statuses ${statuses.join(',')}`);
+	}
 
 	// Opt-in signed webhook round-trip (writes a synthetic delivery — staging only).
 	if (process.env.SMOKE_WEBHOOK === '1') {

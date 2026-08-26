@@ -26,12 +26,21 @@ function hostOf(url: unknown): string {
 	}
 }
 
+// A Shopify session token is a compact JWT with a handful of small claims — real
+// ones are well under 1KB. The cap bounds the work an UNAUTHENTICATED caller can
+// ask for before any of it is trusted: without it, a multi-megabyte header would be
+// split, base64-decoded and JSON-parsed before the signature check could reject it
+// (security review F7 — the request limiter itself keys on the verified shop, so it
+// cannot bound this).
+export const MAX_TOKEN_CHARS = 4096;
+
 // Verify a Shopify App Bridge session token (HS256, signed with the app secret)
 // and derive the tenant principal. See ADR-001.
 export function verifySessionToken(token: string, opts: VerifyOpts): Principal {
 	const leeway = opts.leewaySeconds ?? 5;
 	const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
 
+	if (token.length > MAX_TOKEN_CHARS) throw new AuthError('token too large');
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new AuthError('malformed token');
 	const [h, p, sig] = parts;

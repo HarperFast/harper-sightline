@@ -24,22 +24,27 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 
 ## Layout
 
-- `config.yaml` — component config (rest, graphqlSchema, jsResource; static web/dist later).
+- `config.yaml` — component config (rest, graphqlSchema, jsResource). No static plugin: the
+  SPA is served by the `AppHome` resource so the HTML can carry a `frame-ancestors` CSP.
 - `resources.ts` — export layer for `src/resources/*`; nothing else belongs here.
 - `src/resources/` — one file per resource class, named after the class it exports
-  (`health.ts` → `Health`, `eventsResource.ts` → `EventsResource`, …), plus five
+  (`health.ts` → `Health`, `eventsResource.ts` → `EventsResource`, …), plus six
   shared modules: `boot.ts` (log sink + raw-JSON content type + job loop; imported
   FIRST by `resources.ts`), `auth.ts` (the shared identity adapter, `API_KEY`,
   `sessionPayload`), `tables.ts` (the read-only `QueryTable` casts), `http.ts`
   (`parseUrl`/`trailingId`/`numParam`/`httpError` — no `harper` import, so unit-testable),
-  and `assetPath.ts` (`resolveAssetUrl`, the containment boundary for the
+  `assetPath.ts` (`resolveAssetUrl`, the containment boundary for the
   unauthenticated static-asset read in `appHome.ts` — same no-`harper` rule, and it
-  is security-load-bearing, so it stays directly testable).
+  is security-load-bearing, so it stays directly testable), and `frameAncestors.ts`
+  (who may iframe the app — same rule, same reason).
 - `src/*/` — the rest of the app, grouped by concern. A module's directory tells you
   what it is for; nothing else about the code changed when they were grouped.
-  - `auth/` — who the caller is: `verifySessionToken.ts`, `identity.ts`, `principal.ts`,
-    `AuthError.ts`, `tenant.ts` (the shopId scoping control), `capabilities.ts`,
-    `opsAuth.ts` (the `SIGHTLINE_OPS_TOKEN` gate — an operator, not a merchant).
+  - `auth/` — who the caller is, and how much they may ask for: `verifySessionToken.ts`,
+    `identity.ts`, `principal.ts`, `AuthError.ts`, `tenant.ts` (the shopId scoping
+    control), `capabilities.ts`, `opsAuth.ts` (the `SIGHTLINE_OPS_TOKEN` gate — an
+    operator, not a merchant), `shopDomain.ts` (what a shop domain may look like before
+    it reaches a response header), `rateLimit.ts` (the per-shop request/export limits,
+    enforced inside `identity.authenticate()` so no resource can forget them).
   - `secrets/` — secret material: `crypto.ts` (token envelope encryption),
     `readSecret.ts`, `secretsPolicy.ts` (the fail-closed `SIGHTLINE_REQUIRE_SECRETS` gate).
   - `shopify/` — everything that talks to Shopify or holds a Shopify credential:
@@ -63,9 +68,19 @@ is the fast-start map for anyone (human or agent) working in `app/`.
   `audit.ts` (a thin writer over them), and `harperRuntime.ts`. **`harperRuntime.ts`
   must stay at `src/` root** — it is the `default` target of the `#harper` subpath
   import in package.json, and that resolution is load-bearing (see its header).
-- `web/` — Vite/App Bridge/Polaris SPA (slice 2).
-- `scripts/` — `deploy.mjs`, `smoke.mjs`.
-- `schema.graphql` — placeholder; real sealed tables in issue #6.
+- `web/` — the Vite/App Bridge/Polaris SPA. `web/src/view.ts` holds every screen as a
+  PURE function from data to markup and `web/src/main.ts` only fetches, writes
+  innerHTML, binds listeners, and routes — which is what makes the UI testable in
+  plain node with no browser or DOM shim (`test/view.test.ts`). Keep that split: markup
+  decisions that migrate into `main.ts` become untestable.
+- `scripts/` — `deploy.mjs` (build → package → deploy → restart EVERY node → verify the
+  served bundle), `smoke.mjs` (post-deploy route/auth checks), `loadtest.mjs`,
+  `seed-dev-data.mjs`, `gen-contract.mjs`.
+- `schema.graphql` — the sealed tables, split across two databases: `sightline_core`
+  (shop, credential, audit, digest subscription/outbox) and `sightline_ledger`
+  (deliveries, events, projections, expectations, findings, aggregates, checkpoints,
+  and the SKU/inventory/location indexes). `src/domain/model.ts` mirrors it in
+  TypeScript; the two must move together.
 
 ## Standards
 

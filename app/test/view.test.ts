@@ -26,8 +26,10 @@ import {
 	eventDetailView,
 	eventQuery,
 	eventsView,
+	exportErrorMessage,
 	EVENT_TOPICS,
 	EVENT_FILTER_DEFS,
+	EVENT_FILTER_KEYS,
 	ORDER_FILTER_DEFS,
 	ORDER_FILTER_KEYS,
 	activeChips,
@@ -39,6 +41,9 @@ import {
 	FINDING_DISCLAIMER,
 	findingDetailView,
 	findingsListView,
+	findingsPerOrder,
+	groupFindingsByOrder,
+	isFiltered,
 	integrityView,
 	money,
 	needsAttention,
@@ -51,6 +56,7 @@ import {
 	parseHash,
 	parseRoute,
 	privacyView,
+	REQUESTED_ACCESS,
 	saveErrorAction,
 	setShop,
 	setSupport,
@@ -721,8 +727,69 @@ test('eventQuery turns a symbolic range into a window floor', () => {
 
 test('an empty ledger says so instead of rendering an empty table', () => {
 	const html = eventsView({}, [], false, '');
-	assert.ok(html.includes('No events match.'));
+	// Unfiltered, there is nothing to "match": an empty result is an empty ledger,
+	// which on a new install means nothing has happened yet — not a failed search.
+	assert.ok(html.includes('No events recorded in the last 7 days.'));
 	assert.ok(!html.includes('<s-table-body>'), 'no headers over nothing');
+	assert.ok(eventsView({ domain: 'order' }, [], false, '').includes('No events match these filters.'));
+});
+
+// The Events screen used to open on a seven-field search form: time range, from,
+// to, domain, topic, state, evidence source, order id, SKU — all of it ahead of the
+// first row of data. It reads as a developer console rather than as "here is what
+// happened in your store", and it asks a merchant to describe what they want before
+// they have seen anything. The default view is now the activity itself; every filter
+// is still there, one disclosure away.
+test('the default Events view leads with the activity, not with a search form', () => {
+	const html = eventsView({}, [], false, '');
+	assert.match(html, /<details class="filter-disclosure" id="eventFilters">/, 'the filters start collapsed');
+	assert.ok(html.includes('<summary>Search and filter'), 'behind one line that says what is inside');
+	assert.match(html, /Everything Shopify has reported to Sightline in the last 7 days, newest first/);
+	// Collapsed, NOT removed: every control stays in the DOM, which is what keeps
+	// main.ts's fieldValue()/setFieldValue() reads working unchanged.
+	for (const id of ['f-range', 'f-from', 'f-to', 'f-domain', 'f-topic', 'f-state', 'f-source', 'f-resourceId', 'f-sku']) {
+		assert.ok(html.includes(`id="${id}"`), `${id} is still present`);
+	}
+	// Export is the screen's differentiator over Shopify's own activity log, so it
+	// must not be buried behind the disclosure with the filters.
+	const inside = html.slice(html.indexOf('<details'), html.indexOf('</details>'));
+	assert.ok(!inside.includes('data-export'), 'export is reachable without opening the filters');
+	assert.ok(html.includes('data-export'));
+});
+
+// A filter that is in force with its control hidden is a screen lying about why it
+// is short — including for someone who opened a filtered link they did not build.
+test('a filtered Events view opens the disclosure', () => {
+	const html = eventsView({ domain: 'order' }, [], false, '');
+	assert.match(html, /<details class="filter-disclosure" id="eventFilters" open>/);
+	assert.match(html, /Events matching your filters, newest first/);
+	assert.ok(html.includes('Domain: Orders'), 'and the chip row states it outside the disclosure');
+});
+
+test('isFiltered counts exactly the keys the screen carries', () => {
+	for (const key of EVENT_FILTER_KEYS) {
+		assert.equal(isFiltered({ [key]: 'x' }, EVENT_FILTER_KEYS), true, `${key} is a filter`);
+	}
+	assert.equal(isFiltered({}, EVENT_FILTER_KEYS), false);
+	assert.equal(isFiltered({ domain: '' }, EVENT_FILTER_KEYS), false, 'an empty value is not a filter');
+	assert.equal(isFiltered({ cursor: 'abc' }, EVENT_FILTER_KEYS), false, 'paging state is not a filter');
+});
+
+// The two free-text fields are the ones a merchant cannot guess: `resourceId` holds
+// Shopify's NUMERIC id (src/ingest/normalize.ts), so someone typing the order name
+// they can actually see — #1023 — gets an empty page that looks like an empty ledger.
+test('the filters carry an example of what to type', () => {
+	const html = eventsView({}, [], false, '');
+	const resource = /<s-text-field id="f-resourceId"[^>]*>/.exec(html)?.[0] ?? '';
+	assert.match(resource, /placeholder="e\.g\. \d+"/, 'a numeric example');
+	assert.match(resource, /details="[^"]*not #1023[^"]*"/, 'and says the order name is not it');
+	assert.match(resource, /details="[^"]*Exact match/, 'and that the match is exact');
+	const sku = /<s-text-field id="f-sku"[^>]*>/.exec(html)?.[0] ?? '';
+	assert.match(sku, /placeholder="e\.g\. TSHIRT-BLK-M"/);
+	assert.match(sku, /details="Exact SKU/);
+	// The dropdowns whose meaning is not self-evident get the same one-line hint.
+	assert.match(html, /id="f-domain"[^>]*details="What the event was about"/);
+	assert.match(html, /id="f-source"[^>]*details="Webhook, or a direct check"/);
 });
 
 test('load-more only appears when there is another page', () => {
@@ -889,8 +956,24 @@ test('the privacy screen never renders secrets or another tenant', () => {
 	}
 });
 
-test('a shop with no scopes recorded says so rather than showing an empty list', () => {
-	assert.ok(privacyView(privacy({ scopes: [] }), NOW, '').includes('read-only scopes pending confirmation'));
+// The copy this replaces — "read-only scopes pending confirmation" — described an
+// async step accurately and read to a merchant like a stuck app reporting its own
+// bug (and, because nothing on the managed-install path recorded the scope list, it
+// was permanent rather than pending — see test/lifecycle.test.ts). The replacement
+// must state what the app ASKS for without claiming Shopify confirmed it back.
+test('a shop with no scopes recorded states the access requested, not an error state', () => {
+	const html = privacyView(privacy({ scopes: [] }), NOW, '');
+	assert.ok(html.includes(REQUESTED_ACCESS), 'the requested-access statement is shown');
+	assert.match(REQUESTED_ACCESS, /never requests write access/, 'and it says there is no write access');
+	for (const alarming of ['pending', 'unconfirmed', 'error', 'failed', 'unknown']) {
+		assert.ok(!REQUESTED_ACCESS.toLowerCase().includes(alarming), `"${alarming}" reads as a broken app`);
+	}
+	// It never claims Shopify has confirmed a grant.
+	assert.doesNotMatch(REQUESTED_ACCESS, /granted|confirmed/i);
+	// And the real list still wins whenever it has been recorded.
+	const recorded = privacyView(privacy({ scopes: ['read_orders', 'read_fulfillments'] }), NOW, '');
+	assert.ok(recorded.includes('<s-badge tone="info">read_orders</s-badge>'));
+	assert.ok(!recorded.includes(REQUESTED_ACCESS), 'the fallback is not shown alongside the real list');
 });
 
 // Pinned to the badge, and asserted in BOTH directions. `/Notification email[\s\S]*stored/`
@@ -1330,6 +1413,78 @@ test('every list screen offers a CSV export', () => {
 	assert.match(ordersView({}, [], false, ''), /data-export="orders"/);
 });
 
+// Two findings for one order are two DISTINCT observations — an order can be
+// waiting for confirmation and also carry a fulfillment attempt Shopify recorded as
+// unsuccessful. Rendered as two unrelated rows with the same order name, that scans
+// as the list having printed a duplicate, and a merchant who reads it that way
+// distrusts the screen rather than the row.
+test('findings for the same order are listed together and say which of the group they are', () => {
+	const items: FindingItem[] = [
+		{ id: 'f1', orderId: '1', orderName: '#1023', detector: 'fulfillment_confirmation', status: 'unconfirmed', detectedAt: NOW },
+		{ id: 'f2', orderId: '2', orderName: '#1024', detector: 'fulfillment_confirmation', status: 'unconfirmed', detectedAt: NOW },
+		{ id: 'f3', orderId: '1', orderName: '#1023', detector: 'fulfillment_attempt_failed', status: 'unconfirmed', detectedAt: NOW },
+	];
+	const html = findingsListView({}, items, NOW, '');
+	assert.deepEqual(
+		[...html.matchAll(/#\/findings\/(f\d)/g)].map((m) => m[1]),
+		['f1', 'f3', 'f2'],
+		'the two rows for order #1023 are adjacent, and #1023 still comes first',
+	);
+	assert.ok(html.includes('1 of 2 for this order'), 'each row says which of the group it is');
+	assert.ok(html.includes('2 of 2 for this order'));
+	assert.ok(html.includes('separate observations, not repeated rows'), 'and the screen says what that means');
+	// Both findings still stand on their own: own row, own type, own link.
+	assert.ok(html.includes('No confirmation observed'));
+	assert.ok(html.includes('Attempt did not succeed'));
+});
+
+test('a list with no shared order carries no group marker and no note', () => {
+	const html = findingsListView(
+		{},
+		[
+			{ id: 'f1', orderId: '1', orderName: '#1023', status: 'unconfirmed', detectedAt: NOW },
+			{ id: 'f2', orderId: '2', orderName: '#1024', status: 'resolved', detectedAt: NOW },
+		],
+		NOW,
+		'',
+	);
+	assert.ok(!html.includes('for this order'), 'no marker where there is no group');
+	assert.ok(!html.includes('separate observations'), 'and no standing copy about a situation not on screen');
+});
+
+test('grouping is presentation only: nothing is dropped, merged, or re-sorted', () => {
+	const items = [
+		{ orderId: 'b', id: '1' },
+		{ orderId: 'a', id: '2' },
+		{ orderId: 'b', id: '3' },
+		{ orderId: 'c', id: '4' },
+	];
+	const grouped = groupFindingsByOrder(items);
+	assert.equal(grouped.length, items.length, 'every finding survives');
+	assert.deepEqual([...grouped].map((i) => i.id).sort(), ['1', '2', '3', '4']);
+	// First appearance decides the order of ORDERS, so whatever ordering the API
+	// returned still governs — grouping never promotes an order up the list.
+	assert.deepEqual(
+		grouped.map((i) => i.orderId),
+		['b', 'b', 'a', 'c'],
+	);
+	assert.deepEqual(
+		grouped.map((i) => i.id),
+		['1', '3', '2', '4'],
+	);
+	assert.deepEqual(
+		items.map((i) => i.id),
+		['1', '2', '3', '4'],
+		'the input is not mutated',
+	);
+	assert.deepEqual([...findingsPerOrder(items).entries()].sort(), [
+		['a', 1],
+		['b', 2],
+		['c', 1],
+	]);
+	assert.deepEqual(groupFindingsByOrder([]), []);
+});
+
 // ── notifications ────────────────────────────────────────────────────────────
 // The digest subscription screen. Two things it must be honest about: nothing is
 // sent yet (delivery isn't built), and the stored address is the app's only
@@ -1503,6 +1658,31 @@ test('a message with no leading status at all — a network failure — gets the
 	// as an unrecognized status code that happens not to match; it is the same
 	// "nothing useful to show" case as 500.
 	assert.deepEqual(saveErrorAction('fetch failed'), { kind: 'banner', text: 'Could not save. Please try again.' });
+});
+
+// The export download runs from a click handler, so like the digest save it never
+// passes through route()'s error handling, and its outcome is an alert rather than a
+// screen. A refused export now carries a wait time from the server
+// (src/auth/rateLimit.ts); "Export failed. Try again" would throw that away and
+// invite the merchant to keep clicking into the limit.
+test('a rate-limited export tells the merchant how long to wait', () => {
+	assert.equal(exportErrorMessage('429 too many exports \u2014 retry in 42s'), 'Too many exports in a row. Wait 42 seconds and try again.');
+	// A 429 with no readable detail still says the useful thing.
+	assert.equal(exportErrorMessage('429'), 'Too many exports in a row. Wait a minute and try again.');
+});
+
+test('an expired session on export says to reload, not to retry forever', () => {
+	assert.equal(exportErrorMessage('401'), 'Export failed: you were signed out. Reload the page and try again.');
+	assert.equal(exportErrorMessage('401 unauthorized'), 'Export failed: you were signed out. Reload the page and try again.');
+});
+
+test('anything else gets the one generic sentence, including a network failure', () => {
+	const generic = 'Export failed. Try again, or reload the page if you were signed out.';
+	// A rejected fetch carries no leading status at all, and a bare status code is
+	// not a message a merchant should have to decode.
+	for (const message of ['500', '404 unknown export kind', 'fetch failed', '', '4291', '42 retry in 9s']) {
+		assert.equal(exportErrorMessage(message), generic, `unexpected wording for ${JSON.stringify(message)}`);
+	}
 });
 
 test('a never-checked subscription says so, in its own status line', () => {

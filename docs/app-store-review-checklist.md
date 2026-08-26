@@ -55,8 +55,8 @@ A production install on dev-fallback secrets is not a launch candidate, so (2) g
 | App name, tagline, description | ☐ | Must describe **Record** only: parallel read-only capture, 7-day searchable ledger, absence-based findings. Draft not written |
 | Screenshots | ☐ | Must come from the real UI with representative, non-fictional data. **Blocked on the live-embed check** (§5) |
 | Pricing | ☐ | Free. No paid plan may be listed while the capabilities are `false` |
-| **No replay / recovery / "1-click" claims** | ☐ | `docs/sightline_shopify_app_store_mock.html` is an annotated *concept* containing replay, "1-click", destination-health claims, pricing, and **illustrative 5.0-star reviews with fictional names**. None of it may reach the listing |
-| No fabricated reviews or ratings | ☐ | Same source. This is the highest-risk item in the whole submission — fabricated social proof is a hard rejection and a trust problem, not a copy nit |
+| **No replay / recovery / "1-click" claims** | ☐ | The early product-direction concept for this listing carried all of these, and none of them may reach the published creative: replay / re-announcement, recovery queues, repair actions, "1-click" recovery, downstream "failed flow" or destination-health claims, and a paid plan. Record's findings say only *"no Shopify confirmation observed"* — see [ux review §3](./ux-review.md). The concept file has been removed from the repo (recoverable from git history if the creative needs to be diffed against it) |
+| No fabricated reviews or ratings | ☐ | The same concept carried **illustrative 5.0-star reviews with fictional reviewer names**. This is the highest-risk item in the whole submission — fabricated social proof is a hard rejection and a trust problem, not a copy nit |
 | Support/FAQ/docs URL | ☐ | Owner |
 
 ## 4. Definition-of-done walkthrough

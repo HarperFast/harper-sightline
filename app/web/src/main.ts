@@ -26,6 +26,7 @@ import {
 	eventQuery,
 	eventsView,
 	EVENT_FILTER_KEYS,
+	exportErrorMessage,
 	findingDetailView,
 	findingsListView,
 	FINDING_FILTER_KEYS,
@@ -90,10 +91,14 @@ function bindFilters(containerId: string, submit: () => void): void {
 	if (!container) return;
 	container.querySelector('[data-submit]')?.addEventListener('click', submit);
 	container.addEventListener('keydown', (ev) => {
-		if ((ev as KeyboardEvent).key === 'Enter') {
-			ev.preventDefault();
-			submit();
-		}
+		if ((ev as KeyboardEvent).key !== 'Enter') return;
+		// A <summary> (the Events screen's filter disclosure) opens and closes on
+		// Enter. Treating that as "submit the filters" would make the disclosure
+		// impossible to open from the keyboard — the group is INSIDE it, so the
+		// keydown bubbles here either way.
+		if ((ev.target as HTMLElement | null)?.closest?.('summary')) return;
+		ev.preventDefault();
+		submit();
 	});
 }
 
@@ -163,8 +168,8 @@ function bindExport(params: Record<string, string | undefined>): void {
 			// A rejected fetch (e.g. an expired session token) must not fail silently
 			// as an unhandled promise rejection — the merchant needs to know the
 			// export did not happen.
-			downloadExport(button.getAttribute('data-export') ?? '', params).catch(() => {
-				window.alert('Export failed. Try again, or reload the page if you were signed out.');
+			downloadExport(button.getAttribute('data-export') ?? '', params).catch((err) => {
+				window.alert(exportErrorMessage(String((err as Error).message)));
 			});
 		});
 	}
