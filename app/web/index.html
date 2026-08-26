@@ -115,6 +115,23 @@
 			.alt summary {
 				cursor: pointer;
 			}
+			/* The Events screen's filter disclosure. The default view is a list of
+			   recent activity; the seven-field search form lives behind this one line
+			   and opens itself whenever a filter is actually in force (view.ts
+			   eventsView). A native <details> so keyboard operation, the expanded/
+			   collapsed state announced to a screen reader, and find-in-page all come
+			   from the platform. */
+			.filter-disclosure {
+				margin: 0.5em 0 0.75em;
+			}
+			.filter-disclosure > summary {
+				cursor: pointer;
+				padding: 0.25em 0;
+				font-weight: 600;
+			}
+			.filter-disclosure[open] > summary {
+				margin-bottom: 0.75em;
+			}
 			/* The in-page nav fallback (see index.html comment on s-app-nav). */
 			.appnav {
 				display: flex;

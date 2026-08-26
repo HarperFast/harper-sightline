@@ -45,7 +45,7 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 ### 3.2 Embedded iframe / browser
 | Threat | Mitigation | Status |
 |---|---|---|
-| Clickjacking / framing by a hostile page | `frame-ancestors` limited to the Shopify Admin origin; no wildcard | S |
+| Clickjacking / framing by a hostile page | `frame-ancestors` limited to the **verified** shop + Shopify Admin (`?shop=` is a pattern-checked fallback only); an unauthenticated load falls back to `https://*.myshopify.com` — see §8 | S |
 | XSS in the SPA → token/data theft | Strict CSP, no inline/eval, framework escaping, Polaris components; session token is short-lived | S |
 | CORS / connect leakage | Strict `connect-src`; no wildcard origins (plan §12) | S |
 | Third-party-cookie dependence | Avoided by design — session-token flow, no cookies (ADR-001) | M |
@@ -56,6 +56,7 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 | Spoofed webhook (no valid HMAC) | Constant-time HMAC over the untouched raw body **before** parsing → 401 (plan §12) | S |
 | Replay / duplicate delivery | `(shopId, webhookId)` idempotency key; duplicate = 2xx no-op (plan §13) | S |
 | Ingress DoS / burst overload | Minimal durable handler, fast 2xx, backlog worker + reconciliation; burst test gate (plan §13) | S |
+| Authenticated read abuse (one token, unbounded expensive reads) | Per-shop fixed-window limits at the single shared auth point — 600 requests/min, and 10/min for `/api/v1/export`, which pages to 5000 rows per call; oversized session tokens refused before any decoding. Per node, so a cluster admits a multiple: this bounds one shop's demand on the app and is **not** a volumetric-DoS control — that remains an edge/L7 concern | S |
 | Payload tampering / unexpected shapes | Verify-before-parse; unknown additive fields tolerated; breaking shapes dead-letter (backlog #9) | S |
 | PII arriving in payloads | `include_fields` whitelists exclude PII; Level-2 fields redacted without approval (contract §5) | M |
 
@@ -122,12 +123,13 @@ Each Phase-0 **S** ("to build/verify") is now resolved against shipped code. Ful
 | Surface (§) | Control now in place | Evidence |
 |---|---|---|
 | Install/OAuth/session (3.1) | JWT verify incl. alg/aud/iss/exp/nbf; offline-token envelope encryption; atomic rotation | `verifySessionToken.ts`, `identity.ts`, `rotateCredential.ts` + tests |
-| Iframe/browser (3.2) | `frame-ancestors` limited to the shop + Shopify Admin; session-token flow (no 3P cookies) | `resources.ts` `AppHome` CSP; `identity`/`verifySessionToken` |
+| Iframe/browser (3.2) | `frame-ancestors` built from the VERIFIED principal, with `?shop=` accepted only if it matches `^[a-z0-9][a-z0-9-]*\.myshopify\.com$`; a load with no verifiable session token gets `https://*.myshopify.com https://admin.shopify.com` (nothing has yet said which store it is), never a wildcard origin; session-token flow (no 3P cookies) | `src/resources/frameAncestors.ts` + `test/frameAncestors.test.ts`, `src/auth/shopDomain.ts`; `identity`/`verifySessionToken` |
 | Webhook ingress (3.3) | Constant-time HMAC verify-before-parse → 401 no-mutation; `(shopId,webhookId)` idempotency | `webhookHmac.ts`, `webhookIngress.ts` + tests |
 | Workers (3.4) | Idempotent, deterministically-keyed processing; durable inbox; dead-letter visibility | `processor.ts`, `jobs.ts` + `processor.test.ts` |
 | Admin API (3.5) | Read-only least scopes; durable cursor never past committed work; throttle-aware | `adminApi.ts`, `reconcile.ts` + `reconcile.test.ts` |
 | **Tenant data access (3.6)** | Every query derives `shopId` from the principal; **shop-namespaced keys**; field allowlists; no `@export` | **`test/crossTenant.test.ts`** (every endpoint attacked), `queries.ts`, `tenant.ts` |
 | Retention/deletion (3.7) | `DELETE`-by-age purge (data+index); idempotent redaction; purge-lag metrics | `retention.ts`, `redaction.ts` + tests; observability #22 |
+| Authenticated read abuse (3.3) | Per-shop request + export limits at `identity.authenticate()`, the one line every read shares; refusals are 429 carrying a wait time, and are counted (`rate_limit.requests`, `rate_limit.exports`) | `src/auth/rateLimit.ts` + `test/rateLimit.test.ts`; `exportResource.ts` |
 | Deployment/supply chain (3.8) | **0 npm runtime deps** (`npm audit`: 0 vulns); PII/secret-safe logging; fail-closed secret guards | `package.json`, `observe.ts` redaction, `secretsPolicy.ts` |
 
 **Issue #23 changes:**

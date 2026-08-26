@@ -251,7 +251,18 @@ export async function apiExport(
 	const res = await nativeFetch()(`/api/v1/export/${encodeURIComponent(kind)}.csv${qs(params)}`, {
 		headers: { 'X-Shopify-Session-Token': token },
 	});
-	if (!res.ok) throw new Error(`${res.status}`);
+	// Carries the server's own detail, like get() does: an export can now be refused
+	// with a wait time (rate limiting, src/auth/rateLimit.ts), and a bare "429" is not
+	// something a merchant can act on.
+	if (!res.ok) {
+		let detail = '';
+		try {
+			detail = errorDetail(await res.json());
+		} catch {
+			// no JSON body
+		}
+		throw new Error(`${res.status}${detail ? ` ${detail}` : ''}`);
+	}
 	const disposition = res.headers.get('content-disposition') ?? '';
 	const match = disposition.match(/filename="([^"]+)"/);
 	return {

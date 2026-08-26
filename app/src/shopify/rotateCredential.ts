@@ -1,6 +1,6 @@
 import { loadRefreshToken, saveCredential } from './credentialStore.ts';
 import { refreshOfflineToken } from './exchangeToken.ts';
-import { markReauthRequired } from './lifecycle.ts';
+import { markReauthRequired, recordExchangeOutcome } from './lifecycle.ts';
 
 // Renew a shop's expiring offline token. Runs under the single-active worker
 // lease (ADR-002), so no compare-and-swap is needed for safety — rotation for a
@@ -16,6 +16,10 @@ export async function rotateCredential(args: { shopId: string; shop: string; api
 	try {
 		const tok = await refreshOfflineToken({ shop: args.shop, refreshToken, apiKey: args.apiKey, secret: args.secret });
 		await saveCredential(args.shopId, tok);
+		// A refresh carries the granted scope list too, so the same recording happens
+		// here as on the first exchange — otherwise a shop's scopes would be whatever
+		// they were at install and could silently go stale.
+		await recordExchangeOutcome(args.shopId, tok.scope);
 		return true;
 	} catch {
 		await markReauthRequired(args.shopId);

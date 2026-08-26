@@ -6,6 +6,12 @@
 		"defaultLimit": 25,
 		"maxLimit": 100
 	},
+	"rateLimits": {
+		"windowSeconds": 60,
+		"requests": 600,
+		"exports": 10,
+		"status": 429
+	},
 	"resources": {
 		"session": {
 			"path": "/api/v1/session",

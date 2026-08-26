@@ -2,10 +2,17 @@ import { Resource } from 'harper';
 import { listEvents, listFindings, listOrders } from '../api/queries.ts';
 import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from '../api/csv.ts';
 import { MAX_LIMIT } from '../api/apiContract.ts';
-import { log } from '../observability/observe.ts';
+import { createRateLimiter, EXPORTS_PER_MINUTE, RateLimitError } from '../auth/rateLimit.ts';
+import { log, M, metrics } from '../observability/observe.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { EventsQ, FindingsQ, ExpectationsQ, ProjectionsQ, EventSkusQ } from './tables.ts';
+
+// Export gets its own, much tighter limit on top of the per-shop request limit in
+// the identity adapter: it is the only read whose cost is not proportional to what
+// the caller asked for (see EXPORTS_PER_MINUTE). Module scope, so the counter
+// survives between requests — a per-request limiter would count to one forever.
+const exportLimiter = createRateLimiter({ limit: EXPORTS_PER_MINUTE });
 
 // CSV export of any filtered list. The one differentiator over Shopify's own
 // activity log that a merchant can hold in their hand — the log is view-only,
@@ -31,6 +38,13 @@ export class ExportResource extends Resource {
 		if (kind !== 'events' && kind !== 'findings' && kind !== 'orders') throw httpError('unknown export kind', 404);
 
 		const now = Date.now();
+		// Checked after the kind is known, so a typo'd path spends no budget.
+		const decision = exportLimiter.check(shopId, now);
+		if (!decision.allowed) {
+			metrics.inc(M.rateLimitedExports);
+			log('warn', 'export.rate_limited', { kind, retryAfterSeconds: decision.retryAfterSeconds });
+			throw new RateLimitError('exports', decision.retryAfterSeconds);
+		}
 		const p = url.searchParams;
 		// One page-fetching closure per kind, over the SAME query functions the
 		// screens use, so an export can never see a row the UI could not, and

@@ -3,6 +3,8 @@
 // schema change can never leak a new column. `scripts/gen-contract.mjs` writes
 // contracts/sightline-api-v1.json from this module; a CI test asserts they match.
 
+import { API_REQUESTS_PER_MINUTE, EXPORTS_PER_MINUTE, RATE_WINDOW_MS } from '../auth/rateLimit.ts';
+
 export const API_VERSION = 'v1';
 export const WINDOW_DAYS = 7; // bounded read window (matches the retention window)
 export const WINDOW_MS = WINDOW_DAYS * 86_400_000;
@@ -97,6 +99,16 @@ export const API_CONTRACT = {
 	version: API_VERSION,
 	windowDays: WINDOW_DAYS,
 	pagination: { style: 'cursor', defaultLimit: DEFAULT_LIMIT, maxLimit: MAX_LIMIT },
+	// Per-shop request limits (src/auth/rateLimit.ts). Caller-visible, so they belong
+	// in the contract: exceeding either is an HTTP 429 whose message states how many
+	// seconds to wait. Enforced per node, so a cluster admits a multiple of these —
+	// they bound one shop's demand on the app, and are not a DoS control.
+	rateLimits: {
+		windowSeconds: RATE_WINDOW_MS / 1000,
+		requests: API_REQUESTS_PER_MINUTE,
+		exports: EXPORTS_PER_MINUTE,
+		status: 429,
+	},
 	resources: {
 		session: { path: '/api/v1/session', fields: ['shop', 'user', 'capabilities', 'timezone', 'support'] },
 		setup: { path: '/api/v1/setup', fields: ['shop', 'complete', 'steps', 'eventsObserved', 'action'] },

@@ -6,7 +6,7 @@ Last validated: 2026-07-13
 
 Product source: [Sightline product brief](./sightline_product_brief_v3.md)
 
-Visual source: [Shopify App Store concept](./sightline_shopify_app_store_mock.html)
+Visual source: the Shopify App Store concept (`docs/sightline_shopify_app_store_mock.html`, since deleted — see [ux review §4](./ux-review.md); recoverable from git history). The implementation reference is the [screen specification](./free_mvp_screen_spec.md).
 
 ## 1. Executive decision
 
@@ -38,7 +38,7 @@ The free tier observes Shopify. It cannot know that a 3PL or ERP failed unless t
 - “Captured events” rather than “every event”; Shopify explicitly says delivery is not guaranteed.
 - “Reconciled against current Shopify state” when an Admin API sweep supplies the evidence.
 
-The existing App Store mock is a product-direction artifact. Its replay controls, destination health claims, fictional reviews, “1 click replay,” and failure labels are not acceptance criteria for the free MVP and must not appear in the shipped free application.
+The App Store mock was a product-direction artifact. Its replay controls, destination health claims, fictional reviews, “1 click replay,” and failure labels are not acceptance criteria for the free MVP and must not appear in the shipped free application — nor in the published listing ([App Store review checklist](./app-store-review-checklist.md) §3, which now carries that list; the mock itself was deleted).
 
 ## 4. Scope
 
@@ -387,6 +387,6 @@ Implementation must re-check versioned details at issue start. Current architect
 
 - This architecture and delivery plan.
 - [Screen specification](./free_mvp_screen_spec.md).
-- Original product brief and App Store concept retained as source material.
+- Original product brief retained as source material; the App Store concept was deleted once the shipped UI and the screen spec superseded it (git history retains it).
 
 The issue-ready backlog this plan produced was filed as GitHub issues #4–#27 and then deleted; the [issue list](https://github.com/HarperFast/harper-sightline/issues?q=is%3Aissue) is the live record.
