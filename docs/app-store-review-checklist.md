@@ -10,13 +10,13 @@ Legend: **✅ done** · **🟡 code done, needs owner action or verification** �
 
 Everything below is either on this chain or independent of it. The chain is not code:
 
-1. ⛔ **Harper native secrets custody restored** (Fabric-side, external dependency) — `custody_fingerprint` is null cluster-wide, which is *why* the dev fallbacks exist.
-2. ⛔ **F1/F2 closed** — rotate the burned Shopify app secret, provision a real `SIGHTLINE_TOKEN_KEY`, set `SIGHTLINE_REQUIRE_SECRETS=1`, delete the fallbacks. Blocked on (1).
+1. ⛔ **Harper secrets custody restored** (Fabric-side, external dependency) — `custody_fingerprint` is null cluster-wide. This used to be what the dev fallbacks worked around; with those deleted it is a hard prerequisite for reading any scoped secret, and `set-secrets.mjs` refuses to provision until `get_secrets_public_key` returns a key.
+2. ⛔ **F1/F2 closed in code; owner action outstanding** — the fallbacks are deleted and every secret read now fails closed. Still required: rotate the burned Shopify app secret (it remains in git history), and provision `SHOPIFY_API_SECRET` / `SIGHTLINE_TOKEN_KEY` / `SIGHTLINE_OPS_TOKEN` as scoped secrets. Blocked on (1).
 3. ☐ **Production instance + `application_url`** — every URL in `shopify.app.toml` currently points at `ayoo.josh-test.harperfabric.com`, a test instance.
 4. ☐ **Clean production-store install** completing the definition-of-done walkthrough (§4).
 5. ☐ **Release-owner sign-off** (§6).
 
-A production install on dev-fallback secrets is not a launch candidate, so (2) genuinely gates (4).
+A production install cannot even start without real secrets now — the fallbacks that would have let it are gone — so (2) genuinely gates (4).
 
 ## 1. Technical requirements
 

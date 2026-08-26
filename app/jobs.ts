@@ -44,8 +44,45 @@ import {
 } from './src/digest/digestBuild.ts';
 import { log, metrics, M } from './src/observability/observe.ts';
 import { computeOpsHealth, type OpsHealth } from './src/observability/opsHealth.ts';
-import { createTicker } from './src/jobs/tick.ts';
+import { createTicker, type Ticker } from './src/jobs/tick.ts';
 import type { QueryTable } from './src/api/queries.ts';
+
+// ── SCHEDULING ────────────────────────────────────────────────────────────────
+//
+// Seven of this file's eight periodic sweeps are declared as Harper scheduler
+// jobs in config.yaml and exported below as `*Job` handlers. The eighth — the
+// 10s delivery-processing loop — deliberately stays a per-node setInterval.
+//
+// WHY THE SEVEN MOVED. This module is imported by src/resources/boot.ts, so
+// Harper used to start all eight timers on EVERY worker thread on EVERY node:
+// every thread swept every active shop through the Admin API every 10 minutes,
+// every thread ran the hourly purge. That was never a correctness problem —
+// every sweep is idempotent by construction (ADR-002) — but the duplicated work
+// and duplicated Admin API cost scaled with threads x nodes for no benefit. The
+// scheduler is leader-coordinated: one occurrence, one elected node.
+//
+// WHY `process` DID NOT. Leader failover completes in ~6.5 minutes. For an
+// hourly purge that is invisible; for a 10s ingest loop it means webhook
+// deliveries sitting unprocessed for up to 6.5 minutes on every leader change —
+// past BACKLOG_STALE_MS (5 min), so ops.snapshot would report unhealthy every
+// time. Ingest latency is the product's core promise, and this is the one loop
+// whose per-node duplication is genuinely cheap: a bounded `limit: 50` read of
+// `status:'accepted'` rows, where concurrent threads converge by idempotency.
+//
+// WHY THE TICKER STAYS. The scheduler guarantees runs never overlap for one job
+// on the leader, but documents no stall timeout — and a hung handler on the
+// leader now wedges that job CLUSTER-WIDE, not just on one worker thread. The
+// backstop in src/jobs/tick.ts therefore matters more here than it did before,
+// not less. Its header explains the original failure (an unbounded `fetch`
+// leaving `running` true forever); nothing about that changed.
+//
+// WHY HANDLERS IGNORE `context.scheduledAt`. Every sweep already defaults to
+// `Date.now()`, and a catch-up occurrence carries a scheduledAt in the PAST.
+// Feeding that in would compute ops.snapshot's ages against a stale clock and
+// would stamp reconcile's `lastReconciledAt` behind the real time — making a
+// freshly reconciled shop look stale. `scheduledAt`/`catchUp` are logged for
+// observability instead; the wall clock stays the source of truth, exactly as it
+// was under setInterval.
 
 // Every background loop runs at most one pass at a time, but must never be able
 // to wedge permanently if a pass fails to settle (src/jobs/tick.ts). A detected stall
@@ -60,6 +97,33 @@ function ticker(name: string, stallMs: number) {
 			log('error', 'tick.stalled', { loop, ageMs, action: 'starting a new pass anyway' });
 		},
 	});
+}
+
+// What Harper's scheduler passes a handler. Every field is optional here so the
+// same function is directly callable with no argument — which is what the purge's
+// post-deploy one-shot and any future manual trigger do.
+export interface JobContext {
+	jobName?: string;
+	scheduledAt?: Date;
+	catchUp?: boolean;
+}
+
+// Adapt a sweep to a scheduler handler: keep the stall-guarded ticker, and
+// return a promise the scheduler can await so a slow pass delays the next
+// occurrence rather than stacking on top of it.
+//
+// A skipped tick (`run` returns null) is not an error and not logged as one: on
+// the leader the scheduler already serialises occurrences, so the only way to
+// reach a live ticker is a duplicate delivery across a failover — precisely the
+// case where doing nothing is correct.
+function job(name: string, t: Ticker, work: () => Promise<void>): (context?: JobContext) => Promise<void> {
+	return async (context: JobContext = {}) => {
+		// A catch-up occurrence means an interval was actually missed (failover,
+		// restart, a pass that overran). Worth a line — it is the difference between
+		// "the schedule is healthy" and "we are running late".
+		if (context.catchUp) log('info', 'job.catchup', { job: context.jobName ?? name, scheduledAt: context.scheduledAt?.toISOString() });
+		await (t.run(work) ?? Promise.resolve());
+	};
 }
 
 // Rebuild an order's projection from ALL its normalized events (#12). Rebuilding
@@ -199,12 +263,20 @@ export function processDeliveries(): Promise<{ processed: number; failed: number
 	return processAcceptedBatch(deps);
 }
 
-// Background processing loop. This module is imported by resources.ts, so Harper
-// loads it on each worker thread. Processing is idempotent (only 'accepted' rows
-// are listed; downstream writes are keyed deterministically), so concurrent
-// ticks across threads/nodes are safe — that idempotency, not a lease, is the
-// correctness guarantee (ADR-002). A single-active lease is a future efficiency
-// optimization. The `running` guard prevents overlapping ticks on one thread.
+// The ONE loop still driven by a timer rather than Harper's scheduler, and the
+// only reason this module has side effects on import at all. See SCHEDULING at
+// the top of this file: a ~6.5-minute leader failover is invisible for an hourly
+// purge but not for 10-second ingest, where it would park deliveries past
+// BACKLOG_STALE_MS and trip the health snapshot on every leader change.
+//
+// So this deliberately keeps the old per-node shape: resources.ts imports this
+// module, so Harper runs a copy on each worker thread. Processing is idempotent
+// (only 'accepted' rows are listed; downstream writes are keyed
+// deterministically), so concurrent ticks across threads/nodes are safe — that
+// idempotency, not a lease, is the correctness guarantee (ADR-002). The
+// duplication is bounded and cheap here in a way it was not for the sweeps that
+// moved: each tick is a `limit: 50` read of one indexed status, not a full-table
+// scan or a per-shop Admin API sweep. The ticker prevents overlap on one thread.
 const INTERVAL_MS = 10_000;
 const processTicker = ticker('process', 5 * 60_000);
 
@@ -226,11 +298,9 @@ export function startProcessingLoop(): void {
 	}, INTERVAL_MS);
 }
 
-// Seven-day retention purge (ADR-003). Runs shortly after boot (to clear any
-// backlog from downtime, and so it is verifiable after a deploy) and then hourly.
-// The purge is idempotent, so concurrent runs across threads/nodes are safe — no
-// lease needed; the `purging` guard just avoids overlap on one thread.
-const PURGE_INTERVAL_MS = 3_600_000; // hourly
+// Seven-day retention purge (ADR-003). Hourly, from config.yaml's
+// `sightline-purge` job. The purge is idempotent, so a duplicate occurrence
+// across a failover is safe — no lease needed.
 const PURGE_INITIAL_DELAY_MS = 30_000;
 const purgeTicker = ticker('purge', 30 * 60_000);
 
@@ -248,22 +318,31 @@ export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
 // outbox sweep, and vice versa) lives in src/retention/purgeCycle.ts, deps-injected so it
 // is unit-testable without the Harper runtime — jobs.ts just wires the real
 // purge functions, log, and metrics, and keeps the ticker.
-function purgeTick(): void {
-	void purgeTicker.run(async () => {
-		await runPurgeCycle({ purge: runPurge, outboxPurge: runOutboxPurge, log, metrics }, Date.now());
-	});
-}
+export const purgeJob = job('purge', purgeTicker, async () => {
+	await runPurgeCycle({ purge: runPurge, outboxPurge: runOutboxPurge, log, metrics }, Date.now());
+});
 
-export function startPurgeLoop(): void {
-	setTimeout(purgeTick, PURGE_INITIAL_DELAY_MS);
-	setInterval(purgeTick, PURGE_INTERVAL_MS);
+// The one property the scheduler cannot provide: a new job does NOT fire on
+// deploy, it waits for its first scheduled occurrence — up to an hour for this
+// one. The purge running shortly after boot was deliberate (it clears any backlog
+// accumulated during downtime, and it makes retention verifiable by the
+// post-deploy checks in scripts/smoke.mjs rather than an hour later), so that
+// single pass is kept as a local one-shot.
+//
+// It is NOT a second schedule: one pass, on each thread that boots, then never
+// again. The purge is idempotent and capped at MAX_DELETES_PER_RUN per table, and
+// the ticker keeps it from overlapping the scheduled occurrence on this thread,
+// so the redundancy is one bounded burst per deploy — not the per-thread-forever
+// duplication that moving to the scheduler removed.
+export function startPurgeBootPass(): void {
+	setTimeout(() => void purgeJob(), PURGE_INITIAL_DELAY_MS);
 }
 
 // Detector sweep (#14). Event-driven evaluation in handle() catches paid/
 // fulfilled/cancelled transitions immediately; this periodic sweep catches
 // pending expectations whose deadline passes with NO new event, flipping them to
 // expired and creating the unconfirmed finding. Idempotent (deterministic keys).
-const DETECTOR_INTERVAL_MS = 300_000; // every 5 minutes
+// Every 5 minutes, from config.yaml's `sightline-detect` job.
 const detectorTicker = ticker('detect', 15 * 60_000);
 
 export async function runDetectorSweep(now = Date.now()): Promise<number> {
@@ -281,22 +360,16 @@ export async function runDetectorSweep(now = Date.now()): Promise<number> {
 	return due;
 }
 
-function detectorTick(): void {
-	void detectorTicker.run(async () => {
-		try {
-			const due = await runDetectorSweep();
-			metrics.inc(M.detectEvaluated, due);
-			if (due) log('trace', 'detect.tick', { evaluated: due });
-		} catch (e: unknown) {
-			metrics.inc(M.detectError);
-			log('error', 'detect.error', { message: (e as Error).message });
-		}
-	});
-}
-
-export function startDetectorLoop(): void {
-	setInterval(detectorTick, DETECTOR_INTERVAL_MS);
-}
+export const detectJob = job('detect', detectorTicker, async () => {
+	try {
+		const due = await runDetectorSweep();
+		metrics.inc(M.detectEvaluated, due);
+		if (due) log('trace', 'detect.tick', { evaluated: due });
+	} catch (e: unknown) {
+		metrics.inc(M.detectError);
+		log('error', 'detect.error', { message: (e as Error).message });
+	}
+});
 
 // Reconciliation (#13). Reads authoritative order state from the Admin GraphQL
 // API and fills gaps from missed webhooks; the first run per shop backfills the
@@ -305,8 +378,7 @@ export function startDetectorLoop(): void {
 // state (the reducer is monotonic — reconciliation never regresses a projection).
 // Requires the offline token (bootstrapped on app load); shops without one are
 // skipped. A durable checkpoint tracks the updated-at cursor per shop.
-const RECONCILE_INTERVAL_MS = 600_000; // 10 minutes
-const RECONCILE_INITIAL_DELAY_MS = 40_000;
+// Every 10 minutes, from config.yaml's `sightline-reconcile` job.
 const RECONCILE_BACKFILL_MS = 7 * 24 * 60 * 60 * 1000; // first run: last 7 days
 // Stall budget deliberately larger than the 10-minute interval: a legitimate
 // sweep over many shops can outlast one tick, and with ADMIN_TIMEOUT_MS bounding
@@ -407,34 +479,27 @@ export async function runReconcileSweep(now = Date.now()): Promise<{ shops: numb
 	return { shops, orders };
 }
 
-function reconcileTick(): void {
-	void reconcileTicker.run(async () => {
-		const startedAt = Date.now();
-		try {
-			const r = await runReconcileSweep();
-			metrics.observeMs(M.reconcileMs, Date.now() - startedAt);
-			metrics.inc(M.reconcileShops, r.shops);
-			metrics.inc(M.reconcileOrders, r.orders);
-			if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
-		} catch (e: unknown) {
-			// A throttle is a capacity signal, not a fault: the sweep persisted its
-			// partial progress and the next tick resumes, so it is counted (and
-			// logged at warn) separately from a genuine reconcile failure.
-			if (isThrottledAdminError(e)) {
-				metrics.inc(M.reconcileThrottled);
-				log('warn', 'reconcile.throttled', { message: (e as Error).message });
-			} else {
-				metrics.inc(M.reconcileError);
-				log('error', 'reconcile.error', { message: (e as Error).message });
-			}
+export const reconcileJob = job('reconcile', reconcileTicker, async () => {
+	const startedAt = Date.now();
+	try {
+		const r = await runReconcileSweep();
+		metrics.observeMs(M.reconcileMs, Date.now() - startedAt);
+		metrics.inc(M.reconcileShops, r.shops);
+		metrics.inc(M.reconcileOrders, r.orders);
+		if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
+	} catch (e: unknown) {
+		// A throttle is a capacity signal, not a fault: the sweep persisted its
+		// partial progress and the next tick resumes, so it is counted (and
+		// logged at warn) separately from a genuine reconcile failure.
+		if (isThrottledAdminError(e)) {
+			metrics.inc(M.reconcileThrottled);
+			log('warn', 'reconcile.throttled', { message: (e as Error).message });
+		} else {
+			metrics.inc(M.reconcileError);
+			log('error', 'reconcile.error', { message: (e as Error).message });
 		}
-	});
-}
-
-export function startReconcileLoop(): void {
-	setTimeout(reconcileTick, RECONCILE_INITIAL_DELAY_MS);
-	setInterval(reconcileTick, RECONCILE_INTERVAL_MS);
-}
+	}
+});
 
 // Inventory enrichment. An inventory webhook carries only inventory_item_id and
 // a quantity, which is unreadable to a merchant and unsearchable by SKU. This
@@ -445,9 +510,8 @@ export function startReconcileLoop(): void {
 // and lives there, unit-testable without the Harper runtime, matching the
 // accessToken.ts/tokenDeps.ts and processor.ts/jobs.ts split already in this
 // codebase. This section only wires the real tables/Admin API/token resolution
-// and schedules the tick.
-const ENRICH_INTERVAL_MS = 900_000; // 15 minutes
-const ENRICH_INITIAL_DELAY_MS = 60_000;
+// and exposes the handler. Every 15 minutes, from config.yaml's
+// `sightline-inventory-enrich` job.
 const enrichTicker = ticker('inventory.enrich', 30 * 60_000);
 
 const enrichDeps: EnrichDeps = {
@@ -466,25 +530,18 @@ export function runInventoryEnrichment(now = Date.now()): Promise<{ items: numbe
 	return runEnrichmentSweep(now, enrichDeps);
 }
 
-function enrichTick(): void {
-	void enrichTicker.run(async () => {
-		try {
-			const r = await runInventoryEnrichment();
-			metrics.inc(M.enrichItems, r.items);
-			metrics.inc(M.enrichLocations, r.locations);
-			metrics.inc(M.enrichIndexed, r.indexed);
-			if (r.items || r.locations || r.indexed) log('trace', 'enrich.tick', r);
-		} catch (e: unknown) {
-			metrics.inc(M.enrichError);
-			log('error', 'enrich.error', { message: (e as Error).message });
-		}
-	});
-}
-
-export function startInventoryEnrichmentLoop(): void {
-	setTimeout(enrichTick, ENRICH_INITIAL_DELAY_MS);
-	setInterval(enrichTick, ENRICH_INTERVAL_MS);
-}
+export const inventoryEnrichJob = job('inventory.enrich', enrichTicker, async () => {
+	try {
+		const r = await runInventoryEnrichment();
+		metrics.inc(M.enrichItems, r.items);
+		metrics.inc(M.enrichLocations, r.locations);
+		metrics.inc(M.enrichIndexed, r.indexed);
+		if (r.items || r.locations || r.indexed) log('trace', 'enrich.tick', r);
+	} catch (e: unknown) {
+		metrics.inc(M.enrichError);
+		log('error', 'enrich.error', { message: (e as Error).message });
+	}
+});
 
 // One-time backfill of the derived `state` column on order projections written
 // before that column existed. Without it, every lane count on the Overview
@@ -499,8 +556,7 @@ export function startInventoryEnrichmentLoop(): void {
 // frontier reaches the present each tick reads one small batch and writes
 // nothing. The sweep itself is deps-injected in src/jobs/stateBackfill.ts (same split
 // as inventoryEnrich.ts) so it is unit-testable without the Harper runtime.
-const BACKFILL_INTERVAL_MS = 60_000;
-const BACKFILL_INITIAL_DELAY_MS = 15_000;
+// Every minute, from config.yaml's `sightline-state-backfill` job.
 const backfillTicker = ticker('state.backfill', 10 * 60_000);
 
 const backfillDeps: BackfillDeps = {
@@ -512,26 +568,19 @@ export function runProjectionStateBackfill(now = Date.now()): Promise<BackfillRe
 	return runStateBackfill(now, backfillDeps);
 }
 
-function backfillTick(): void {
-	void backfillTicker.run(async () => {
-		try {
-			const r = await runProjectionStateBackfill();
-			metrics.inc(M.stateBackfillScanned, r.scanned);
-			metrics.inc(M.stateBackfillFixed, r.fixed);
-			// Only speaks up while there is something to do — a converged sweep is
-			// silent, which is how an operator can tell it converged.
-			if (r.fixed) log('info', 'state.backfill.tick', { scanned: r.scanned, fixed: r.fixed, cursor: r.cursor });
-		} catch (e: unknown) {
-			metrics.inc(M.stateBackfillError);
-			log('error', 'state.backfill.error', { message: (e as Error).message });
-		}
-	});
-}
-
-export function startProjectionStateBackfillLoop(): void {
-	setTimeout(backfillTick, BACKFILL_INITIAL_DELAY_MS);
-	setInterval(backfillTick, BACKFILL_INTERVAL_MS);
-}
+export const stateBackfillJob = job('state.backfill', backfillTicker, async () => {
+	try {
+		const r = await runProjectionStateBackfill();
+		metrics.inc(M.stateBackfillScanned, r.scanned);
+		metrics.inc(M.stateBackfillFixed, r.fixed);
+		// Only speaks up while there is something to do — a converged sweep is
+		// silent, which is how an operator can tell it converged.
+		if (r.fixed) log('info', 'state.backfill.tick', { scanned: r.scanned, fixed: r.fixed, cursor: r.cursor });
+	} catch (e: unknown) {
+		metrics.inc(M.stateBackfillError);
+		log('error', 'state.backfill.error', { message: (e as Error).message });
+	}
+});
 
 // Digest build (Plan C). Builds each subscriber's digest for the last COMPLETE
 // period and writes it to the outbox with status 'pending'. THERE IS NO
@@ -543,9 +592,9 @@ export function startProjectionStateBackfillLoop(): void {
 // ticks across threads and cluster nodes converge on one row per period. The
 // orchestration itself is deps-injected and lives in src/digest/digestBuild.ts (same
 // split as inventoryEnrich.ts/stateBackfill.ts) so it is unit-testable without
-// the Harper runtime. This section only wires the real tables and the tick.
-const DIGEST_INTERVAL_MS = 3_600_000; // hourly; the period check does the real gating
-const DIGEST_INITIAL_DELAY_MS = 90_000;
+// the Harper runtime. This section only wires the real tables and the handler.
+// Hourly, from config.yaml's `sightline-digest` job; the period check does the
+// real gating.
 // 180 minutes = 3x the hourly interval, matching reconcile's margin (also 3x its
 // own interval): both sweep every active shop and do several full-table reads
 // per shop, so a moderately slow pass should be tolerated before being flagged
@@ -565,41 +614,41 @@ export function runDigestBuild(now = Date.now()): Promise<DigestBuildResult> {
 	return runDigestBuildSweep(now, digestBuildDeps);
 }
 
-function digestTick(): void {
-	void digestTicker.run(async () => {
-		try {
-			const r = await runDigestBuild();
-			// Never log the address — it is the one merchant-identifying string held.
-			// notDue and quiet are logged separately (not combined into one
-			// "skipped" figure): they answer different questions when digests seem
-			// absent — were subscriptions even due, or did they build but decide not
-			// to send? `failed` (per-subscription failures, already logged with their
-			// own shopId inside runDigestBuildSweep) surfaces here too, so a sweep
-			// with failures is never mistaken for a quiet, healthy one.
-			if (r.built || r.skippedQuiet || r.failed)
-				log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue, failed: r.failed });
-		} catch (e: unknown) {
-			// This catch is outside any per-subscription scope, so — unlike the
-			// per-subscription failure log inside runDigestBuildSweep, which knows
-			// the exact address to scrub — there is no specific address in hand
-			// here. Scrub anything email-shaped rather than logging the message raw.
-			log('error', 'digest.error', { message: scrubEmailShaped((e as Error).message) });
-		}
-	});
-}
-
-export function startDigestLoop(): void {
-	setTimeout(digestTick, DIGEST_INITIAL_DELAY_MS);
-	setInterval(digestTick, DIGEST_INTERVAL_MS);
-}
+export const digestJob = job('digest', digestTicker, async () => {
+	try {
+		const r = await runDigestBuild();
+		// Never log the address — it is the one merchant-identifying string held.
+		// notDue and quiet are logged separately (not combined into one
+		// "skipped" figure): they answer different questions when digests seem
+		// absent — were subscriptions even due, or did they build but decide not
+		// to send? `failed` (per-subscription failures, already logged with their
+		// own shopId inside runDigestBuildSweep) surfaces here too, so a sweep
+		// with failures is never mistaken for a quiet, healthy one.
+		if (r.built || r.skippedQuiet || r.failed)
+			log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue, failed: r.failed });
+	} catch (e: unknown) {
+		// This catch is outside any per-subscription scope, so — unlike the
+		// per-subscription failure log inside runDigestBuildSweep, which knows
+		// the exact address to scrub — there is no specific address in hand
+		// here. Scrub anything email-shaped rather than logging the message raw.
+		log('error', 'digest.error', { message: scrubEmailShaped((e as Error).message) });
+	}
+});
 
 // Observability heartbeat (#22). Periodically derives the aggregate ops-health
 // (backlog age/count, dead letters, reconciliation staleness, reauth) from tables
 // and emits it — with the cumulative metrics tally — as a single structured line.
 // The staging log pipeline turns these snapshots into dashboards/alerts (#25).
 // A warn line when unhealthy so an operator alert can key off it directly.
-const OPS_SNAPSHOT_INTERVAL_MS = 60_000; // once a minute
-const OPS_SNAPSHOT_INITIAL_DELAY_MS = 20_000;
+// Once a minute, from config.yaml's `sightline-ops-snapshot` job.
+//
+// Note the interaction with leader coordination: this heartbeat now comes from
+// ONE node per minute instead of every thread on every node. That is the point —
+// the snapshot was always cluster-wide (it reads replicated tables, see
+// getOpsHealth below), so the extra copies said the same thing N times. But it
+// does mean the heartbeat's ABSENCE is now a meaningful signal: no ops.snapshot
+// line for several minutes means the scheduler has no leader, not merely that one
+// node is quiet.
 const snapshotTicker = ticker('ops.snapshot', 5 * 60_000);
 
 // The same table wiring the snapshot uses, exposed so the ops endpoint
@@ -623,26 +672,22 @@ export async function runOpsSnapshot(now = Date.now()): Promise<void> {
 	log(health.healthy ? 'info' : 'warn', 'ops.snapshot', { health, metrics: metrics.snapshot() });
 }
 
-function opsSnapshotTick(): void {
-	void snapshotTicker.run(async () => {
-		try {
-			await runOpsSnapshot();
-		} catch (e: unknown) {
-			log('error', 'ops.snapshot.error', { message: (e as Error).message });
-		}
-	});
-}
+export const opsSnapshotJob = job('ops.snapshot', snapshotTicker, async () => {
+	try {
+		await runOpsSnapshot();
+	} catch (e: unknown) {
+		log('error', 'ops.snapshot.error', { message: (e as Error).message });
+	}
+});
 
-export function startOpsSnapshotLoop(): void {
-	setTimeout(opsSnapshotTick, OPS_SNAPSHOT_INITIAL_DELAY_MS);
-	setInterval(opsSnapshotTick, OPS_SNAPSHOT_INTERVAL_MS);
-}
-
+// ── module-scope startup ──────────────────────────────────────────────────────
+//
+// All that remains on import: the 10s ingest loop (see SCHEDULING at the top for
+// why it did not move to the scheduler) and the purge's single post-deploy pass.
+// The other seven sweeps are started by Harper from config.yaml's `scheduler`
+// block, which is also why this file is now nearly side-effect-free on import —
+// src/retention/purgeCycle.ts's note about "importing jobs.ts starts eight
+// background loops" no longer holds, and src/resources/opsResource.ts can import
+// getOpsHealth without starting anything but these two.
 startProcessingLoop();
-startPurgeLoop();
-startDetectorLoop();
-startReconcileLoop();
-startInventoryEnrichmentLoop();
-startProjectionStateBackfillLoop();
-startDigestLoop();
-startOpsSnapshotLoop();
+startPurgeBootPass();

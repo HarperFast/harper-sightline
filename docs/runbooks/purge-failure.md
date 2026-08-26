@@ -9,9 +9,15 @@
 ### Why it matters
 Sightline promises a **7-day retention** window with physical deletion (ADR-003);
 the plan explicitly warns not to equate cache staleness with legal deletion. An
-hourly purge job (`app/jobs.ts` `startPurgeLoop`, backed by
-`app/src/retention.ts`) deletes rows older than the window across the ledger
-tables. Residue (expired rows still present after a run) or repeated failures mean
+hourly purge job (the `sightline-purge` Harper scheduler job in
+`app/config.yaml`, handled by `purgeJob` in `app/jobs.ts` and backed by
+`app/src/retention/retention.ts`) deletes rows older than the window across the
+ledger tables. It is **leader-coordinated**: one node runs each occurrence, so an
+absence of `purge.tick` lines cluster-wide can mean the scheduler has no leader
+rather than that the purge failed — check for `job.catchup` lines and the
+`ops.snapshot` heartbeat before assuming a purge fault. `startPurgeBootPass` also
+runs one pass 30s after boot on each thread, because the scheduler does not fire a
+newly declared job on deploy. Residue (expired rows still present after a run) or repeated failures mean
 the deletion guarantee — a compliance commitment — is not being met.
 
 ### Signals

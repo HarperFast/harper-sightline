@@ -39,6 +39,17 @@ test('the production target is a file INSIDE the component, never a bare specifi
 	// bare specifier in module source, which Harper's linker intercepts.
 	assert.match(source, /from 'harper'/, 'the runtime target must import the bare `harper` specifier');
 	assert.match(source, /export \{[^}]*databases/, 'db.ts imports `databases` through it');
+	// `secrets` reaches the app through the same mapping, and it must NOT be a named
+	// re-export: on a runtime without that export a named binding fails to link, and
+	// since resources.ts pulls this file in transitively, that would 404 every route
+	// while the component still reported healthy. A namespace import degrades to an
+	// empty accessor instead, and secretsPolicy.ts then raises MissingSecretError.
+	assert.match(source, /import \* as harper from 'harper'/, 'secrets must come through a namespace import, not a named re-export');
+	assert.match(source, /export const secrets/, 'secretsPolicy.ts imports `secrets` through it');
+	// Anchored to the start of a line so the sentence explaining this rule in
+	// harperRuntime.ts — which quotes the forbidden form verbatim — is not itself
+	// read as a violation of it.
+	assert.doesNotMatch(source, /^export \{[^}]*\bsecrets\b/m, 'a named `secrets` re-export would fail to link on a runtime lacking it');
 });
 
 test('the deploy tarball actually ships the runtime target', () => {

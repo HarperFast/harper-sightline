@@ -9,8 +9,8 @@
 
 | # | Severity | Finding | Disposition |
 |---|---|---|---|
-| F1 | **P0** | Committed dev Shopify app secret (`shpss_…`) in `src/readSecret.ts` — present in git history. | **Owner action** (rotate) + **mitigated in code** (fail-closed guard). See §1.1. |
-| F2 | **P0** | Token "encryption at rest" falls back to a deterministic, publicly-derivable key (`sha256('sightline-dev-token-key')`) when `SIGHTLINE_TOKEN_KEY` is unset. | **Owner action** (set key) + **mitigated in code** (fail-closed guard). See §1.1. |
+| F1 | **P0** | Committed dev Shopify app secret (`shpss_…`) in `src/readSecret.ts` — present in git history. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (rotate the burned value). See §1.1. |
+| F2 | **P0** | Token "encryption at rest" falls back to a deterministic, publicly-derivable key (`sha256('sightline-dev-token-key')`) when `SIGHTLINE_TOKEN_KEY` is unset. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (provision the key). See §1.1. |
 | F3 | **P1** | `detectorKey` was not shop-namespaced → two tenants sharing an order id collide on one finding/expectation row. | **Fixed** — key is now `${detector}:${shopId}:${orderId}:${ruleVersion}`; regression test in `crossTenant.test.ts`. |
 | F4 | Info | Cross-tenant read isolation depends entirely on `shopId` coming from the verified principal on every endpoint. | **Verified** — automated suite attacks every endpoint (§2). No leak. |
 | F5 | **P0** | Percent-encoded path traversal in `AppHome`'s static-asset branch → **unauthenticated arbitrary file read**, including `src/readSecret.ts` and therefore the app secret (F1). | **Fixed** — containment moved into `src/assetPath.ts`; regression tests in `test/assetPath.test.ts`. See §1.2. |
@@ -19,17 +19,26 @@
 
 ### 1.1 The two secret findings (F1, F2)
 
-Both are **dev unblocks** that must not survive to production. They exist because the Fabric instance's native secrets custody is degraded cluster-wide (`custody_fingerprint` null), so the app currently *relies* on these fallbacks to function — changing their values now would break the live dev-store embed (webhook HMAC would fail). Therefore:
+**Both dev fallbacks are now deleted.** `src/secrets/secretsPolicy.ts` is the single read path for every piece of secret material, and it has no fallback tier: a missing secret throws `MissingSecretError`.
 
-- **Code mitigation (done):** `src/secretsPolicy.ts` adds `SIGHTLINE_REQUIRE_SECRETS`. When set to `1`, `readShopifySecret()` and the token-encryption key both **throw `InsecureSecretError` instead of using the dev fallback** — the app fails closed rather than silently running on known-weak material. Off by default so nothing currently working breaks.
-- **Owner action (required before launch), tracked here as explicitly accepted until done:**
-  1. Restore Harper native secrets custody (Fabric-side) — see the secrets-custody note in `readSecret.ts`.
-  2. **Rotate** the Shopify app secret in the Partner dashboard (the committed value is burned).
-  3. Provision `SHOPIFY_API_SECRET` and a 32-byte-hex `SIGHTLINE_TOKEN_KEY` via deployment secret management.
-  4. Set `SIGHTLINE_REQUIRE_SECRETS=1` on staging + production so the guard is armed.
-  5. Delete `DEV_FALLBACK_SECRET` and the deterministic key fallback once custody is proven (they become dead code).
+**Why the earlier mitigation was not enough.** The first pass added `SIGHTLINE_REQUIRE_SECRETS`, an opt-in strict mode that refused the fallbacks when set to `1`. It defaulted **off** "so nothing currently working breaks" — which means the exact failure it existed to prevent, a production deploy silently running on a publicly derivable key, was the configuration you got by doing nothing. Fail-closed behind an opt-in flag is fail-open. The flag is gone.
 
-Staged deployment/CI (#25) is where steps 1–4 land; this review is the gating record.
+**What the reads look like now.** Harper's scoped secrets accessor first, `process.env` second:
+
+- `secrets.X` is the **scoped tier** — provisioned with `set_secret` + `grants: ['sightline']` (`app/scripts/set-secrets.mjs`), stored encrypted in `system.hdb_secret`, replicated, and reachable only through this component's own accessor. Scoped values never enter `process.env`, so they are absent from environment dumps, `/proc/<pid>/environ`, and inherited child processes. The accessor is live, so a rotation applies on the next read with no redeploy.
+- `process.env.X` remains the fallback for local dev, `node --test`, and CI, where no instance holds custody — and as the deliberate escape hatch if the store is unreachable during an incident.
+
+All three required secrets are declared `required: true` in `app/config.yaml`'s `env:` block, so an unmet requirement fails at **component load** with a named reason — `missing`, `ungranted`, or `custody-unavailable` — instead of surfacing as a request-time 500.
+
+**Owner action still required (now a prerequisite for the app serving at all, not hardening on top):**
+  1. **Restore Harper secrets custody (Fabric-side).** Still outstanding: `custody_fingerprint` is null cluster-wide, and a node without custody can replicate an encrypted envelope but not decrypt it. `set-secrets.mjs` gates on `get_secrets_public_key` and refuses to write until custody exists, because a secret written without it is unopenable. Until this lands, supply the three values as instance env vars.
+  2. **Rotate** the Shopify app secret in the Partner dashboard. Deleting the constant does not un-publish it — it is permanently in git history.
+  3. Provision the three scoped secrets with `set-secrets.mjs`, then verify with `--check`.
+  4. Redeploy so the `env:` block is re-evaluated.
+
+**Residual risk, stated plainly:** `SIGHTLINE_TOKEN_KEY` cannot be rotated once tokens exist. Envelopes carry `v: 1` for exactly that purpose, but there is no dual-key decrypt path and no re-encrypt sweep, so changing the key invalidates every stored token and forces a reauthorization for every shop. Provisioning the *first* real key has the same effect on anything encrypted under the old dev key — which is the intended outcome, since that ciphertext was never meaningfully protected.
+
+Staged deployment/CI (#25) is where the owner steps land; this review is the gating record.
 
 ### 1.2 Asset-handler path traversal (F5)
 
@@ -148,12 +157,12 @@ Sightline is one shared multi-tenant deployment; every privacy/correctness guara
 
 - **Runtime dependencies: none.** `package.json` has an empty `dependencies` block; dev-only tooling is `@types/node`, `oxlint`, `prettier`, `typescript`, `vite`. This is the strongest possible supply-chain posture for the MVP — no third-party code executes in the request/worker path.
 - **`npm audit`: 0 vulnerabilities** (2026-08-05).
-- **Secret scan:** the two dev fallbacks (F1, F2) are the only embedded secrets and are addressed above. No tokens, keys, `.env`, or built artifacts are committed (`.gitignore` verified). Logs cannot leak secrets/PII: `observe.ts` `redactFields` masks token/HMAC/secret/payload/customer-PII keys (word-tokenized) and caps string length — unit-tested (#22).
+- **Secret scan:** no embedded secrets remain — the two dev fallbacks (F1, F2) that were the only ones have been deleted (§1.1). The burned `shpss_…` value still lives in git history and must be rotated. No tokens, keys, `.env`, or built artifacts are committed (`.gitignore` verified). Logs cannot leak secrets/PII: `observe.ts` `redactFields` masks token/HMAC/secret/payload/customer-PII keys (word-tokenized) and caps string length — unit-tested (#22).
 - **Justification policy:** any future dependency must be justified in `dependencies.md` (engineering guideline); none to justify today.
 
 ## 4. Encryption evidence
 
-- **At rest — tokens:** Shopify offline/refresh tokens are stored only as AES-256-GCM envelopes (`crypto.ts`, versioned key, per-record IV, GCM auth tag). Plaintext tokens are never persisted, logged, or returned. Key source is deployment secret management (`SIGHTLINE_TOKEN_KEY`); the dev fallback is F2, now fail-closed-guarded.
+- **At rest — tokens:** Shopify offline/refresh tokens are stored only as AES-256-GCM envelopes (`crypto.ts`, versioned key, per-record IV, GCM auth tag). Plaintext tokens are never persisted, logged, or returned. The key comes from `SIGHTLINE_TOKEN_KEY`, read as a scoped Harper secret with `process.env` as the dev/CI fallback; there is no weak default — an absent or wrong-shaped key throws (F2, closed). Rotation is not yet supported: the envelope's `v` field exists for it, but with no dual-key decrypt path a key change invalidates every stored token.
 - **At rest — ledger:** operational data is Level-1 PCD only (ids, statuses, timestamps, SKU/qty, tracking presence) — **no customer name/email/phone/address** (`pii.ts` strips at ingress; `data-inventory.md`). Physical deletion at 7 days via `DELETE`-by-age (ADR-003), not TTL.
 - **In transit:** Shopify → ingress and Harper → Shopify Admin API are HTTPS; the embedded app is served over HTTPS inside Shopify Admin. HMAC over the raw body authenticates every webhook.
 - **Backups:** encrypted backup + tested restore is a Fabric-deployment concern owned by **#24** (reliability/backup/restore) and **#25** (staged deploy); this review records the requirement and the at-rest guarantees the backups inherit.
