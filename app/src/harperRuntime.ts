@@ -25,3 +25,24 @@
 // harperImports.test.ts therefore pins the shape of the mapping instead, since no
 // test can exercise the branch itself.
 export { databases, type Table } from 'harper';
+
+// `secrets` is re-exported through a NAMESPACE import rather than a named
+// re-export, and that is not stylistic. A named `export { secrets } from 'harper'`
+// is a link-time binding: on a runtime whose `harper` module does not export
+// `secrets` (an older instance, a future rename), the module fails to link, and
+// because resources.ts imports this file transitively through src/db.ts, that
+// failure takes down EVERY route while the component still reports healthy —
+// exactly the ADR-001 trap resources.ts's own header warns about, and the reason
+// the previous implementation reached for `secrets` behind a dynamic import with
+// optional access.
+//
+// A namespace import resolves the same module without demanding the export
+// exists, so an absent `secrets` degrades to `{}` — every read misses, and
+// secrets/readSecret.ts and secrets/crypto.ts raise a MissingSecretError naming
+// what was not found, instead of the whole component refusing to load.
+//
+// When it IS present we re-export the accessor OBJECT, not copies of its values:
+// the accessor is live, so property reads keep returning the current value after
+// a rotation without a reload.
+import * as harper from 'harper';
+export const secrets: Record<string, string | undefined> = (harper as { secrets?: Record<string, string | undefined> }).secrets ?? {};

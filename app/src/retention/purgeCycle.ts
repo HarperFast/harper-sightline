@@ -19,6 +19,11 @@ import { M, type LogLevel } from '../observability/observe.ts';
 // so importing it — even indirectly through src/db.ts — starts real timers. This
 // module and retention.ts import nothing that reaches db.ts, so a test can import
 // it directly under plain `node --test`.
+//
+// (jobs.ts is far quieter on import than it was — seven of its eight sweeps are
+// now Harper scheduler jobs declared in config.yaml, leaving only the 10s
+// processing timer and the purge's one post-deploy pass — but importing it still
+// starts those two, so the split stands.)
 
 export interface PurgeCycleDeps {
 	purge(now: number): Promise<PurgeResult>;
@@ -34,7 +39,7 @@ export interface PurgeCycleResult {
 	outbox: PurgeResult | undefined;
 }
 
-// `now` is captured ONCE by the caller (jobs.ts's purgeTick) and handed to
+// `now` is captured ONCE by the caller (jobs.ts's purgeJob) and handed to
 // both sweeps, rather than each of `deps.purge`/`deps.outboxPurge` defaulting
 // to its own `Date.now()` as they do when called directly. Deliberate: one
 // clock reading makes a tick deterministic and lets a test drive both sweeps

@@ -2,7 +2,8 @@
 // imports this FIRST, before any resource module, so the log sink and the raw-body
 // content-type handler are in place before anything can log or parse a request.
 import { contentTypes } from 'harper';
-import '../../jobs.ts'; // starts the background processing loop on component load
+import '../../jobs.ts'; // starts the 10s processing loop + the purge's post-deploy pass
+// (the other seven sweeps are Harper scheduler jobs — see config.yaml `scheduler`)
 import { log } from '../observability/observe.ts';
 import { installHarperLogSink } from '../observability/harperLogSink.ts';
 

@@ -25,7 +25,7 @@ An absence finding means Sightline has not observed the expected confirmation **
 Known gaps, stated rather than implied:
 
 - **Digest delivery has no sender.** The operations digest is built and written to an outbox with `status: 'pending'`; a pending row is the finished state.
-- **Two secret findings are open on the owner, not in code** — the dev app secret and token key must be rotated and `SIGHTLINE_REQUIRE_SECRETS=1` set before any production deploy. See [security review §1.1](docs/security-review.md) and the [deployment steps](#before-the-first-production-deploy).
+- **Secrets custody is not initialised on the dev instance.** The code now reads every secret from Harper's scoped secrets store with no fallback, so until custody is re-initialised Fabric-side (`custody_fingerprint` is null cluster-wide) those values must be supplied as instance env vars or the component will not serve. The burned dev app secret in git history still needs rotating in the Partner Dashboard. See [security review §1.1](docs/security-review.md) and the [deployment steps](#before-the-first-production-deploy).
 - **The published listing creative has not been corrected yet** — tracked in #26, itemized in the [App Store review checklist](docs/app-store-review-checklist.md) §3.
 
 ---
@@ -115,18 +115,26 @@ Shopify's embedded session token — not a Harper-issued JWT — is authoritativ
 | `POST /webhooks/shopify/compliance/*` | raw-body HMAC | Shopify's three mandatory compliance webhooks |
 | `GET /api/v1/ops` | `SIGHTLINE_OPS_TOKEN` | Operator health snapshot; 404s while the token is unset |
 
-### Background loops
+### Background work
 
-Every loop is idempotent, resumes from durable state, and is guarded against wedging. Interval → what it does:
+Every sweep is idempotent, resumes from durable state, and is guarded against wedging.
 
-| Every | Loop |
-|---|---|
-| 10s | Process accepted deliveries: normalize → ledger → projection (dead-letters what it cannot process) |
-| 1m | Emit the `ops.snapshot` health heartbeat |
-| 5m | Run the detectors over eligible orders |
-| 10m | Reconcile against the Admin API (first run backfills 7 days), refreshing credentials as needed |
-| 15m | Resolve inventory item → product/variant titles and location names |
-| hourly | Retention purge (physical deletes, verified by re-query), and the digest build |
+Seven of the eight run as **Harper scheduler jobs**, declared in [`app/config.yaml`](app/config.yaml) under `scheduler:` and handled by the `*Job` exports in `app/jobs.ts`. The scheduler is leader-coordinated — each occurrence runs **once, on one elected node**. That matters because `jobs.ts` is imported by every worker thread: as plain `setInterval` timers, all eight sweeps ran on every thread of every node, so each one swept the whole shop list, or the whole Admin API, N×M times over for one node's worth of result.
+
+| Every | Job | Where |
+|---|---|---|
+| 10s | Process accepted deliveries: normalize → ledger → projection (dead-letters what it cannot process) | `setInterval`, per node |
+| 1m | Backfill the derived `state` column on pre-existing projections (converges after a deploy, then silent) | `sightline-state-backfill` |
+| 1m | Emit the `ops.snapshot` health heartbeat | `sightline-ops-snapshot` |
+| 5m | Expire pending expectations whose deadline passed with no new event | `sightline-detect` |
+| 10m | Reconcile against the Admin API (first run backfills 7 days), refreshing credentials as needed | `sightline-reconcile` |
+| 15m | Resolve inventory item → product/variant titles and location names | `sightline-inventory-enrich` |
+| hourly | Retention purge — physical deletes, verified by re-query (plus one pass 30s after boot) | `sightline-purge` |
+| hourly | Build each subscriber's digest for the last complete period | `sightline-digest` |
+
+**The 10s loop deliberately stays a per-node timer.** Scheduler leader failover completes in ~6.5 minutes; for an hourly purge that is invisible, but for 10-second ingest it would park deliveries well past the 5-minute `BACKLOG_STALE_MS` and report unhealthy on every leader change. It is also the one sweep whose duplication is cheap — a bounded `limit: 50` read of one indexed status, where concurrent threads converge by idempotency rather than by a lease.
+
+Handlers stay wrapped in the stall-guarded ticker (`app/src/jobs/tick.ts`). The scheduler serialises occurrences per job but documents no stall timeout, and a hung handler on the leader now wedges that job cluster-wide rather than on a single thread — so the backstop matters more there, not less.
 
 ---
 
@@ -203,12 +211,15 @@ The full pipeline, environment matrix, and secret inventory are in [`docs/deploy
 |---|---|
 | `HARPER_OPS_URL`, `HARPER_USER`, `HARPER_PASS` | the component deploy (least-privilege deploy user) |
 | `SIGHTLINE_BASE` | health poll + smoke test |
-| `SHOPIFY_API_SECRET`, `SHOPIFY_API_KEY` | app runtime, and the authenticated smoke checks |
+| `SHOPIFY_API_SECRET` | app runtime, and the authenticated smoke checks |
+| `SHOPIFY_API_KEY` | the app's public client_id — served in the app-home meta tag, not a secret |
 | `SIGHTLINE_TOKEN_KEY` | app runtime — 32-byte hex, encrypts the stored Shopify tokens |
-| `SIGHTLINE_REQUIRE_SECRETS` | app runtime, set on the instance — `1` in staging and production, so the app fails closed instead of falling back to a dev secret |
-| `SIGHTLINE_OPS_TOKEN`, `SIGHTLINE_SUPPORT_*`, `SIGHTLINE_POLICY_UPDATED` | optional runtime settings |
+| `SIGHTLINE_OPS_TOKEN` | app runtime — gates `/api/v1/ops`; under 32 chars is treated as unset |
+| `SIGHTLINE_SUPPORT_*`, `SIGHTLINE_POLICY_UPDATED` | optional runtime settings |
 
-Runtime secrets live on the **Fabric instance** (Harper native secrets / instance env); `deploy.mjs` ships code only.
+Runtime secrets live on the **Fabric instance**, as **scoped Harper secrets**: `set_secret` with `grants: ['sightline']`, provisioned by [`app/scripts/set-secrets.mjs`](app/scripts/set-secrets.mjs). Scoped values are stored encrypted in `system.hdb_secret`, replicated, and readable only through the component's own `secrets` accessor — they never enter `process.env`, so they are absent from environment dumps and inherited child processes, and a rotation is picked up on the next read with no redeploy.
+
+The three secrets above are declared `required: true` in `app/config.yaml`'s `env:` block, so a deploy missing one **fails at component load with a named reason** — `missing`, `ungranted`, or `custody-unavailable` — rather than starting and failing later. `process.env` remains a fallback in code for local dev and CI only. `deploy.mjs` ships code, never secret values.
 
 **To deploy:** publish a GitHub Release (deploys `production`; the tag is the audit record), or Actions → Deploy → Run workflow with an `environment` and optional `ref`. Locally, `npm run deploy` does the same thing against `.env`.
 
@@ -226,13 +237,14 @@ Runtime secrets live on the **Fabric instance** (Harper native secrets / instanc
 
 ### Before the first production deploy
 
-Required owner actions from [security review §1.1](docs/security-review.md) — the dev unblocks must not survive to production:
+Required owner actions from [security review §1.1](docs/security-review.md). The dev fallbacks are **deleted** — the app now fails closed unconditionally, so these are prerequisites for it serving at all, not hardening on top:
 
-1. Restore Harper native secrets custody on the instance.
-2. **Rotate** the Shopify app secret in the Partner Dashboard (the committed dev value is burned).
-3. Provision `SHOPIFY_API_SECRET` and a 32-byte-hex `SIGHTLINE_TOKEN_KEY` on the instance and in the Environment secrets.
-4. Set `SIGHTLINE_REQUIRE_SECRETS=1` so the app fails closed rather than using a dev fallback.
-5. Delete the dev fallbacks once custody is proven.
+1. **Restore Harper secrets custody on the instance.** Verify with the `get_secrets_public_key` operation; `app/scripts/set-secrets.mjs` refuses to write until it returns a key, because a secret encrypted with no custody is an envelope no node can open.
+2. **Rotate** the Shopify app secret in the Partner Dashboard (the committed dev value is burned and remains in git history).
+3. Provision the three scoped secrets: `HARPER_OPS_URL=… SHOPIFY_API_SECRET=… SIGHTLINE_TOKEN_KEY=$(openssl rand -hex 32) SIGHTLINE_OPS_TOKEN=$(openssl rand -hex 16) node app/scripts/set-secrets.mjs`, then confirm with `--check`.
+4. Redeploy so `config.yaml`'s `env:` block is re-evaluated, and confirm the component loads.
+
+Note that `SIGHTLINE_TOKEN_KEY` cannot be rotated after tokens exist: envelopes are stamped `v: 1` for exactly that purpose, but there is no dual-key decrypt path or re-encrypt sweep yet, so changing the key today invalidates every stored token and forces a reauthorization for every shop.
 
 ---
 

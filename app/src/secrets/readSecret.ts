@@ -1,35 +1,31 @@
-import { requireRealSecrets, InsecureSecretError } from './secretsPolicy.ts';
+import { requiredSecret } from './secretsPolicy.ts';
 
-// TEMP DEV UNBLOCK — REMOVE BEFORE PROD. The Fabric instance's secrets custody
-// is broken (custody_fingerprint null cluster-wide), so no Harper-secrets path
-// works. This dev-only hardcoded fallback keeps the app-secret edges testable.
-// It is LAST RESORT: real Harper secrets / process.env win when available, so
-// once custody is restored this fallback is simply dead code (then delete it).
-// The secret below is a DEV app secret and is exposed in git history — rotate it
-// in Shopify before any non-dev use.
-const DEV_FALLBACK_SECRET = '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';
-
-// The app's client_id. PUBLIC, not a secret — but it lives here beside the secret
+// The app's client_id. PUBLIC, not a secret — it is served to the browser in
+// AppHome's `<meta name="shopify-api-key">` — but it lives here beside the secret
 // reader so the two Shopify app credentials are configured in one place and the
-// literal cannot drift between the request path (resources.ts) and background
-// token rotation (tokenDeps.ts).
+// literal cannot drift between the request path (resources/auth.ts) and
+// background token rotation (shopify/tokenDeps.ts). Deliberately NOT declared in
+// config.yaml's `env:` block: declaring a public identifier as a required secret
+// would say something false about it.
 export const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY ?? 'e446bda5edb3ee3bae6e0ba280ef8b12';
 
-// Read the Shopify app secret from Harper native secrets (encrypted, never
-// logged/replicated as plaintext — ADR-001). Dynamic import + optional access
-// so a differing secrets API can never break module load / route registration.
-// Falls back to env, then the temporary dev constant above. With
-// SIGHTLINE_REQUIRE_SECRETS=1 the dev-constant fallback is refused (fails closed).
+// Read the Shopify app secret. Verifies webhook HMACs (resources/shopifyWebhook.ts,
+// resources/complianceWebhook.ts) and embedded session tokens (auth/identity.ts),
+// so it is the credential that decides whether an inbound request is genuinely
+// from Shopify.
+//
+// There is no fallback. This previously ended in a hardcoded
+// `DEV_FALLBACK_SECRET = 'shpss_…'` — committed, and therefore permanently in git
+// history — used whenever the store and the environment both came up empty, which
+// on the custody-degraded instance was always. A verifier that accepts a secret
+// an attacker can read from the repository is not a verifier; failing to serve is
+// strictly better than serving with forgeable HMACs. (That leaked dev secret must
+// still be rotated in the Shopify Partner dashboard — deleting the constant does
+// not un-publish it.)
+//
+// Stays `async` although the read is now synchronous: five call sites already
+// `await` it, and the signature leaves room for a future
+// `secrets.subscribe()`-backed reader without touching them.
 export async function readShopifySecret(): Promise<string> {
-	try {
-		const mod = (await import('harper')) as { secrets?: Record<string, string | undefined> };
-		const value = mod.secrets?.SHOPIFY_API_SECRET;
-		if (value) return value;
-	} catch {
-		// fall through
-	}
-	const fromEnv = process.env.SHOPIFY_API_SECRET;
-	if (fromEnv) return fromEnv;
-	if (requireRealSecrets()) throw new InsecureSecretError('Shopify app secret');
-	return DEV_FALLBACK_SECRET;
+	return requiredSecret('SHOPIFY_API_SECRET');
 }
