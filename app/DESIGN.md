@@ -110,7 +110,7 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
   slot: the scheduler gives one executor per occurrence, and two leaders in a
   partition have no way to learn distinct slots, so idempotency covers that window.
 - **Failover tradeoff.** The scheduler lease has no compare-and-set. A leader loss
-  pauses every job for roughly 5-6.5 minutes (lease stale after 5 min, follower
+  pauses every job for roughly 5-6.5 minutes per Harper v5.3.3 source (lease stale after 5 min, follower
   checks every 75s, further nodes in line wait 150s more). Ingest still acks and
   stores durably; the backlog drains on the new leader. That gap exceeds
   `BACKLOG_STALE_MS` (5 min), so `ops.snapshot` reports a stale backlog until it

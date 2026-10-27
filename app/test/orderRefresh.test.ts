@@ -1,9 +1,9 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { refreshOrder, runDetectorForOrder, updateOrderProjection, type OrderTables } from '../src/ingest/orderRefresh.ts';
 import { purgeExpired, DAY_MS } from '../src/retention/retention.ts';
 import { detectorKey } from '../src/domain/detector.ts';
-import { metrics, M } from '../src/observability/observe.ts';
+import { metrics, M, setLogSink, type LogLevel } from '../src/observability/observe.ts';
 import type { OperationalEvent, OrderProjection } from '../src/domain/model.ts';
 import type { SearchQuery } from '../src/retention/retention.ts';
 import { FakeTable } from './fakeTable.ts';
@@ -52,7 +52,15 @@ function stored(over: Partial<OrderProjection>): Record<string, unknown> {
 	return { id: 's:o1', shopId: 's', orderId: 'o1', paidAt: NOW - 3 * HOUR, requiresFulfillment: true, state: 'awaiting', ...over };
 }
 
-beforeEach(() => metrics.reset());
+let logLines: string[] = [];
+
+beforeEach(() => {
+	metrics.reset();
+	logLines = [];
+	setLogSink((_level: LogLevel, line: string) => logLines.push(line));
+});
+
+afterEach(() => setLogSink(null));
 
 test('a rebuild that saw fewer events than the stored row is skipped and counted', async () => {
 	const t = tables();
@@ -71,6 +79,11 @@ test('a rebuild that saw fewer events than the stored row is skipped and counted
 	assert.equal(rebuilt, undefined);
 	assert.deepEqual(await t.projections.get('s:o1'), newer);
 	assert.equal(metrics.snapshot().counters[M.projectionStaleSkipped], 1);
+	const skipped = logLines.filter((l) => l.includes('projection.stale_skipped'));
+	assert.equal(skipped.length, 1);
+	const record = JSON.parse(skipped[0].replace('[sightline] ', ''));
+	assert.equal(record.storedCount, 3);
+	assert.equal(record.rebuiltCount, 2);
 });
 
 test('an equal event count overwrites the stored row', async () => {
