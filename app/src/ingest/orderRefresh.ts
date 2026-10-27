@@ -4,10 +4,6 @@ import { rebuildProjection } from './projection.ts';
 import { DAY_MS, RETENTION_DAYS, type SearchQuery } from '../retention/retention.ts';
 import { log, metrics, M } from '../observability/observe.ts';
 
-// Rebuilds an order's projection from its ledger events and runs the detectors
-// against it. Deps-injected so it is testable without the Harper runtime; jobs.ts
-// wires the real tables.
-
 interface ReadTable {
 	get(id: string): Promise<Record<string, unknown> | undefined>;
 }
@@ -24,10 +20,9 @@ export interface RebuiltOrder {
 	evidenceEventIds: string[];
 }
 
-// The purge deletes events by receivedAt, so a stored row whose earliest event is
-// near the retention cutoff may have lost events a correct rebuild can no longer
-// see. The guard stands down a day before the cutoff, which also absorbs clock
-// skew between the purging node and this one.
+// The purge deletes by receivedAt, so a stored row whose earliest event is near the
+// cutoff may have lost events a rebuild can no longer see. The guard stands down a
+// day before the cutoff, which also absorbs clock skew between nodes.
 const REBUILD_GUARD_WINDOW_MS = (RETENTION_DAYS - 1) * DAY_MS;
 
 function orderQuery(shopId: string, orderId: string, select?: string[]): SearchQuery {
@@ -52,9 +47,12 @@ function isStaleRebuild(stored: OrderProjection | undefined, rebuilt: OrderProje
 	return (stored?.firstEventAt ?? 0) >= now - REBUILD_GUARD_WINDOW_MS;
 }
 
-// Returns what was written, for the detector to reuse; undefined when nothing was
-// written, either because the order has no order-linked events or because a
-// concurrent writer already stored a row built from more events.
+// Rebuilds from all of the order's ledger events: recomputing the full state
+// (commutative reducer) is order-safe, and a lost write self-heals on the next
+// event. A writer that read fewer events than the stored row was built from is not
+// written, which narrows but does not close the lost-update race. Returns what was
+// written, for the detector to reuse; undefined when the order has no order-linked
+// events or a concurrent writer stored a row built from more.
 export async function updateOrderProjection(
 	tables: OrderTables,
 	shopId: string,
@@ -81,8 +79,8 @@ export async function updateOrderProjection(
 	return { projection, evidenceEventIds: evidenceIds(rows) };
 }
 
-// The failed-attempt detector writes no expectation: it has no deadline, so the
-// periodic sweep has nothing to expire and it only needs evaluating on order events.
+// The failed-attempt detector has no deadline and writes no expectation; it is only
+// evaluated on order events.
 export async function runDetectorForOrder(
 	tables: OrderTables,
 	shopId: string,

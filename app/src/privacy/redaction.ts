@@ -1,9 +1,7 @@
 import { countMatching, deleteMatchingKeys, type PurgeableTable } from '../retention/retention.ts';
 
-// Compliance deletion (ADR-003 §3, Shopify shop/redact + customers/redact). Both
-// are targeted DELETEs — data and index entries physically removed — and
-// idempotent: re-running finds nothing and deletes 0. The HTTP webhook wiring
-// lives in #21; this module is the deletion primitive it calls.
+// Compliance deletion (ADR-003 §3): targeted DELETEs that remove data and index
+// entries, idempotent (a re-run finds nothing and deletes 0).
 
 export interface RedactTarget {
 	name: string;
@@ -19,8 +17,6 @@ export interface RedactResult {
 	failures: string[];
 }
 
-// shop/redact: remove every record belonging to a shop. Sightline stores no
-// customer PII, so a shop's entire footprint is keyed by shopId.
 export async function redactShop(targets: RedactTarget[], shopId: string): Promise<RedactResult> {
 	const byTable: Record<string, number> = {};
 	const failures: string[] = [];
@@ -31,7 +27,7 @@ export async function redactShop(targets: RedactTarget[], shopId: string): Promi
 			const n = await deleteMatchingKeys(target.table, target.keyField, condition);
 			byTable[target.name] = n;
 			deleted += n;
-			// Verify erasure (ADR-003 §4) — compliance deletion is proven, not assumed.
+			// Verifies erasure (ADR-003 §4).
 			const residue = await countMatching(target.table, condition, undefined, target.keyField, 1);
 			if (residue > 0) failures.push(`${target.name}: shop ${shopId} records remain after redaction`);
 		} catch (err) {
@@ -41,10 +37,8 @@ export async function redactShop(targets: RedactTarget[], shopId: string): Promi
 	return { deleted, byTable, failures };
 }
 
-// customers/redact: remove records linked to the given order ids (the webhook's
-// `orders_to_redact`). We hold no customer identifier — order linkage is the only
-// customer-scoped key we have — so redaction targets order-linked rows for the
-// shop. Tables without an order linkage are skipped.
+// Removes records linked to the given order ids (the webhook's `orders_to_redact`).
+// Order linkage is the only customer-scoped key we hold, so tables without it are skipped.
 export async function redactOrders(targets: RedactTarget[], shopId: string, orderIds: string[]): Promise<RedactResult> {
 	const byTable: Record<string, number> = {};
 	const failures: string[] = [];

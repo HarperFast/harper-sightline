@@ -1,8 +1,6 @@
-// Shopify mandatory privacy webhooks (#21): customers/data_request,
-// customers/redact, shop/redact. HMAC verification + parsing happen in the
-// resource; this is the pure dispatcher (injected side effects → testable).
-// Every branch is retry-safe: redaction is idempotent (delete-by-condition) and
-// audits are keyed by webhook id.
+// Mandatory privacy webhooks (customers/data_request, customers/redact, shop/redact).
+// The resource verifies the HMAC and parses; this is the pure dispatcher. Retry-safe:
+// redaction is idempotent and audits are keyed by webhook id.
 
 export interface ComplianceDeps {
 	redactShop(shopId: string): Promise<{ deleted: number; failures: string[] }>;
@@ -19,7 +17,6 @@ export interface ComplianceResult {
 	failures?: string[];
 }
 
-// Order ids from a compliance payload list field (numbers or strings → strings).
 function orderIds(payload: Record<string, unknown>, key: string): string[] {
 	const raw = payload[key];
 	if (!Array.isArray(raw)) return [];
@@ -34,22 +31,19 @@ export async function handleCompliance(
 ): Promise<ComplianceResult> {
 	switch (topic) {
 		case 'shop/redact': {
-			// Erase the whole tenant (~48h after uninstall). Idempotent.
 			const r = await deps.redactShop(shopId);
 			await deps.audit('shop_redact', shopId, { deleted: r.deleted, failures: r.failures });
 			return { topic, action: 'shop_redact', deleted: r.deleted, failures: r.failures };
 		}
 		case 'customers/redact': {
-			// Remove records linked to the customer's orders. We hold no customer id,
-			// so `orders_to_redact` is the only customer-scoped key we can act on.
+			// No customer id is held, so `orders_to_redact` is the only key we can act on.
 			const ids = orderIds(payload, 'orders_to_redact');
 			const r = await deps.redactOrders(shopId, ids);
 			await deps.audit('customer_redact', shopId, { orderIds: ids, deleted: r.deleted, failures: r.failures });
 			return { topic, action: 'customer_redact', deleted: r.deleted, failures: r.failures };
 		}
 		case 'customers/data_request': {
-			// Sightline stores no customer PII, so there is nothing to export. Record
-			// the request for the audit trail; provision (if any) is an ops process.
+			// No customer PII is stored, so there is nothing to export; record the request for audit.
 			await deps.audit('customer_data_request', shopId, { note: 'no customer PII stored', orders: orderIds(payload, 'orders_requested') });
 			return { topic, action: 'customer_data_request' };
 		}

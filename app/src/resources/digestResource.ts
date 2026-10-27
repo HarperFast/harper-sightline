@@ -5,12 +5,9 @@ import { writeAudit } from '../audit.ts';
 import { identity } from './auth.ts';
 import { httpError } from './http.ts';
 
-// The notification subscription — the app's ONLY write endpoint, and it writes
-// Sightline's own configuration, never Shopify's data. shopId comes from the
-// verified principal; a shopId in the body is ignored.
-//
-// Every change is audited, and the address is never logged: it is the one
-// merchant-identifying string this app holds.
+// The notification subscription, the app's only write endpoint; it writes
+// Sightline's own configuration, never Shopify data. shopId comes from the verified
+// principal and a body shopId is ignored. Every change is audited and the address is never logged.
 export class DigestResource extends Resource {
 	static path = '/api/v1/digest';
 	allowRead() {

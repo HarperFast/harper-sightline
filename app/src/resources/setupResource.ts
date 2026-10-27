@@ -3,7 +3,6 @@ import { getSetup } from '../api/queries.ts';
 import { identity } from './auth.ts';
 import { ShopsQ, DeliveriesQ, CredentialsQ } from './tables.ts';
 
-// First-open/setup progress (screen spec §1), derived from durable state only.
 export class SetupResource extends Resource {
 	static path = '/api/v1/setup';
 	allowRead() {

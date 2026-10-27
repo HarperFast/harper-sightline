@@ -14,8 +14,7 @@ export interface RotateDeps {
 	settle(ms: number): Promise<void>;
 }
 
-// How long a 401 waits before the version is re-read once more, so a winner
-// whose write is still landing on another thread is seen before parking.
+// Wait before re-reading the version once more, so a winner whose write is still landing is seen.
 export const SETTLE_MS = 1_000;
 
 const realDeps: RotateDeps = {
@@ -28,16 +27,14 @@ const realDeps: RotateDeps = {
 	settle: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-// One rotation per shop at a time within this worker: the reconcile and
-// enrich jobs both run on the leader and would otherwise race each other.
+// One rotation per shop at a time in this worker; reconcile and enrich would otherwise race.
 const inFlight = new Map<string, Promise<boolean>>();
 
-// Renew a shop's expiring offline token. In-process callers are single-flighted;
-// other threads and nodes are not serialized, and every
-// rotation replaces the stored refresh token, so a concurrent loser presents a
-// spent one. A failure therefore re-reads the credential: a higher version means
-// another rotation won and the shop is fine. Only a rejection by Shopify itself
-// (401) parks the shop; any other failure is transient and propagates untouched.
+// Renews a shop's expiring offline token. Callers in-process are single-flighted;
+// other threads and nodes are not, and each rotation replaces the refresh token, so
+// a concurrent loser presents a spent one. A failure therefore re-reads the
+// credential: a higher version means another rotation won. Only a Shopify rejection
+// (401) parks the shop; any other failure is transient and propagates.
 export function rotateCredential(
 	args: { shopId: string; shop: string; apiKey: string; secret: string },
 	deps: RotateDeps = realDeps,
@@ -59,9 +56,7 @@ async function rotate(args: { shopId: string; shop: string; apiKey: string; secr
 	try {
 		const tok = await deps.refresh({ shop: args.shop, refreshToken, apiKey: args.apiKey, secret: args.secret });
 		await deps.save(args.shopId, tok);
-		// A refresh carries the granted scope list too, so the same recording happens
-		// here as on the first exchange — otherwise a shop's scopes would be whatever
-		// they were at install and could silently go stale.
+		// A refresh carries the scope list too, so scopes cannot go stale after install.
 		await deps.recordOutcome(args.shopId, tok.scope);
 		return true;
 	} catch (err) {

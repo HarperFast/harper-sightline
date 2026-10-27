@@ -22,10 +22,9 @@ function purgeable(table: unknown): PurgeableTable {
 	return table as PurgeableTable;
 }
 
-// Ledger tables and the timestamp that drives their seven-day retention
-// (ADR-003). Core tables (Shop/ShopCredential/AppAuditEvent) are install-time
-// identity and persist while the shop is installed — they are NOT purged here;
-// they are erased by shop redaction (below) on uninstall/shop-redact.
+// Ledger tables and the timestamp driving their seven-day retention (ADR-003). Core
+// tables (Shop, ShopCredential, AppAuditEvent) persist while installed and are
+// erased by shop redaction on uninstall.
 export const RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'WebhookDelivery', keyField: 'id', tsField: 'receivedAt', table: purgeable(Deliveries) },
 	{ name: 'OperationalEvent', keyField: 'eventId', tsField: 'receivedAt', table: purgeable(Events) },
@@ -36,10 +35,8 @@ export const RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'FlowAggregate', keyField: 'id', tsField: 'bucket', table: purgeable(Aggregates) },
 ];
 
-// Compliance redaction targets. shop/redact erases every shop-scoped table
-// (ledger + core); customers/redact (by orders_to_redact) targets only the
-// order-linked tables — those carrying `orderField`. Inventory events key
-// `resourceId` by inventory_item_id, not an order, so they are not order-linked.
+// shop/redact erases every shop-scoped table; customers/redact targets only
+// order-linked tables (those with `orderField`). Inventory events key on an item id.
 export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'WebhookDelivery', keyField: 'id', shopField: 'shopId', table: purgeable(Deliveries) },
 	{ name: 'OperationalEvent', keyField: 'eventId', shopField: 'shopId', orderField: 'resourceId', table: purgeable(Events) },
@@ -51,23 +48,18 @@ export const REDACT_TARGETS: RedactTarget[] = [
 	{ name: 'Shop', keyField: 'shopId', shopField: 'shopId', table: purgeable(Shops) },
 	{ name: 'ShopCredential', keyField: 'shopId', shopField: 'shopId', table: purgeable(Credentials) },
 	{ name: 'AppAuditEvent', keyField: 'id', shopField: 'shopId', table: purgeable(AuditEvents) },
-	// Reference caches, NOT ledger records: they carry no order or customer linkage
-	// and are useless once the shop is gone, so they are erased by shop redaction
-	// but deliberately not aged out by the seven-day purge (re-fetching them every
-	// week would be pointless Admin API traffic).
+	// Reference caches, not ledger records: erased by shop redaction but not aged out by
+	// the purge (re-fetching weekly would be pointless Admin API traffic).
 	{ name: 'InventoryItem', keyField: 'id', shopField: 'shopId', table: purgeable(InventoryItems) },
 	{ name: 'ShopLocation', keyField: 'id', shopField: 'shopId', table: purgeable(ShopLocations) },
-	// The notification address and the generated digests. No orderField: neither is
-	// linked to a customer or an order, so customers/redact must NOT reach them —
-	// only uninstall / shop-redact does.
+	// No orderField: neither is linked to a customer or order, so customers/redact must
+	// not reach them; only uninstall and shop-redact do.
 	{ name: 'DigestSubscription', keyField: 'shopId', shopField: 'shopId', table: purgeable(DigestSubscriptions) },
 	{ name: 'DigestOutbox', keyField: 'id', shopField: 'shopId', table: purgeable(DigestOutboxes) },
 ];
 
-// The digest outbox keeps a longer history than the 7-day ledger (its retention
-// window, OUTBOX_RETENTION_DAYS, lives in src/retention/retention.ts alongside RETENTION_DAYS
-// — see the comment there for why). It is NOT in RETENTION_TARGETS because that
-// list is swept with a single seven-day cutoff.
+// The outbox keeps a longer history (OUTBOX_RETENTION_DAYS in retention.ts), so it
+// is not in RETENTION_TARGETS, which is swept with one seven-day cutoff.
 export const OUTBOX_RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'DigestOutbox', keyField: 'id', tsField: 'createdAt', table: purgeable(DigestOutboxes) },
 ];

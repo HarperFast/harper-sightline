@@ -2,12 +2,11 @@ import type { Expectation, ExpectationState, GapFinding, OrderProjection } from 
 
 // ── Fulfillment-confirmation detector (ruleVersion 1) ────────────────────────
 //
-// Identifies paid, fulfillment-eligible orders with no observed Shopify
-// fulfillment confirmation by a deadline. It NEVER asserts a downstream vendor
-// failure — absence of confirmation is not proof of failure (see describeFinding).
+// Flags paid, fulfillment-eligible orders with no observed fulfillment confirmation
+// by a deadline. It never asserts a downstream failure (see describeFinding).
 //
-// Decision table — inputs are the order projection's latches (all monotonic, so
-// evaluation is deterministic and order-independent). `due` ≡ now ≥ paidAt+deadline.
+// Decision table over the projection's monotonic latches, so evaluation is
+// deterministic and order-independent. `due` = now >= paidAt + deadline.
 //
 //   paidAt & requiresFulfillment | fulfilledAt | cancelled/refunded | due  | expectation | finding
 //   ─────────────────────────────┼─────────────┼────────────────────┼──────┼─────────────┼──────────
@@ -17,14 +16,12 @@ import type { Expectation, ExpectationState, GapFinding, OrderProjection } from 
 //   yes                           |   unset     |       unset        | no   |  pending    | (none)
 //   yes                           |   unset     |       unset        | yes  |  expired    | unconfirmed
 //
-//   * A finding exists only if the expectation had already EXPIRED; a later
-//     confirmation/suppression transitions that finding (history preserved),
-//     never deletes it. Orders resolved/suppressed before expiry get no finding.
+//   * A finding exists only if the expectation had already expired; later
+//     confirmation or suppression transitions it (history kept), never deletes it.
 
 export const DETECTOR = 'fulfillment_confirmation';
 export const RULE_VERSION = 1;
-// Conservative product constant (not a merchant setting) — calibrate from pilot
-// evidence. 3 days from paid to an expected fulfillment confirmation.
+// Product constant: 3 days from paid to an expected fulfillment confirmation.
 export const FULFILLMENT_DEADLINE_MS = 72 * 60 * 60 * 1000;
 
 export interface DetectorRule {
@@ -41,11 +38,9 @@ export const DEFAULT_RULE: DetectorRule = {
 
 // ── Failed-fulfillment-attempt detector (ruleVersion 1) ──────────────────────
 //
-// A PRESENCE detector: it fires on evidence Shopify itself recorded — a
-// fulfillment whose status is `error` or `failure` — so unlike the confirmation
-// detector it needs no deadline and infers nothing from absence. That makes its
-// copy different in kind: it may state that an attempt failed, because Shopify
-// says so. It still never names or blames a downstream party.
+// A presence detector: it fires on a fulfillment Shopify recorded as `error` or
+// `failure`, needs no deadline, and may state that an attempt failed. It never
+// names or blames a downstream party.
 //
 //   fulfillmentFailedAt | fulfilledAt (later) | cancelled/refunded | finding
 //   ────────────────────┼─────────────────────┼────────────────────┼──────────────
@@ -55,8 +50,7 @@ export const DEFAULT_RULE: DetectorRule = {
 //   set                 |        unset        |        set         | suppressed
 export const DETECTOR_FAILED = 'fulfillment_attempt_failed';
 
-// deadlineMs is 0: this detector has no waiting period. It is in the rule only
-// because DetectorRule is the shared shape that keys and versions a detector.
+// 0: this detector has no waiting period; DetectorRule is the shared shape that keys and versions it.
 export const FAILED_RULE: DetectorRule = {
 	detector: DETECTOR_FAILED,
 	ruleVersion: 1,
@@ -77,9 +71,7 @@ export function evaluateFailedFulfillment(input: FailedEvaluateInput): { finding
 	const prior = input.prior ?? {};
 	if (p.fulfillmentFailedAt === undefined) return { finding: prior.finding ?? null };
 
-	// detectedAt is the failure's own timestamp, not when the sweep noticed — the
-	// merchant's question is "when did this break", and it makes the record stable
-	// across re-evaluation.
+	// The failure's own timestamp, not when the sweep noticed; stable across re-evaluation.
 	const detectedAt = prior.finding?.detectedAt ?? p.fulfillmentFailedAt;
 	let status: GapFinding['status'] = 'unconfirmed';
 	if (p.fulfilledAt !== undefined) status = 'resolved';
@@ -101,10 +93,8 @@ export function evaluateFailedFulfillment(input: FailedEvaluateInput): { finding
 	};
 }
 
-// Deterministic key shared by an order's expectation and its finding. Namespaced
-// by shopId (like every other table key: WebhookDelivery, OrderProjection) so two
-// tenants that ever share an order id cannot collide on one finding/expectation
-// row — a tenant-isolation invariant, not merely a convenience (#23).
+// Shared by an order's expectation and finding. Namespaced by shopId so two tenants
+// sharing an order id cannot collide (tenant isolation).
 export function detectorKey(shopId: string, orderId: string, rule: DetectorRule = DEFAULT_RULE): string {
 	return `${rule.detector}:${shopId}:${orderId}:${rule.ruleVersion}`;
 }
@@ -122,9 +112,8 @@ export interface EvaluateResult {
 	finding: GapFinding | null;
 }
 
-// Pure evaluation of one order against the rule. Returns the desired expectation
-// and finding records (deterministic, idempotent — re-evaluating yields the same
-// records, preserving createdAt/detectedAt/evidence from `prior`).
+// Pure and idempotent: re-evaluating yields the same records, keeping createdAt,
+// detectedAt and evidence from `prior`.
 export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 	const rule = input.rule ?? DEFAULT_RULE;
 	const p = input.projection;
@@ -132,8 +121,7 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 
 	const qualifies = p.paidAt !== undefined && p.requiresFulfillment === true;
 	if (!qualifies) {
-		// An order cannot un-pay or lose eligibility (latches), so a qualifying
-		// order never reaches here; if it did, leave any prior finding untouched.
+		// Unreachable for a qualifying order (the latches cannot un-pay); leave any prior finding.
 		return { expectation: null, finding: prior.finding ?? null };
 	}
 
@@ -160,7 +148,6 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 
 	let finding: GapFinding | null = prior.finding ?? null;
 	if (state === 'expired') {
-		// Create (or keep) the finding; evidence + detectedAt are stable once set.
 		finding = {
 			id,
 			shopId: p.shopId,
@@ -173,8 +160,7 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 			evidenceEventIds: prior.finding?.evidenceEventIds ?? input.evidenceEventIds ?? [],
 		};
 	} else if (finding) {
-		// Later evidence transitions an existing (previously expired) finding —
-		// history preserved (detectedAt + evidence kept), never erased.
+		// Later evidence transitions a previously expired finding, keeping detectedAt and evidence.
 		if (state === 'resolved') finding = { ...finding, status: 'resolved', resolvedAt: finding.resolvedAt ?? input.now };
 		else if (state === 'suppressed') finding = { ...finding, status: 'suppressed', resolvedAt: finding.resolvedAt ?? input.now };
 	}
@@ -182,13 +168,9 @@ export function evaluateOrder(input: EvaluateInput): EvaluateResult {
 	return { expectation, finding };
 }
 
-// Approved, non-accusatory finding copy, per detector.
-//
-// The absence detector must hedge: absence of a confirmation is not proof that
-// anything failed. The presence detector must NOT hedge in the same words — a
-// fulfillment Shopify recorded as `error` did fail, and saying "Shopify has not
-// shown confirmation yet" would understate it. Neither ever names a warehouse,
-// carrier, or vendor.
+// Approved, non-accusatory copy. The absence detector must hedge. The presence
+// detector must not: a fulfillment Shopify recorded as `error` did fail. Neither
+// names a warehouse, carrier or vendor.
 export function describeFinding(finding: GapFinding): string {
 	if (finding.detector === DETECTOR_FAILED) {
 		switch (finding.status) {

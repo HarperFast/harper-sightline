@@ -8,10 +8,9 @@ import { stripPii } from '../privacy/pii.ts';
 import { log, metrics, M } from '../observability/observe.ts';
 import { httpError } from './http.ts';
 
-// Shopify webhook ingress. Authenticated by HMAC over the RAW body (NOT the
-// merchant JWT), verified before any parsing (ADR-001, plan §12). Durably
-// accepts once per (shop, webhookId) and acks fast — no normalization or Admin
-// API calls here (ADR-002). A worker processes accepted rows later.
+// Shopify webhook ingress. Authenticated by HMAC over the raw body (not the merchant
+// JWT), verified before parsing (ADR-001). Accepts once per (shop, webhookId) and acks
+// fast; normalization happens later in a worker (ADR-002).
 export class ShopifyWebhook extends Resource {
 	static path = '/webhooks/shopify/events';
 	allowRead() {
@@ -27,8 +26,7 @@ export class ShopifyWebhook extends Resource {
 		const ctx = this.getContext();
 		const startedAt = Date.now();
 		metrics.inc(M.webhookReceived);
-		// With the raw content-type handler (src/resources/boot.ts), ctx.data
-		// resolves to the raw Buffer of the request body (not parsed).
+		// With the raw content-type handler (boot.ts), ctx.data is the raw request Buffer.
 		const resolved = await ctx.data;
 		const rawBody = Buffer.isBuffer(resolved) ? resolved : Buffer.from(typeof resolved === 'string' ? resolved : '', 'utf8');
 
@@ -67,9 +65,7 @@ export class ShopifyWebhook extends Resource {
 			throw httpError(verdict.reason, verdict.status);
 		}
 
-		// Persist the PII-stripped body so the worker can normalize it later
-		// (ADR-002: accept fast, process later). HMAC is already verified over the
-		// raw bytes; storage keeps only the whitelisted, non-PII fields (#10).
+		// Persist the PII-stripped body so the worker can normalize it later (ADR-002).
 		let payload: string | undefined;
 		if (parsed !== undefined) {
 			try {
@@ -82,7 +78,6 @@ export class ShopifyWebhook extends Resource {
 		const result = await acceptDelivery({ shopId, webhookId, topic, payload });
 		metrics.inc(result === 'duplicate' ? M.webhookDuplicate : M.webhookAccepted);
 		metrics.observeMs(M.webhookAckMs, Date.now() - startedAt);
-		// cid = webhookId ties this ack to the worker's later processing lines.
 		log('trace', 'webhook.accepted', { cid: webhookId, topic, result });
 		return { ok: true, result };
 	}

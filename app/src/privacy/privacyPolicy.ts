@@ -3,20 +3,14 @@ import { EXCLUDED_CUSTOMER_FIELDS } from '../api/queries.ts';
 import { OUTBOX_RETENTION_DAYS } from '../retention/retention.ts';
 import type { SupportContact } from './support.ts';
 
-// The public privacy policy (#26). Served unauthenticated at /privacy-policy so
-// the App Store listing can link to it and a reviewer can read it WITHOUT
-// installing the app.
+// The public privacy policy, served unauthenticated at /privacy-policy so a reviewer
+// can read it without installing. Claims that could drift are imported, not
+// retyped: WINDOW_DAYS, OUTBOX_RETENTION_DAYS (src/retention/retention.ts) and
+// EXCLUDED_CUSTOMER_FIELDS (also rendered by the in-app Privacy screen). See
+// docs/data-inventory.md for per-table behavior.
 //
-// Every factual claim here is traceable to something enforced in code, and the
-// ones that could drift are imported rather than retyped: the retention window
-// (WINDOW_DAYS), the digest outbox's own retention (OUTBOX_RETENTION_DAYS,
-// src/retention/retention.ts), and the excluded-field list (EXCLUDED_CUSTOMER_FIELDS,
-// the same constant the in-app Privacy screen renders). See
-// docs/data-inventory.md for the per-table behavior this summarises.
-//
-// LEGAL REVIEW REQUIRED before submission — see docs/app-store-review-checklist.md.
-// This is an accurate engineering description of the app's data handling, which is
-// the hard part, but it has not been reviewed as a legal instrument.
+// Legal review required before submission (docs/app-store-review-checklist.md): this
+// is an engineering description, not a reviewed legal instrument.
 
 export const POLICY_ENTITY = 'HarperDB, Inc.';
 export const POLICY_PRODUCT = 'Sightline by Harper';
@@ -30,7 +24,6 @@ function contactBlock(support: SupportContact): string {
 	if (support.email) channels.push(`<a href="mailto:${esc(support.email)}">${esc(support.email)}</a>`);
 	if (support.url) channels.push(`<a href="${esc(support.url)}">${esc(support.url)}</a>`);
 	if (!channels.length) {
-		// Never fabricate a contact. An unconfigured deployment says so plainly.
 		return `<p><strong>Support contact is not configured for this deployment.</strong> It must be set before public distribution.</p>`;
 	}
 	return `<p>Questions, data requests, or complaints: ${channels.join(' · ')}</p>`;

@@ -1,15 +1,10 @@
-// CSV serialization for the export endpoint.
-//
-// Two hazards, both handled here so no call site has to remember them:
-//
-// 1. RFC 4180 quoting — a comma, quote, or newline inside a value must be quoted
-//    and internal quotes doubled, or the file silently corrupts on import.
-// 2. Formula injection — Excel and Google Sheets EXECUTE a cell that begins with
-//    =, +, -, @, tab, or CR. Our data comes from Shopify payloads (order names,
-//    SKUs, carriers are all merchant-controlled strings), so an exported file
-//    could otherwise carry an executable payload into a finance team's
-//    spreadsheet. Prefixing with an apostrophe makes it inert text and loses
-//    nothing.
+// CSV serialization for the export endpoint. Two hazards, handled here so no call
+// site has to remember them:
+// 1. RFC 4180 quoting: a comma, quote or newline inside a value must be quoted with
+//    internal quotes doubled.
+// 2. Formula injection: spreadsheets execute a cell beginning with =, +, -, @, tab
+//    or CR, and order names, SKUs and carriers are merchant-controlled. An
+//    apostrophe prefix makes it inert text.
 
 export const MAX_EXPORT_ROWS = 5000;
 
@@ -28,15 +23,13 @@ export function csvRow(values: unknown[]): string {
 	return values.map(csvCell).join(',');
 }
 
-// CRLF per RFC 4180 — the form every spreadsheet accepts, including on Windows.
+// CRLF per RFC 4180.
 export function toCsv(headers: string[], rows: unknown[][]): string {
 	return [csvRow(headers), ...rows.map(csvRow)].join('\r\n') + '\r\n';
 }
 
-// Exported columns per list. Deliberately a separate map from the API field
-// allowlists: an export is a document a merchant keeps, so its column order and
-// headings are a product decision, and widening the API cannot silently widen
-// what leaves in a file.
+// Separate from the API field allowlists: an export is a document the merchant
+// keeps, so widening the API must not silently widen what leaves in a file.
 export const EXPORT_COLUMNS: Record<'events' | 'findings' | 'orders', Array<{ header: string; field: string }>> = {
 	events: [
 		{ header: 'Occurred at', field: 'occurredAt' },
@@ -82,26 +75,17 @@ export const EXPORT_COLUMNS: Record<'events' | 'findings' | 'orders', Array<{ he
 	],
 };
 
-// Sortable, and stripped of anything that could traverse a path or confuse a
-// content-disposition header.
+// Sortable, and safe against path traversal and content-disposition injection.
 export function exportFilename(kind: string, now: number): string {
 	const safeKind = kind.replace(/[^a-z0-9-]/gi, '') || 'export';
 	const day = new Date(now).toISOString().slice(0, 10);
 	return `sightline-${safeKind}-${day}.csv`;
 }
 
-// Pages through a query function (any of listEvents/listFindings/listOrders)
-// until either the source is exhausted or `cap` rows have been collected, then
-// reports whether more rows existed beyond the cap.
-//
-// `truncated` MUST be derived from why the loop stopped (was there still a
-// cursor to follow?), never from comparing the collected count to `cap`. The
-// cap is always a multiple of the page size (MAX_EXPORT_ROWS / MAX_LIMIT), so a
-// truncated result set accumulates to EXACTLY `cap` — never over it — and a
-// `rows.length > cap` check is false in precisely the case it exists to catch.
-// Capturing `Boolean(cursor)` right after the loop, before any slicing, is
-// correct in all three cases: exhausted (falsy), cap reached with more data
-// available (truthy), and any hypothetical overshoot (truthy).
+// Pages a query function until it is exhausted or `cap` rows are collected, and
+// reports whether more existed. `truncated` must come from whether a cursor remained,
+// not from `rows.length > cap`: the cap is a multiple of the page size, so a
+// truncated set lands on exactly `cap` and that check is false when it matters.
 export async function collectExportRows<T>(
 	fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
 	cap: number,
@@ -112,11 +96,8 @@ export async function collectExportRows<T>(
 	do {
 		const page = await fetchPage(cursor);
 		rows.push(...page.items);
-		// A pager that hands back the cursor it was just given is not advancing;
-		// following it would re-fetch the same page until the cap and report a
-		// truncation that is really a loop. Cheap insurance, independent of any one
-		// pager's correctness: stop, and let `truncated` below say "there may be
-		// more", which is the honest answer when the source stopped making progress.
+		// A pager returning the cursor it was given is not advancing; stop rather than
+		// refetch the same page to the cap, and let `truncated` report that more may exist.
 		if (page.nextCursor !== undefined && page.nextCursor === cursor) break;
 		cursor = page.nextCursor;
 	} while (cursor && rows.length < cap);

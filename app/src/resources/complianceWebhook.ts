@@ -9,11 +9,10 @@ import { checkWebhookShop } from '../ingest/webhookShop.ts';
 import { handleCompliance, type ComplianceDeps } from '../privacy/compliance.ts';
 import { httpError } from './http.ts';
 
-// Shopify mandatory privacy/compliance webhooks (#21). Separate URIs from the
-// operational events endpoint (shopify.app.toml [webhooks.privacy_compliance]).
-// Authenticated by HMAC over the RAW body — an invalid HMAC 401s and performs NO
-// mutation (verification precedes any dispatch). Retry-safe: redaction is
-// idempotent and audits are keyed by webhook id.
+// Mandatory compliance webhooks, on separate URIs from operational events
+// (shopify.app.toml [webhooks.privacy_compliance]). HMAC over the raw body; an
+// invalid HMAC 401s with no mutation. Retry-safe: redaction is idempotent and audits
+// are keyed by webhook id.
 export class ComplianceWebhook extends Resource {
 	static path = '/webhooks/shopify/compliance';
 	allowRead() {
@@ -58,7 +57,7 @@ export class ComplianceWebhook extends Resource {
 		const deps: ComplianceDeps = {
 			redactShop: (sid) => redactShop(REDACT_TARGETS, sid),
 			redactOrders: (sid, ids) => redactOrders(REDACT_TARGETS, sid, ids),
-			// Keyed by webhook id → a Shopify retry upserts the same audit row.
+			// Keyed by webhook id so a retry upserts the same audit row.
 			audit: (action, sid, detail) => writeAudit(`${action}:${webhookId}`, sid, action, Date.now(), detail),
 		};
 		const result = await handleCompliance(topic, shopId, payload, deps);

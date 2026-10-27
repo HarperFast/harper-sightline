@@ -1,24 +1,10 @@
 import type { PurgeResult } from './retention.ts';
 import { M, type LogLevel } from '../observability/observe.ts';
 
-// The two retention sweeps (ADR-003's seven-day ledger purge, and the digest
-// outbox's own thirty-day purge) run back to back on the same tick, each in its
-// OWN try/catch. That independence is the whole point: a persistent ledger-purge
-// error must never silently disable the outbox's thirty-day retention, which
-// this app discloses to the merchant in its privacy policy, its data inventory,
-// and the Notifications screen. Sharing one try/catch would let a ledger failure
-// skip the outbox sweep every tick, with the only symptom logged being an error
-// about a different table.
-//
-// Deps-injected (log AND metrics, not just the tables/fetchers this codebase's
-// other sweeps inject) so a test can assert on exactly what each sweep reported,
-// not just its return value — the property under test IS the wiring: which
-// events/counters fire when one sweep throws and the other doesn't. Lives in its
-// own module, not jobs.ts, for the same reason src/ingest/inventoryEnrich.ts and
-// src/jobs/stateBackfill.ts do: importing jobs.ts starts the purge's post-deploy
-// timer and reaches the Harper runtime through src/db.ts. This module and
-// retention.ts import nothing that reaches db.ts, so a test can import it
-// directly under plain `node --test`.
+// Runs the ledger purge and the digest outbox purge back to back, each in its own
+// try/catch, so a persistent ledger failure cannot disable the outbox retention
+// disclosed to merchants. Deps-injected, and kept out of jobs.ts, so tests can
+// import it under plain `node --test` without the Harper runtime.
 
 export interface PurgeCycleDeps {
 	purge(now: number): Promise<PurgeResult>;
@@ -34,20 +20,9 @@ export interface PurgeCycleResult {
 	outbox: PurgeResult | undefined;
 }
 
-// `now` is captured ONCE by the caller (jobs.ts's purgeJob) and handed to
-// both sweeps, rather than each of `deps.purge`/`deps.outboxPurge` defaulting
-// to its own `Date.now()` as they do when called directly. Deliberate: one
-// clock reading makes a tick deterministic and lets a test drive both sweeps
-// from a single fixed `now`. The cost is that the outbox sweep's cutoff is
-// computed at the instant the ledger sweep STARTED, not when the outbox sweep
-// itself runs — and the ledger sweep does real work first (up to
-// MAX_DELETES_PER_RUN deletes per table across all of RETENTION_TARGETS), so
-// that skew can be seconds, not milliseconds, on a capped run. This is safe
-// regardless of size, not just when it happens to be small: cutoffMs() is a
-// continuous instant with no boundary to cross, and any row whose expiry
-// falls inside the skew is simply picked up on the next tick — the purge is
-// idempotent and runs hourly (jobs.ts), and retention.ts already documents
-// leftover ("residue") rows as self-healing on the next scheduled run.
+// `now` is read once and shared by both sweeps so a tick is deterministic. The
+// outbox cutoff therefore predates its own start by the ledger sweep's duration;
+// that is safe because any row expiring inside the skew is picked up next tick.
 export async function runPurgeCycle(deps: PurgeCycleDeps, now: number): Promise<PurgeCycleResult> {
 	let ledger: PurgeResult | undefined;
 	try {
@@ -62,8 +37,7 @@ export async function runPurgeCycle(deps: PurgeCycleDeps, now: number): Promise<
 			);
 			deps.log('trace', 'purge.tick', { deleted: ledger.deleted, perTable });
 		}
-		// Residue = expired rows still present after a run (purge lag). Alertable
-		// via this warn line; the ops.snapshot also reflects it via backlog/age.
+		// Residue is expired rows still present after a run (purge lag).
 		if (ledger.residue) deps.log('warn', 'purge.residue', { residue: ledger.residue });
 		if (ledger.failures.length) deps.log('warn', 'purge.failures', { count: ledger.failures.length, failures: ledger.failures });
 	} catch (e: unknown) {
@@ -71,25 +45,15 @@ export async function runPurgeCycle(deps: PurgeCycleDeps, now: number): Promise<
 		deps.log('error', 'purge.error', { message: (e as Error).message });
 	}
 
-	// The outbox sweep gets its OWN try/catch rather than sharing the ledger
-	// purge's. Sharing one meant a ledger-purge failure skipped the outbox
-	// entirely on that tick — and since a persistent ledger failure repeats
-	// every tick, the 30-day digest retention this app discloses publicly
-	// would quietly stop running while the only symptom logged was
-	// `purge.error` about a different table. The two sweeps are independent
-	// (different tables, different cutoffs), so a failure in one must not
-	// decide whether the other runs. Same metrics as the ledger purge: the
-	// counters are per-purge-activity, not per-table, so ops.snapshot's tally
-	// reflects outbox work instead of showing nothing for it.
+	// Own try/catch: see the module header. Same metrics as the ledger purge, which
+	// are per-purge-activity rather than per-table.
 	let outbox: PurgeResult | undefined;
 	try {
 		outbox = await deps.outboxPurge(now);
 		deps.metrics.inc(M.purgeDeleted, outbox.deleted);
 		if (outbox.failures.length) deps.metrics.inc(M.purgeFailure, outbox.failures.length);
 		if (outbox.deleted) deps.log('trace', 'purge.outbox', { deleted: outbox.deleted });
-		// Residue on the outbox means the same thing it means for the ledger —
-		// expired rows still present after a run (purge lag) — and was the one
-		// signal of the two sweeps that had no log line at all.
+		// Residue means the same as for the ledger.
 		if (outbox.residue) deps.log('warn', 'purge.outbox.residue', { residue: outbox.residue });
 		if (outbox.failures.length) deps.log('warn', 'purge.outbox.failures', { count: outbox.failures.length, failures: outbox.failures });
 	} catch (e: unknown) {

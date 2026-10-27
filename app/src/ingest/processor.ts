@@ -12,16 +12,14 @@ export interface DeliveryRow {
 	payload?: string; // PII-stripped JSON body to normalize (#10)
 }
 
-// A thrown error is "permanent" when re-running can never succeed (a broken or
-// unsupported payload shape). Duck-typed so the processor stays decoupled from
-// the normalizer's error class. Permanent errors dead-letter immediately.
+// Permanent means re-running can never succeed; duck-typed so the processor stays
+// decoupled from the normalizer's error class.
 function isPermanent(err: unknown): boolean {
 	return typeof err === 'object' && err !== null && (err as { permanent?: unknown }).permanent === true;
 }
 
-// Injected side effects — backed by Harper tables in the component, and by an
-// in-memory fake in tests. `handle` is the pluggable unit of work (normalization
-// lands in #10; for now it's a no-op that just marks the delivery processed).
+// Injected side effects: Harper tables in the component, an in-memory fake in tests.
+// `handle` is the unit of work (normalization and projection).
 export interface ProcessDeps {
 	listAccepted(limit: number): Promise<DeliveryRow[]>;
 	markProcessed(id: string): Promise<void>;
@@ -66,21 +64,16 @@ export function emptyDrainResult(): DrainResult {
 	return { processed: 0, failed: 0, deadLettered: 0, stoppedBy: 'empty' };
 }
 
-// Process accepted deliveries in batches until none are left, `budgetMs` has
-// elapsed, or `batch` rows have failed. Each is handled idempotently and marked
-// processed; a transient failure increments attempts and stays accepted for retry;
-// after MAX_ATTEMPTS it moves to a visible dead-letter state (ADR-002).
+// Processes accepted deliveries in batches until none are left, `budgetMs` elapses,
+// or `batch` rows have failed. Each is handled idempotently; a transient failure
+// increments attempts and stays accepted; after MAX_ATTEMPTS it dead-letters (ADR-002).
 //
-// A row that fails, or belongs to another slot, is skipped for the rest of the
-// drain: retrying it here would spend MAX_ATTEMPTS in one occurrence instead of
-// spacing them one per occurrence. The read limit grows by the skipped count so
-// skipped rows at the head of the backlog cannot hide the rows behind them.
+// A failed row, or one in another slot, is skipped for the rest of the drain so
+// retries are spaced one per occurrence rather than spent at once. The read limit
+// grows by the skipped count so skipped rows at the head cannot hide those behind.
+// The failure cap bounds an outage to one batch of attempts per occurrence.
 //
-// The failure cap bounds an outage to one batch of attempts per occurrence;
-// without it every reachable row would dead-letter after MAX_ATTEMPTS occurrences.
-//
-// Counts accumulate into `result` row by row, so a caller still holds the work
-// done before a throw.
+// Counts accumulate into `result` row by row, so a caller keeps the work done before a throw.
 export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, result = emptyDrainResult()): Promise<DrainResult> {
 	const { budgetMs, batch = 50, partition = { slot: 0, slots: 1 }, now = Date.now } = options;
 	const startedAt = now();
@@ -104,8 +97,7 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 				result.processed += 1;
 			} catch (err) {
 				const attempts = (row.attempts ?? 0) + 1;
-				// A broken payload can never succeed — dead-letter it now rather than
-				// burning MAX_ATTEMPTS. Transient failures retry until the ceiling.
+				// A broken payload can never succeed; dead-letter it now.
 				const dead = isPermanent(err) || attempts >= MAX_ATTEMPTS;
 				await deps.markFailed(row.id, attempts, dead);
 				result.failed += 1;

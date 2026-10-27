@@ -1,7 +1,6 @@
-// Versioned API contract (#15). Single source of truth for the response-field
-// ALLOWLISTS of every query resource — responses expose only these fields, so a
-// schema change can never leak a new column. `scripts/gen-contract.mjs` writes
-// contracts/sightline-api-v1.json from this module; a CI test asserts they match.
+// Versioned API contract: the single source of the response-field allowlists, so a
+// schema change cannot leak a new column. `scripts/gen-contract.mjs` writes
+// contracts/sightline-api-v1.json from it; a CI test asserts they match.
 
 import { API_REQUESTS_PER_MINUTE, EXPORTS_PER_MINUTE, RATE_WINDOW_MS } from '../auth/rateLimit.ts';
 
@@ -11,9 +10,6 @@ export const WINDOW_MS = WINDOW_DAYS * 86_400_000;
 export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;
 
-// ── Response field allowlists ────────────────────────────────────────────────
-// No raw payloads, no customer-identifying fields (none exist in the model, but
-// allowlisting keeps it that way as the schema grows).
 export const EVENT_FIELDS = [
 	'eventId',
 	'domain',
@@ -34,10 +30,8 @@ export const EVENT_FIELDS = [
 	'occurredAt',
 	'receivedAt',
 ] as const;
-// The events LIST additionally carries each event's full SKU list. `sku` above
-// stays a scalar (populated only for a single-SKU event); `skus` is hydrated
-// from the EventSku index and allowlisted separately so the join can never
-// widen the base fields.
+// The events list adds the full SKU list; `sku` stays a scalar for a single-SKU
+// event. Allowlisted separately so the join cannot widen the base fields.
 export const EVENT_LIST_FIELDS = [...EVENT_FIELDS, 'skus'] as const;
 export const FINDING_FIELDS = [
 	'id',
@@ -49,9 +43,8 @@ export const FINDING_FIELDS = [
 	'resolvedAt',
 	'evidenceEventIds',
 ] as const;
-// The findings LIST additionally carries the two order facts the screen spec's
-// list columns need (paid time, expected confirmation). They are joined from the
-// projection/expectation and allowlisted here so the join can never widen.
+// The findings list adds the order's paid time and confirmation deadline, joined
+// from the projection and expectation.
 export const FINDING_LIST_FIELDS = [...FINDING_FIELDS, 'paidAt', 'deadline', 'orderName'] as const;
 export const PROJECTION_FIELDS = [
 	'orderId',
@@ -87,22 +80,18 @@ export const ORDER_LIST_FIELDS = [
 	'lastEventAt',
 	'ageHours',
 ] as const;
-// `fulfillableItemCount` is deliberately NOT here: the column exists on the
-// schema but src/ingest/projection.ts never writes it (the reducer latches
-// `requiresFulfillment` from a positive count instead), so declaring it promised a
-// field the detail endpoint could never carry. Same defect an earlier task fixed
-// for `ageHours`. Removed rather than started — nothing needs the raw count.
+// `fulfillableItemCount` is not here: projection.ts never writes it (the reducer
+// latches `requiresFulfillment` from a positive count instead).
 export const ORDER_FIELDS = [...ORDER_LIST_FIELDS, 'requiresFulfillment'] as const;
 
-// The contract artifact shape (also what gen-contract.mjs serializes).
 export const API_CONTRACT = {
 	version: API_VERSION,
 	windowDays: WINDOW_DAYS,
 	pagination: { style: 'cursor', defaultLimit: DEFAULT_LIMIT, maxLimit: MAX_LIMIT },
-	// Per-shop request limits (src/auth/rateLimit.ts). Caller-visible, so they belong
-	// in the contract: exceeding either is an HTTP 429 whose message states how many
-	// seconds to wait. Enforced per node, so a cluster admits a multiple of these —
-	// they bound one shop's demand on the app, and are not a DoS control.
+	// Per-shop request limits (src/auth/rateLimit.ts), caller-visible: exceeding either
+	// is an HTTP 429 stating how many seconds to wait. Enforced per worker thread, so a
+	// deployment admits a multiple of these; they bound one shop's demand and are not a
+	// DoS control.
 	rateLimits: {
 		windowSeconds: RATE_WINDOW_MS / 1000,
 		requests: API_REQUESTS_PER_MINUTE,
@@ -170,14 +159,12 @@ export const API_CONTRACT = {
 		digest: {
 			path: '/api/v1/digest',
 			fields: ['email', 'cadence', 'status', 'lastBuiltAt'],
-			// The app's only write surface, and it writes Sightline's own
-			// configuration — never Shopify data.
+			// The app's only write surface; it writes Sightline's own configuration, never Shopify data.
 			methods: ['GET', 'PUT'],
 		},
 	},
 } as const;
 
-// Return a shallow copy of `row` with only the allowlisted keys that are present.
 export function pick<T extends Record<string, unknown>>(row: T, fields: readonly string[]): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const field of fields) {
@@ -186,7 +173,6 @@ export function pick<T extends Record<string, unknown>>(row: T, fields: readonly
 	return out;
 }
 
-// Clamp a caller-supplied limit into [1, MAX_LIMIT], defaulting when absent/invalid.
 export function clampLimit(limit: unknown): number {
 	const n = typeof limit === 'number' ? limit : typeof limit === 'string' ? Number(limit) : NaN;
 	if (!Number.isFinite(n) || n < 1) return DEFAULT_LIMIT;

@@ -20,12 +20,10 @@ export const ProjectionsQ = ProjectionsTable as unknown as QueryTable;
 export const ExpectationsQ = ExpectationsTable as unknown as QueryTable;
 export const DeliveriesQ = DeliveriesTable as unknown as QueryTable;
 export const ShopsQ = ShopsTable as unknown as QueryTable;
-// Read ONLY for the credential's `status` (reauthorization state) in /setup —
-// never for token material, which stays inside credentialStore.ts.
+// Read only for the credential `status` in /setup, never token material (credentialStore.ts).
 export const CredentialsQ = CredentialsTable as unknown as QueryTable;
 export const EventSkusQ = EventSkusTable as unknown as QueryTable;
 export const InventoryItemsQ = InventoryItemsTable as unknown as QueryTable;
 export const ShopLocationsQ = ShopLocationsTable as unknown as QueryTable;
-// Read ONLY for `email`/`cadence`/`status` in /privacy's notifications
-// disclosure — stated, never echoed (see getPrivacy in src/api/queries.ts).
+// Read only for `email`/`cadence`/`status` in /privacy's disclosure: stated, never echoed.
 export const DigestSubscriptionsQ = DigestSubscriptionsTable as unknown as QueryTable;

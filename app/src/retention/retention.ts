@@ -1,23 +1,17 @@
-// Seven-day retention purge (ADR-003). An explicit per-record DELETE removes
-// both record data AND secondary-index entries — the compliance-safe mechanism,
-// unlike TTL eviction which leaves index residue and (source-less) can drop data
-// inside the window. The purge is idempotent and re-runnable, so concurrent runs
-// across threads/nodes are safe. `now` is injected so tests are time-controlled.
+// Seven-day retention purge (ADR-003). An explicit per-record DELETE removes record
+// data and secondary-index entries, unlike TTL eviction, which leaves index residue.
+// Idempotent and re-runnable, so concurrent runs are safe. `now` is injected for tests.
 
 export const DAY_MS = 86_400_000;
 export const RETENTION_DAYS = 7;
 
-// The digest outbox's own retention window (src/retention/ledgerTargets.ts's
-// OUTBOX_RETENTION_TARGETS) — longer than, and swept separately from, the
-// seven-day ledger purge above: a digest is a record of what the merchant was
-// told, worth keeping after the events it described have been purged. Lives
-// here, not in ledgerTargets.ts, so queries.ts and privacyPolicy.ts (which
-// disclose it to the merchant) can import it without pulling in db.ts — this
-// module has no imports of its own.
+// The digest outbox's window (OUTBOX_RETENTION_TARGETS), swept separately from the
+// seven-day ledger. Lives here, not in ledgerTargets.ts, so queries.ts and
+// privacyPolicy.ts can import it without pulling in db.ts.
 export const OUTBOX_RETENTION_DAYS = 30;
 
-// Bounds records deleted per table per run so one run can't monopolize a worker
-// thread; residue beyond this is cleared by the next scheduled run (self-healing).
+// Bounds deletes per table per run so one run cannot monopolize a worker thread;
+// residue is cleared by the next run.
 export const MAX_DELETES_PER_RUN = 10_000;
 
 export interface SearchQuery {
@@ -27,9 +21,7 @@ export interface SearchQuery {
 	limit?: number;
 }
 
-// The minimal table surface purge/redaction need — backed by a Harper table in
-// the component, a fake in tests. `search` yields matching records (each
-// carrying its primary key); `delete` removes one record by primary key.
+// Minimal table surface purge and redaction need (a Harper table, or a fake in tests).
 export interface PurgeableTable {
 	search(query: SearchQuery): AsyncIterable<Record<string, unknown>>;
 	delete(id: string): Promise<void>;
@@ -60,7 +52,6 @@ export function cutoffMs(nowMs: number, retentionDays = RETENTION_DAYS): number 
 	return nowMs - retentionDays * DAY_MS;
 }
 
-// Count records matching a query, up to `limit`. Used to verify deletion.
 export async function countMatching(
 	table: PurgeableTable,
 	conditions: SearchQuery['conditions'],
@@ -73,11 +64,9 @@ export async function countMatching(
 	return n;
 }
 
-// Search for records matching the query and delete each by primary key. Returns
-// the number of delete calls made. Shared by purge and compliance redaction.
-// Per-key delete errors are swallowed: a key already removed by a concurrent
-// purge on another thread/node is expected and harmless — callers verify actual
-// removal with countMatching (residue), so a genuine failure is never masked.
+// Searches and deletes each match by primary key; returns the delete calls made.
+// Per-key errors are swallowed (a key already removed by a concurrent purge is
+// harmless); callers verify removal with countMatching, so a real failure is not masked.
 export async function deleteMatchingKeys(
 	table: PurgeableTable,
 	keyField: string,
@@ -105,14 +94,13 @@ async function purgeTarget(target: RetentionTarget, cutoff: number): Promise<Pur
 	const condition = [{ attribute: target.tsField, value: cutoff, comparator: 'less_than' }];
 	const deleted = await deleteMatchingKeys(target.table, target.keyField, condition);
 	const capped = deleted >= MAX_DELETES_PER_RUN;
-	// Verify physical deletion (ADR-003 §4): re-query for any remaining expired row.
+	// Verifies physical deletion (ADR-003 §4): re-query for remaining expired rows.
 	const residue = await countMatching(target.table, condition, undefined, target.keyField, 1);
 	return { deleted, residue, capped };
 }
 
-// Purge every target's records older than the retention window. Per-table
-// failures are captured (not thrown) so one bad table doesn't block the rest;
-// residue without capping means a delete didn't take — a real, alertable fault.
+// Per-table failures are captured, not thrown, so one bad table does not block the
+// rest; residue without capping means a delete did not take.
 export async function purgeExpired(targets: RetentionTarget[], nowMs: number, retentionDays = RETENTION_DAYS): Promise<PurgeResult> {
 	const cutoff = cutoffMs(nowMs, retentionDays);
 	const byTable: Record<string, PurgeTableResult> = {};
