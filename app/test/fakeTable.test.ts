@@ -23,9 +23,8 @@ test('patch shallow-merges an existing row and ignores a missing one', async () 
 	assert.equal(await table.get('missing'), undefined);
 });
 
-// The fake stands in for Harper in every read-layer test, so it has to refuse the
-// queries Harper refuses. It used to accept them, and that is precisely how a
-// one-condition `or` reached production and 500'd every event-detail request.
+// The fake stands in for Harper in every read-layer test, so it must refuse the
+// queries Harper refuses, such as a one-condition `or`.
 test('search refuses an "or" over fewer than two conditions, like Harper', async () => {
 	const table = new FakeTable('id', [{ id: 'a', shopId: 's1' }]);
 	await assert.rejects(async () => {

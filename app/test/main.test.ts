@@ -206,9 +206,8 @@ test('a client-side pushState — what the sidebar does on click — re-routes',
 });
 
 test('a path route does not get hijacked to the setup screen', async () => {
-	// boot() lands first-time visitors on /setup while the initial check runs. It
-	// used to test `location.hash`, so with path routing every sidebar link on an
-	// incomplete-setup shop would have been swallowed by the setup screen.
+	// boot() lands first-time visitors on /setup while the initial check runs; it must
+	// test the path, not `location.hash`, or every sidebar link would be swallowed.
 	const win = new Window({ url: 'https://sightline.test/orders' });
 	win.document.body.innerHTML = '<div id="app"></div>';
 	(globalThis as unknown as { window: unknown }).window = win;

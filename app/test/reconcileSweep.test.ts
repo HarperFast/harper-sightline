@@ -3,13 +3,9 @@ import assert from 'node:assert/strict';
 import type { ReconcileOrder } from '../src/shopify/adminApi.ts';
 import { sweepOrdersSince, reconcileShops, type ReconcileSweepDeps, type ReconcileShopsDeps } from '../src/shopify/reconcileSweep.ts';
 
-// The reconcile sweep is the gap-fill that stops the detector reporting an
-// absence Sightline caused rather than the store. Before this module the paging
-// loop lived in jobs.ts and wrote its checkpoint only after the WHOLE pass
-// completed, so any mid-pass failure (a Shopify throttle on page 3 of an install
-// backfill) discarded the pass and the next sweep replayed the same pages, threw
-// at the same place, and never advanced. These cover the convergence guarantee:
-// progress already made is always persisted.
+// The reconcile sweep fills gaps so the detector does not report an absence Sightline
+// caused. These cover the convergence guarantee: progress already made is always
+// persisted, even when a page fails mid-pass.
 
 function order(orderId: string, updatedAt: number): ReconcileOrder {
 	return { orderId, updatedAt, fulfillableUnits: 1 };

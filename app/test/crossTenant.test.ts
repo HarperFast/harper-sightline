@@ -18,7 +18,7 @@ import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS
 import { EXPORT_COLUMNS } from '../src/api/csv.ts';
 import { applySubscriptionUpdate } from '../src/digest/digestSubscription.ts';
 
-// Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
+// Adversarial tenant-isolation suite (threat model §4). Two shops:
 // `victim` and `attacker`. The attacker deliberately (a) reuses the victim's
 // order id `o1`/`o2` and SKU, and (b) holds MORE rows, so any broken scope leaks
 // a row or inflates an aggregate. Every read endpoint is attacked with the
@@ -369,7 +369,7 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 	assert.equal(lane.items[0].paidAt, NOW - 50, "the attacker's own o4, not the victim's");
 });
 
-// The digest subscription endpoint (#24) — the app's first and only write
+// The digest subscription endpoint, the app's only write
 // surface. shopId is derived from the verified principal and passed as its own
 // argument; a shopId (or lastBuiltAt/createdAt) carried in the body must be
 // unable to retarget or backdate another tenant's row.

@@ -2,11 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { errorDetail } from '../web/src/api.ts';
 
-// A failed read has to SAY something. Harper reports errors as
-// `{type, code, title, status, instance}` and our own resources throw with a plain
-// message that serializes as a bare JSON string; the client read neither, so every
-// failure reached the merchant as "500" with no cause — and diagnosing a real one
-// (a query Harper refused to run) cost a round trip through the live instance.
+// A failed read has to say something: Harper reports `{type, code, title, status,
+// instance}` and our own resources throw a plain message that serializes as a bare
+// JSON string, and the client must read both.
 
 test('a Harper error body surfaces its title', () => {
 	assert.equal(

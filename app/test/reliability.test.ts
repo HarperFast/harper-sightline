@@ -6,12 +6,11 @@ import { FakeTable } from './fakeTable.ts';
 import { listEvents, getSummary } from '../src/api/queries.ts';
 import { MAX_LIMIT } from '../src/api/apiContract.ts';
 
-// Reliability & capacity tests (#24). These prove the correctness invariants at
-// volume locally; the true production-like gates (10-min 100 rps burst, encrypted
-// backup/restore) run against the staged environment (#25) — see
-// docs/reliability-report.md. Timing assertions are deliberately generous: they
-// catch pathological (e.g. O(n^2)) regressions without flaking in CI; the report
-// records the actual measured numbers.
+// Reliability and capacity tests. They prove the correctness invariants at volume
+// locally; the production-like gates (10-min 100 rps burst, encrypted backup/restore)
+// run against the staged environment (docs/reliability-report.md). Timing
+// assertions are generous: they catch pathological (e.g. O(n^2)) regressions
+// without flaking in CI.
 
 // A durable inbox that persists across simulated worker restarts. `handle`
 // records an idempotent downstream effect keyed by delivery id, so a redelivered

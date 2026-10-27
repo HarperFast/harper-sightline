@@ -272,14 +272,11 @@ test('no screen accuses a downstream party of failing', () => {
 		privacyView(privacy(), NOW, ''),
 	];
 	for (const html of screens) {
-		// Both constants legitimately contain the words — they are the sentences that
-		// DENY the claim. The "Orders with a failed attempt" tile label (previously
-		// "Failed attempts", renamed because the tile counts one finding per ORDER, not
-		// one per attempt) and the fulfillment_attempt_failed detector id (in filter
-		// hrefs) are also legitimate: that detector fires on a fulfillment Shopify
-		// itself recorded as failed, so stating that is direct evidence, not an
-		// inference or an accusation against a downstream party — strip them too, then
-		// nothing else may make the claim.
+		// Both constants contain the words because they are the sentences that deny the
+		// claim. The "Orders with a failed attempt" label and the fulfillment_attempt_failed
+		// detector id (in filter hrefs) are also legitimate: that detector fires on a
+		// fulfillment Shopify itself recorded as failed. Strip them, then nothing else may
+		// make the claim.
 		const rest = html
 			.replace(FINDING_DISCLAIMER, '')
 			.replace(FINDINGS_BOUNDARY, '')
@@ -392,10 +389,8 @@ test('a fully healthy overview shows no warning banners', () => {
 // ── aging / drill-down links ─────────────────────────────────────────────────
 
 test('the aging breakdown links each bucket to the bucket, not to everything older', () => {
-	// Every bucket, per bucket. Asserting one href (as this test used to) missed
-	// that three of the four linked to a strictly larger set than they displayed:
-	// the buckets are half-open intervals, `minAgeHours` alone is an open-ended
-	// threshold, so "Under 24h: 1" opened the whole awaiting list.
+	// Every bucket, per bucket: the buckets are half-open intervals, so `minAgeHours`
+	// alone is an open-ended threshold and "Under 24h: 1" would open the whole awaiting list.
 	const html = agingView({
 		buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: 1 })),
 	});
@@ -734,12 +729,8 @@ test('an empty ledger says so instead of rendering an empty table', () => {
 	assert.ok(eventsView({ domain: 'order' }, [], false, '').includes('No events match these filters.'));
 });
 
-// The Events screen used to open on a seven-field search form: time range, from,
-// to, domain, topic, state, evidence source, order id, SKU — all of it ahead of the
-// first row of data. It reads as a developer console rather than as "here is what
-// happened in your store", and it asks a merchant to describe what they want before
-// they have seen anything. The default view is now the activity itself; every filter
-// is still there, one disclosure away.
+// The Events screen opens on the activity itself, not a search form; every filter is
+// one disclosure away.
 test('the default Events view leads with the activity, not with a search form', () => {
 	const html = eventsView({}, [], false, '');
 	assert.match(html, /<details class="filter-disclosure" id="eventFilters">/, 'the filters start collapsed');
@@ -1188,9 +1179,7 @@ test('the age cell renders plain hours under the 24h cutoff and days+hours past 
 });
 
 test('only an awaiting order is shown as waiting — a fulfilled one is not waiting for anything', () => {
-	// The spec's own mock shows an em dash here for the fulfilled row. Before this the
-	// column read "Waiting: 5h" for an order whose fulfillment had already been
-	// observed.
+	// A fulfilled row shows an em dash, not "Waiting: 5h".
 	for (const state of ['fulfilled', 'cancelled', 'refunded', 'no_fulfillment_expected', 'unpaid']) {
 		const html = ordersView({}, [order({ state, ageHours: 5 })], false, '');
 		assert.ok(html.includes('<s-table-cell>—</s-table-cell>'), `${state} must not render a waiting time`);
@@ -1619,12 +1608,9 @@ test('a hostile save-result message cannot inject markup', () => {
 });
 
 // ── save-error handling ──────────────────────────────────────────────────────
-// saveErrorAction is what the save click handler (main.ts) asks to decide what a
-// thrown apiSaveDigest() message means. Extracted as a pure function specifically
-// so this decision — previously inline in a DOM listener the suite could not
-// reach — is testable at all; that gap is what let a 401 render as the bare
-// string "401" instead of prompting reauthorization the way route() does for
-// every other screen.
+// saveErrorAction is what the save click handler asks to decide what a thrown
+// apiSaveDigest() message means. A pure function so a 401 prompts reauthorization
+// like every other screen instead of rendering the bare string "401".
 
 test('a 401 asks the screen to reauthorize, not display the bare status', () => {
 	assert.deepEqual(saveErrorAction('401'), { kind: 'reauthorize' });
@@ -1697,13 +1683,10 @@ test('a never-checked subscription says so, in its own status line', () => {
 });
 
 test('a checked subscription’s status line says when it was last checked, not when a digest was "prepared"', () => {
-	// lastBuiltAt is stamped by the build loop even on a quiet period where nothing
-	// was written (Task 6) — a recurring "all clear" email trains people to ignore
-	// the channel, so the loop deliberately writes no digest then. The field means
-	// "last period evaluated", not "last digest produced", so THIS line must say
-	// "checked", not "prepared" — rendering it as "prepared" would have the screen
-	// assert an artifact it never made. (The banner elsewhere on the page may still
-	// say "prepared" in general terms — see the scoping note on the previous test.)
+	// lastBuiltAt is stamped by the build loop even on a quiet period that writes no
+	// digest, so it means "last period evaluated". This line must say "checked", not
+	// "prepared", which would assert an artifact never made. (The banner elsewhere may
+	// still say "prepared" in general terms.)
 	const html = notificationsView(digestSettings({ lastBuiltAt: NOW - HOUR }), NOW, '');
 	const statusLine = html.match(/<s-stack direction="inline" gap="small-200" alignItems="center">[\s\S]*?<\/s-stack>/);
 	assert.ok(statusLine, 'the status line must be present');

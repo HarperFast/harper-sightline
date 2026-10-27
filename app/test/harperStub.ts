@@ -32,10 +32,6 @@ export const databases: Record<string, object> = new Proxy(
 	},
 );
 
-// The scoped-secrets accessor. Mutable on purpose: with the dev fallbacks gone,
-// `secrets.X` is the PRIMARY read path for every secret this app needs, and it
-// was previously unreachable offline (readSecret.ts hid it behind a dynamic
-// `import('harper')` that simply threw under `node --test`, so only the env and
-// dev-constant branches were ever covered). Tests set and clear keys here to
-// drive the real branch — see test/secretsPolicy.test.ts.
+// The scoped-secrets accessor, mutable so tests set and clear keys to drive the real
+// read branch (see test/secretsPolicy.test.ts).
 export const secrets: Record<string, string | undefined> = {};

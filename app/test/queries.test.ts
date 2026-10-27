@@ -77,15 +77,10 @@ function fixtures() {
 	// - oA-oF are the WORKLIST set, hour-scale ages, purpose-built for the order
 	//   list/aging/lane tests.
 	//
-	// EVERY row carries a stored `state` that agrees with its own latches — that is
-	// an invariant of this fixture set, not an incidental detail. The stored column
-	// is what listOrders filters on while getSummary/computeFlows derive the lane
-	// live, so a fixture row whose `state` disagrees with its latches encodes a
-	// count/list divergence AS THE EXPECTED RESULT: a correct implementation then
-	// fails the suite and an incorrect one passes. (Three rows here carried no
-	// `state` at all for exactly that reason, which is how C1 stayed invisible.) The
-	// one deliberate exception is oLegacy below, whose whole purpose is to be the
-	// pre-backfill shape, and which is named and tested as such.
+	// Every row carries a stored `state` that agrees with its own latches: listOrders
+	// filters the stored column while getSummary/computeFlows derive the lane live, so a
+	// disagreeing fixture would encode a count/list divergence as the expected result.
+	// The one exception is oLegacy, the pre-backfill shape, named and tested as such.
 	//
 	// All of these functions read from this SAME table — one shared universe, not
 	// two. getSummary and computeFlows share one window predicate: both filter on
@@ -951,12 +946,8 @@ test('the fulfilled count is lane-consistent: a fulfilled-then-cancelled order c
 	const flows = await computeFlows(projections, 's1', NOW);
 	const orders = summary.orders as { fulfilled: number };
 	const lanes = flows.lanes as Record<string, number>;
-	// oE (paid, then fulfilled, then cancelled) must land in exactly one lane —
-	// cancelled — on every surface that counts lanes. Before this fix, getSummary
-	// counted "has a fulfilledAt" (3: o1, oD, oE) while computeFlows already
-	// counted "is in the fulfilled lane" (2: o1, oD) — the same order rendering as
-	// two different "Fulfilled" tile numbers, both linking to the same worklist
-	// filter.
+	// oE (paid, fulfilled, then cancelled) must land in exactly one lane, cancelled, on
+	// every surface that counts lanes.
 	assert.equal(orders.fulfilled, lanes.fulfilled, 'the Overview tile and the flow lane must agree');
 	assert.equal(lanes.fulfilled, 2, 'o1 and oD only — oE is cancelled, not fulfilled');
 	assert.equal(lanes.cancelled, 1, 'oE counts once, in cancelled');
@@ -1046,14 +1037,8 @@ test('the no-customer-PII promise is unchanged by the notification address', asy
 });
 
 test('the deletion disclosure states the digest outbox retention alongside the ledger purge', async () => {
-	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention/retention.ts directly
-	// (queries.ts used to hold its own duplicated `DIGEST_OUTBOX_RETENTION_DAYS`
-	// literal, checked against the real constant by reading src/retention/ledgerTargets.ts
-	// as text — now that db.ts is importable under test, the constant could have
-	// been imported from ledgerTargets.ts, but it lives in retention.ts instead,
-	// which has no imports of its own, so queries.ts stays testable without
-	// `--conditions=test`. Either way there is only one number to get right, not
-	// two to keep in sync).
+	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention/retention.ts, which has
+	// no imports of its own, so queries.ts stays testable without `--conditions=test`.
 	const { events, findings, projections, deliveries, shops } = fixtures();
 	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
 	const automatic = (privacy.deletion as Record<string, string>).automatic;
@@ -1225,13 +1210,10 @@ test('the summary counts events observed by direct check rather than by webhook'
 });
 
 test('a webhook event and its reconciliation twin for the same order and change are not counted as reconciliation-only', async () => {
-	// This is the exact defect a reviewer proved empirically: reconcileShopWithToken
-	// is a rolling resync, so a healthy webhook delivery is routinely followed by a
-	// matching reconciliation event for the SAME change on the next sweep. Webhook
-	// and reconciliation event ids can never collide, so both rows persist — and the
-	// old tally (source === 'reconciliation') counted the reconciliation twin as a
-	// capture failure even though the webhook plainly arrived. This test is the one
-	// that returns 1 (wrongly) on the pre-fix implementation.
+	// reconcileShopWithToken is a rolling resync, so a healthy webhook is routinely
+	// followed by a reconciliation event for the same change. Both rows persist, and
+	// counting the twin as reconciliation-only would report a capture failure the
+	// webhook disproves.
 	const { events, projections, findings, deliveries, shops } = fixtures();
 	await events.put({
 		eventId: 's1:webhook-o10',

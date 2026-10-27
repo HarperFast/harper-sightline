@@ -2,10 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { httpError, parseUrl, trailingId, numParam } from '../src/resources/http.ts';
 
-// These helpers used to live inside resources.ts, which cannot be imported under
-// `node --test` (it imports the `harper` runtime). Splitting the resources into
-// src/resources/ put them in a module free of that import, so the parsing every
-// route depends on is now directly testable.
+// These helpers live apart from resources.ts, which cannot be imported under
+// `node --test` (it imports the `harper` runtime).
 
 test('parseUrl falls back to a root URL for a missing or unparseable url', () => {
 	assert.equal(parseUrl('/api/v1/events?limit=5').pathname, '/api/v1/events');

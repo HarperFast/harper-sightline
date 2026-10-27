@@ -327,9 +327,8 @@ test('dead-lettered deliveries make the recorder unhealthy', async () => {
 });
 
 test('a webhook event and its reconciliation twin for the same order and change are not a delivery gap', async () => {
-	// This is the exact defect a reviewer proved empirically: a healthy webhook
-	// delivery followed by the next reconcile sweep's synthesized event for the
-	// SAME change used to count as "the webhook never arrived". It must count 0.
+	// A healthy webhook followed by the next sweep's synthesized event for the same
+	// change must not count as "the webhook never arrived". It must count 0.
 	const t = tables();
 	await t.events.put({
 		eventId: 's1:webhook-o10',
