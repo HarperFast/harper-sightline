@@ -294,10 +294,22 @@ test('a shop whose token fetch throws does not stop later shops from enriching',
 		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
 	});
 
-	const result = await runInventoryEnrichment(NOW, deps);
+	const lines: string[] = [];
+	setLogSink((_level, line) => lines.push(line));
+	let result;
+	try {
+		result = await runInventoryEnrichment(NOW, deps);
+	} finally {
+		setLogSink(null);
+	}
 
 	assert.equal(result.items, 2, 's2 and s3 were enriched');
 	assert.equal(raw.checkpoints.rows.has('enrich:s1'), false, 'the failing shop checkpoint is untouched');
+	const errors = lines.map((line) => JSON.parse(line.slice(line.indexOf('{')))).filter((entry) => entry.event === 'enrich.shop.error');
+	assert.deepEqual(
+		errors.map((entry) => [entry.level, entry.shop]),
+		[['error', 's1']],
+	);
 });
 
 function skuDeps(raw: ReturnType<typeof harness>): EnrichDeps {
@@ -333,6 +345,30 @@ test('an event processed after the frontier passed its receivedAt is still index
 
 	await runInventoryEnrichment(NOW + 3000, deps);
 	assert.ok(raw.eventSkus.rows.has('s1:e1:SKU-i1'), 'the late event is indexed even though a newer one was swept first');
+	assert.equal(raw.checkpoints.rows.get(checkpointId('s1'))?.cursor, String(NOW + 1001), 'once w1 is processed the frontier moves past it');
+});
+
+test('settled deliveries and other shops do not hold the frontier', async () => {
+	const raw = harness();
+	await raw.deliveries.put({ id: 's1:dead', shopId: 's1', status: 'dead_letter', receivedAt: NOW - 1000 });
+	await raw.deliveries.put({ id: 's1:done', shopId: 's1', status: 'processed', receivedAt: NOW - 1000 });
+	await raw.deliveries.put({ id: 's2:queued', shopId: 's2', status: 'accepted', receivedAt: NOW - 1000 });
+	const total = ENRICH_READ_LIMIT + 5;
+	for (let i = 0; i < total; i++) {
+		await raw.events.put(inventoryEvent({ eventId: `s1:e${i}`, resourceId: 'i1', receivedAt: NOW + i }));
+	}
+	const deps = skuDeps(raw);
+
+	await runInventoryEnrichment(NOW + total, deps);
+	assert.equal(
+		raw.checkpoints.rows.get(checkpointId('s1'))?.cursor,
+		String(NOW + ENRICH_READ_LIMIT),
+		'advances to the end of the capped read',
+	);
+
+	await runInventoryEnrichment(NOW + total, deps);
+	assert.equal(raw.checkpoints.rows.get(checkpointId('s1'))?.cursor, String(NOW + total));
+	assert.equal(raw.eventSkus.rows.size, total, 'the events past the read cap are indexed');
 });
 
 test('an inventory event whose item is already cached is indexed as it is written', async () => {
