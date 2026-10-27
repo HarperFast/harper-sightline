@@ -4,6 +4,7 @@ import { readShopifySecret } from '../secrets/readSecret.ts';
 import { redactShop, redactOrders } from '../privacy/redaction.ts';
 import { REDACT_TARGETS } from '../retention/ledgerTargets.ts';
 import { writeAudit } from '../audit.ts';
+import { checkWebhookShop } from '../ingest/webhookShop.ts';
 import { handleCompliance, type ComplianceDeps } from '../privacy/compliance.ts';
 import { httpError } from './http.ts';
 
@@ -43,6 +44,11 @@ export class ComplianceWebhook extends Resource {
 		} catch {
 			// tolerate an empty/invalid body — HMAC already proved authenticity
 		}
+
+		// Redaction is idempotent and Shopify retries after the shop row is gone, so
+		// no known-shop requirement; the body must still name the header's shop.
+		const verdict = await checkWebhookShop({ shopId, topic, body: payload, requireKnownShop: false, isKnownShop: async () => true });
+		if (!verdict.ok) throw httpError(verdict.reason, verdict.status);
 
 		const deps: ComplianceDeps = {
 			redactShop: (sid) => redactShop(REDACT_TARGETS, sid),

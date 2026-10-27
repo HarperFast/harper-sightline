@@ -2,6 +2,8 @@ import { Resource } from 'harper';
 import { verifyWebhookHmac } from '../shopify/webhookHmac.ts';
 import { readShopifySecret } from '../secrets/readSecret.ts';
 import { acceptDelivery } from '../ingest/webhookIngress.ts';
+import { checkWebhookShop } from '../ingest/webhookShop.ts';
+import { Shops } from '../db.ts';
 import { stripPii } from '../privacy/pii.ts';
 import { log, metrics, M } from '../observability/observe.ts';
 import { httpError } from './http.ts';
@@ -44,14 +46,37 @@ export class ShopifyWebhook extends Resource {
 			throw httpError('missing webhook headers', 400);
 		}
 
+		// HMAC proves the body, not the headers: bind the shop header to the signed
+		// body (or a known shop) before anything is persisted under it.
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(rawBody.toString('utf8'));
+		} catch {
+			// Non-JSON body — store nothing; an operational topic will dead-letter.
+		}
+		const verdict = await checkWebhookShop({
+			shopId,
+			topic,
+			body: parsed,
+			requireKnownShop: true,
+			isKnownShop: async (id) => (await Shops.get(id)) != null,
+		});
+		if (!verdict.ok) {
+			metrics.inc(verdict.status === 404 ? M.webhookUnknownShop : M.webhookBadRequest);
+			log('warn', 'webhook.rejected', { cid: webhookId, topic, reason: verdict.reason });
+			throw httpError(verdict.reason, verdict.status);
+		}
+
 		// Persist the PII-stripped body so the worker can normalize it later
 		// (ADR-002: accept fast, process later). HMAC is already verified over the
 		// raw bytes; storage keeps only the whitelisted, non-PII fields (#10).
 		let payload: string | undefined;
-		try {
-			payload = JSON.stringify(stripPii(JSON.parse(rawBody.toString('utf8'))));
-		} catch {
-			// Non-JSON body — store nothing; an operational topic will dead-letter.
+		if (parsed !== undefined) {
+			try {
+				payload = JSON.stringify(stripPii(parsed));
+			} catch {
+				// Unstorable body — store nothing, as for a non-JSON one.
+			}
 		}
 
 		const result = await acceptDelivery({ shopId, webhookId, topic, payload });

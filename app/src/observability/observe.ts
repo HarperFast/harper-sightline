@@ -174,6 +174,7 @@ export const M = {
 	webhookReceived: 'webhook.received',
 	webhookHmacFail: 'webhook.hmac_fail',
 	webhookBadRequest: 'webhook.bad_request',
+	webhookUnknownShop: 'webhook.unknown_shop',
 	webhookAccepted: 'webhook.accepted',
 	webhookDuplicate: 'webhook.duplicate',
 	webhookAckMs: 'webhook.ack_ms',
