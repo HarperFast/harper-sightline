@@ -13,6 +13,12 @@
 - Rotation fires when a token is within **15 minutes** of expiry (`REFRESH_MARGIN_MS`),
   i.e. at ~45 minutes elapsed, plus a one-shot rotate-and-retry if a `401` is hit
   mid-sweep.
+- Rotation is single-flight per shop within a worker. If it fails, the credential
+  version is re-read: a higher one means another thread or node already rotated, and
+  the shop is not parked. Only a `401` from Shopify parks a shop, and only after a 1s
+  settle and one more version re-read; timeouts, network errors and 5xx are transient,
+  throw, and leave the shop `active`. One shop's failure does not stop the reconcile
+  sweep for the others (`reconcile.shop.error`).
 
 ### Why it matters
 Background work (reconciliation, install backfill) uses an **expiring offline

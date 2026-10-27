@@ -110,6 +110,10 @@ shipped:
     bucket and mint unlimited new ones.
   - **Per shop, `/api/v1/export`:** 10/min, on top of the above.
 
+  Counters live in each worker thread's module memory, so the effective bound is the
+  stated limit × worker threads × nodes. They are soft abuse dampers, not quotas, and
+  nothing here is a security boundary.
+
   Session-token verification itself is bounded differently, and deliberately: an
   invalid token has no verified shop to key on, so `verifySessionToken` instead refuses
   a token over `MAX_TOKEN_CHARS` (4096) **before** splitting, base64-decoding or
@@ -170,7 +174,7 @@ Sightline is one shared multi-tenant deployment; every privacy/correctness guara
 ## 5. Residual risks (accepted / monitored)
 
 - **F1/F2 until owner action complete** — mitigated by the fail-closed guard; must be closed at launch (#25). F5 showed the rotation is not optional: a file read was enough to reach the committed secret.
-- **F6/F7 closed** (2026-08-26) — see §1.3. The residual, accepted, is that rate limits are per node rather than cluster-wide, and that an unauthenticated app load is framed under `https://*.myshopify.com` rather than a single origin.
+- **F6/F7 closed** (2026-08-26) — see §1.3. The residual, accepted, is that rate limits are counted per worker thread rather than cluster-wide (effective bound: limit × threads × nodes; soft dampers, not quotas), and that an unauthenticated app load is framed under `https://*.myshopify.com` rather than a single origin.
 - **Shared-cluster blast radius** — a tenant-isolation regression would expose all shops; mitigated by the automated suite (§2), which must run in CI (#25). Scale-tier dedicated clusters are a future option.
 - **On-disk index residue** could not be directly inspected via the ops API; we rely on `DELETE` (removes index entries) + verify-by-re-query (ADR-003).
 - **Quarterly Shopify API-version bump** — stale `api_version` can silently change payloads; recurring operational task (threat model §5).

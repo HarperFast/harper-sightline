@@ -4,12 +4,12 @@
 // for arbitrarily many bounded-but-expensive reads.
 //
 // SCOPE, stated plainly so this is not mistaken for DoS protection: the counters
-// live in the worker's memory, so each node enforces its own copy and a cluster of
-// N nodes admits up to N times these limits. That is the right trade for what this
-// control is actually for — bounding what ONE authenticated shop can ask of the
-// app — and edge/L7 protection remains the answer for volumetric attack (threat
-// model §3.3). Nothing here is a security boundary on its own: the tenant
-// isolation in front of it does not depend on it.
+// live in module memory, so each worker thread keeps its own copy and the
+// effective bound is the stated limit x worker threads x nodes. These are soft
+// abuse dampers, not quotas: they dampen what ONE authenticated shop can ask of
+// the app, and edge/L7 protection remains the answer for volumetric attack (threat
+// model §3.3). Nothing here is a security boundary: the tenant isolation in front
+// of it does not depend on it.
 
 // A window of 60s, sized so a limit reads as "per minute" everywhere it appears.
 export const RATE_WINDOW_MS = 60_000;

@@ -46,13 +46,15 @@ is the fast-start map for anyone (human or agent) working in `app/`.
     it reaches a response header), `rateLimit.ts` (the per-shop request/export limits,
     enforced inside `identity.authenticate()` so no resource can forget them).
   - `secrets/` — secret material: `crypto.ts` (token envelope encryption),
-    `readSecret.ts`, `secretsPolicy.ts` (the fail-closed `SIGHTLINE_REQUIRE_SECRETS` gate).
+    `readSecret.ts`, `secretsPolicy.ts` (required secrets fail closed; there is no flag and no fallback).
   - `shopify/` — everything that talks to Shopify or holds a Shopify credential:
     `adminApi.ts`, `exchangeToken.ts`, `accessToken.ts`, `tokenDeps.ts`,
     `credentialStore.ts`, `rotateCredential.ts`, `lifecycle.ts` (install/uninstall),
     `webhookHmac.ts`, `reconcile.ts`, `reconcileSweep.ts` (the deps-injected order paging).
   - `ingest/` — the write path from a delivery to stored state: `webhookIngress.ts`,
-    `processor.ts`, `normalize.ts`, `eventSkus.ts`, `projection.ts`, `inventoryEnrich.ts`.
+    `webhookShop.ts` (binds the header shop to the signed body or a known shop), `processor.ts`, `normalize.ts`,
+    `eventSkus.ts`, `projection.ts`, `orderRefresh.ts` (the guarded projection write, shared by ingest and
+    reconcile), `inventoryEnrich.ts`.
   - `domain/` — the shared vocabulary the rest reads: `model.ts` (the schema.graphql
     mirror), `orders.ts` (the single lane/age definition), `eventKind.ts`, `detector.ts`.
   - `api/` — the read side: `apiContract.ts` (response allowlists), `queries.ts`, `csv.ts`.
@@ -63,7 +65,7 @@ is the fast-start map for anyone (human or agent) working in `app/`.
   - `retention/` — `retention.ts`, `ledgerTargets.ts`, `purgeCycle.ts`.
   - `observability/` — `observe.ts`, `harperLogSink.ts`, `opsHealth.ts`.
   - `jobs/` — what `jobs.ts` runs on: `tick.ts` (the non-wedging loop guard),
-    `stateBackfill.ts`.
+    `stateBackfill.ts`, `detectorSweep.ts` (deadline-indexed expectation sweep).
 - `src/*.ts` — only the base layer everything sits on: `db.ts` (the table handles),
   `audit.ts` (a thin writer over them), and `harperRuntime.ts`. **`harperRuntime.ts`
   must stay at `src/` root** — it is the `default` target of the `#harper` subpath
@@ -95,6 +97,63 @@ rather than testing around it.
 TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
 `format:write` (prettier), `lint:required` (oxlint), `typecheck` (tsc), `test`
 (node --test). See /docs and the ADRs for the decisions this app must honor.
+
+## Background jobs, projection and ingress (details of what the code does)
+
+- **Scheduling.** All eight sweeps are Harper scheduler jobs (`config.yaml`
+  `scheduler:`, `*Job` exports in `jobs.ts`); each occurrence runs on the elected
+  leader, once. Delivery processing is `sightline-process`, every 10s: `drainAccepted`
+  reads 50 `accepted` rows per batch until the backlog is empty, 8s
+  (`PROCESS_BUDGET_MS`) are spent, or a batch's worth of rows has failed, so an
+  outage cannot burn `MAX_ATTEMPTS` on the whole backlog in one occurrence.
+  Partitioning (`partitionOf`, the `partition` option) exists but defaults to one
+  slot: the scheduler gives one executor per occurrence, and two leaders in a
+  partition have no way to learn distinct slots, so idempotency covers that window.
+- **Failover tradeoff.** The scheduler lease has no compare-and-set. A leader loss
+  pauses every job for roughly 5-6.5 minutes (lease stale after 5 min, follower
+  checks every 75s, further nodes in line wait 150s more). Ingest still acks and
+  stores durably; the backlog drains on the new leader. That gap exceeds
+  `BACKLOG_STALE_MS` (5 min), so `ops.snapshot` reports a stale backlog until it
+  drains. That is deliberate, not a bug: the oldest delivery really is that old.
+- **Projection guard.** A rebuild re-derives an order's projection from all of its
+  events, so two concurrent rebuilds can write an older view over a newer one.
+  `OrderProjection.eventCount` (order-linked events folded) lets
+  `updateOrderProjection` skip the write when the stored count exceeds the rebuilt
+  count (`projection.stale_skipped`). Limits, stated plainly: it narrows the race
+  but is not atomic (read-then-put, no compare-and-set); it assumes a read sees all
+  prior writes; and it applies only while the stored row's `firstEventAt` (earliest
+  event `receivedAt`) is within 6 days of now, because the 7-day purge can legitimately
+  shrink a rebuild's event count, and reconcile stamps `receivedAt = occurredAt`, so a
+  late fulfilment of an old order keeps last-writer-wins. `firstEventAt` and
+  `eventCount` are two new `@sealed` columns: after deploying, confirm both with
+  `describe_table` on `sightline_ledger.OrderProjection`.
+- **Credential rotation and reconcile.** Reconcile isolates failures per shop: one
+  shop's throw is logged (`reconcile.shop.error`) and counted, and the sweep goes on.
+  `rotateCredential` is single-flight per shop within a worker; across threads and
+  nodes a concurrent loser holds a spent refresh token, so on failure it re-reads the
+  credential version and treats a higher one as success. Only a 401 from Shopify parks
+  the shop (`reauthorization_required`), and only after a 1s settle delay and a final
+  version re-read; timeouts, network errors and 5xx rethrow and never park.
+- **Inventory enrichment frontier.** The per-shop `enrich:<shopId>` cursor is
+  capped at the `receivedAt` of the shop's oldest delivery still `accepted`, so
+  events not yet written cannot be skipped. Two residual gaps are accepted: an event
+  that becomes visible on the leader late by replication, for an item never seen
+  before, is not indexed until its item is cached (an item already cached is indexed
+  at write time); and a milliseconds-wide window between stamping `receivedAt` at
+  ingress and the delivery committing. The recommended follow-up is an indexed
+  processing-time column to key the frontier on instead of `receivedAt`.
+- **Webhook shop binding.** The HMAC covers only the body, so `checkWebhookShop`
+  runs after it and before storage: the header must be a well-formed
+  `*.myshopify.com`, any `myshopify_domain`/`shop_domain` in the body must equal it,
+  `app/uninstalled`, `shop/redact`, `customers/redact` and `customers/data_request`
+  must carry their own topic's shape, and the event endpoint requires a known `Shop` row
+  (404 otherwise, so Shopify retries). Not closed: replay of the same topic under a
+  fresh webhook id, and `orders/*` or `inventory/*` bodies replayed under another known
+  shop's header (those bodies carry no shop identity). Recommended follow-up: a global
+  `sha256(rawBody)` dedupe in a new table.
+- **Deploy heal.** `scripts/deploy.mjs` derives its expected-column list from
+  `schema.graphql` (`scripts/schemaColumns.mjs`), so a new column is healed without a
+  second list to keep in sync.
 
 ## Observability (#22)
 
@@ -131,6 +190,8 @@ dashboards/alerts under #25.
 ## Known environment note
 
 Harper native secrets custody can desync on the Fabric instance ("custody not
-initialized on this node"), which blocks the live valid-token path (500). Fix is
-Fabric-side (re-init custody + re-`set_secret`); code and unit tests are
-unaffected.
+initialized on this node"). Required secrets fail closed: there is no flag and no
+fallback, and a missing or undecryptable secret stops the component loading. With
+custody uninitialised the instance cannot serve until Fabric re-inits custody (and
+`set_secret` is re-run) or the values are provided as environment variables. Code
+and unit tests are unaffected.

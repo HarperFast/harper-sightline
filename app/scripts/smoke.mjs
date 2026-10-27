@@ -7,8 +7,7 @@
 // Without SHOPIFY_API_SECRET/KEY the authenticated + signed-webhook checks are
 // skipped (the unauthenticated subset still runs). SMOKE_WEBHOOK=1 opts in to a
 // signed webhook round-trip (writes a synthetic delivery — staging only), and
-// SMOKE_RATE_LIMIT=1 opts in to the export rate-limit check (single-node targets
-// only — see the comment at that check).
+// SMOKE_RATE_LIMIT=1 opts in to the 429-is-not-401 check on a throttled export.
 import { createHmac } from 'node:crypto';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
@@ -113,17 +112,12 @@ if (secret) {
 	const findings = await req('/api/v1/findings', { headers: auth });
 	check('GET /api/v1/findings authenticated = 200', findings.status === 200, String(findings.status));
 
-	// Opt-in: prove the per-shop export limit is real on the deployed instance
-	// (security review F7). Opt-in, and not part of the default gate, for one
-	// reason: the counters are per WORKER PROCESS, and a Fabric cluster puts several
-	// behind one hostname — round-robined requests would each be counted by a
-	// different node, so the trip point is limit x nodes and a default-on check would
-	// fail spuriously on a multi-node target. Set SMOKE_RATE_LIMIT=1 against a
-	// single-node instance to verify it end to end.
+	// Opt-in: if an export is throttled, it must be a 429, never a 401 (the SPA
+	// turns a 401 into "reauthorize"). The counters are per worker thread, so no
+	// run can tell whether the limit exists: requests land on arbitrary threads and
+	// may never trip it. This asserts only what holds under any distribution.
 	//
-	// Uses a throwaway shop domain: a verified token is all the limiter keys on, the
-	// export reads an empty ledger, and no row is written — so this cannot burn the
-	// real smoke shop's budget for the next run, or leave anything behind.
+	// Uses a throwaway shop domain so it cannot burn the real smoke shop's budget.
 	if (process.env.SMOKE_RATE_LIMIT === '1') {
 		const rateShop = `sightline-smoke-rate-${Date.now().toString(36)}.myshopify.com`;
 		const rateAuth = { 'X-Shopify-Session-Token': mintSessionToken(rateShop) };
@@ -133,11 +127,12 @@ if (secret) {
 			statuses.push(r.status);
 			if (r.status === 429) break;
 		}
-		const limited = statuses.includes(429);
-		check('GET /api/v1/export repeated = 429 once the per-shop limit is spent', limited, `statuses ${statuses.join(',')}`);
-		// 429, never 401 — the SPA turns a 401 into "your session expired,
-		// reauthorize", which would send a throttled merchant into a loop.
 		check('rate-limited export is not reported as an expired session', !statuses.includes(401), `statuses ${statuses.join(',')}`);
+		check(
+			'exports are 200 or 429 only',
+			statuses.every((s) => s === 200 || s === 429),
+			`statuses ${statuses.join(',')}`,
+		);
 	}
 
 	// Opt-in signed webhook round-trip (writes a synthetic delivery — staging only).
@@ -183,7 +178,7 @@ if (secret) {
 		}
 		check('uninstall: shop reads as installed before the webhook', installedBefore, before.body.slice(0, 120));
 
-		const ubody = JSON.stringify({ shop_domain: uninstallShopDomain, smoke: true });
+		const ubody = JSON.stringify({ myshopify_domain: uninstallShopDomain, smoke: true });
 		const uhmac = createHmac('sha256', secret).update(Buffer.from(ubody, 'utf8')).digest('base64');
 		const uninstallAck = await req('/webhooks/shopify/events', {
 			method: 'POST',
@@ -202,8 +197,8 @@ if (secret) {
 			String(uninstallAck.status),
 		);
 
-		// Uninstall is applied by the background processing loop, not at ack time
-		// (ADR-002), so poll rather than assume. The loop ticks every 10s.
+		// Uninstall is applied by the background processing job, not at ack time
+		// (ADR-002), so poll rather than assume. The job runs every 10s.
 		const deadline = Date.now() + Number(process.env.SMOKE_UNINSTALL_TIMEOUT_MS ?? 90_000);
 		let installedAfter = true;
 		let lastBody = '';

@@ -73,6 +73,14 @@ Ack capacity and drain capacity are set by different things, and the gap is larg
 
 This is not a defect on its own — the backlog is durable, ordering is not required, and `BACKLOG_STALE_MS` already alerts when the oldest unprocessed delivery exceeds 5 minutes. But it does mean **100 rps sustained is an ingest figure, not a throughput figure**, and the honest gate is the drain rate the harness now reports. If the staged run fails `drain>=offered`, the levers in order of bluntness are: make per-delivery processing cheaper, run several partition slots in parallel (the `partition` option of `drainAccepted`, which needs each executor to be given a distinct slot), or accept a documented drain lag with the backlog alert as the safety net. Pick one against a real measurement rather than in advance.
 
+### 5.2 Scheduler failover, projection guard and ingress limits
+
+- **Failover pause.** The scheduler lease has no compare-and-set, and a lost leader pauses all eight jobs for about 5-6.5 minutes. Ingest acks and stores throughout; the backlog drains on the new leader. `BACKLOG_STALE_MS` is 5 minutes, so `ops.snapshot` reports the backlog as stale until it drains; that report is accurate and is not suppressed.
+- **Projection guard (`eventCount`).** Skips a rebuild that saw fewer order-linked events than the stored row. It narrows the lost-update race but is not atomic, assumes reads see prior writes, and covers only orders whose earliest event (`firstEventAt`) is within 6 days of now (reconcile stamps `receivedAt = occurredAt`, so late fulfilments of old orders keep last-writer-wins). Two new `@sealed` columns, `firstEventAt` and `eventCount`, must be confirmed with `describe_table` after deploy.
+- **Enrichment frontier.** Held at the oldest still-`accepted` delivery. Accepted residual gaps: a replication-late event for a never-seen item is not indexed, and a milliseconds-wide stamp-to-commit race at ingress. Follow-up: an indexed processing-time column.
+- **Webhook shop binding.** Closes header-swap and topic-swap replays of lifecycle and compliance bodies. Not closed: same-topic replay under a fresh webhook id, and `orders/*` / `inventory/*` bodies replayed under another known shop's header. Follow-up: a global `sha256(rawBody)` dedupe in a new table.
+- **Rate limits** are counted per worker thread (limit × threads × nodes) and are soft dampers, not quotas; see the [security review](./security-review.md) F7.
+
 ## 6. Open items (→ #25)
 
 - Execute the 10-min 100 rps burst on staging; record p95/max/loss here.

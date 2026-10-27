@@ -56,7 +56,7 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 | Spoofed webhook (no valid HMAC) | Constant-time HMAC over the untouched raw body **before** parsing → 401 (plan §12) | S |
 | Replay / duplicate delivery | `(shopId, webhookId)` idempotency key; duplicate = 2xx no-op (plan §13) | S |
 | Ingress DoS / burst overload | Minimal durable handler, fast 2xx, backlog worker + reconciliation; burst test gate (plan §13) | S |
-| Authenticated read abuse (one token, unbounded expensive reads) | Per-shop fixed-window limits at the single shared auth point — 600 requests/min, and 10/min for `/api/v1/export`, which pages to 5000 rows per call; oversized session tokens refused before any decoding. Per node, so a cluster admits a multiple: this bounds one shop's demand on the app and is **not** a volumetric-DoS control — that remains an edge/L7 concern | S |
+| Authenticated read abuse (one token, unbounded expensive reads) | Per-shop fixed-window limits at the single shared auth point — 600 requests/min, and 10/min for `/api/v1/export`, which pages to 5000 rows per call; oversized session tokens refused before any decoding. Counters are per worker thread, so the effective bound is the limit × worker threads × nodes: a soft damper on one shop's demand, not a quota, not a security boundary, and **not** a volumetric-DoS control — that remains an edge/L7 concern | S |
 | Payload tampering / unexpected shapes | Verify-before-parse; unknown additive fields tolerated; breaking shapes dead-letter (backlog #9) | S |
 | PII arriving in payloads | `include_fields` whitelists exclude PII; Level-2 fields redacted without approval (contract §5) | M |
 

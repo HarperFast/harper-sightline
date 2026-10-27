@@ -94,7 +94,7 @@ flowchart LR
 | Webhook delivery | Direct HTTPS, raw-body HMAC verified **before** parsing, idempotent on `(shopId, webhookId)` |
 | API surface | Purpose-built custom resources under `/api/v1`; no table is `@export`ed, so there is no automatic REST/GraphQL surface at all |
 | Tenant isolation | Every query derives `shopId` from the verified principal, never from caller input; an adversarial suite attacks every endpoint |
-| Rate limiting | Per shop, per node: 600 requests/min and 10 CSV exports/min, refused with HTTP 429 and a wait time |
+| Rate limiting | Per shop, counted per worker thread (effective bound: limit × threads × nodes): 600 requests/min and 10 CSV exports/min, refused with HTTP 429 and a wait time. A soft abuse damper, not a quota or a security boundary |
 | Data model | Sealed GraphQL schemas, tenant-namespaced keys, PCD Level 1 data only, 7-day retention by physical delete ([ADR-003](docs/adr/ADR-003-retention-deletion.md)) |
 | Correctness | Deduplication, source timestamps, out-of-order-safe projections, and reconciliation against current Shopify state |
 | Future identity | A normalized principal boundary can accept Harper OAuth/OIDC later for standalone agency access, without touching resource logic |
@@ -231,7 +231,7 @@ The three secrets above are declared `required: true` in `app/config.yaml`'s `en
 4. Re-heals the known `@sealed` column-add flake and confirms with `describe_table`.
 5. Exits non-zero and names the offending nodes if any of that fails — a half-deployed cluster is worse than a failed deploy.
 
-**Then verify:** `npm run smoke` checks the health route, the unauthenticated 401, a bad-HMAC webhook rejecting with no mutation, and the authenticated reads. `SMOKE_WEBHOOK=1` adds a signed round-trip (writes a synthetic delivery — staging only); `SMOKE_RATE_LIMIT=1` proves the export limit on a single-node target.
+**Then verify:** `npm run smoke` checks the health route, the unauthenticated 401, a bad-HMAC webhook rejecting with no mutation, and the authenticated reads. `SMOKE_WEBHOOK=1` adds a signed round-trip (writes a synthetic delivery — staging only); `SMOKE_RATE_LIMIT=1` checks that a throttled export is a 429 and never a 401, if a limit trips (the counters are per worker thread, so the check cannot prove the limit exists).
 
 **Rollback** is a deploy of an earlier ref: set `ref` to the last-good tag or sha and re-run. All processing is idempotent and durable — accepted deliveries persist, the reconcile cursor resumes, purge is idempotent — so a rollback loses no data. Detail: [deployment-rollback runbook](docs/runbooks/deployment-rollback.md).
 
