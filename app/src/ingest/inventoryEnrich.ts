@@ -18,6 +18,9 @@ import { isPermanentAdminError, type fetchInventoryItems, type fetchLocations } 
 // the cost budget of a background sweep.
 export const ENRICH_BATCH = 50;
 
+// Inventory events one tick reads per shop.
+export const ENRICH_READ_LIMIT = 10_000;
+
 export interface InventoryItemFacts {
 	inventoryItemId: string;
 	sku?: string;
@@ -41,9 +44,13 @@ export function unresolvedIds(events: Array<{ resourceId?: string }>, resolved: 
 	return out;
 }
 
+function inventoryItemKey(shopId: string, inventoryItemId: string): string {
+	return `${shopId}:${inventoryItemId}`;
+}
+
 export function inventoryItemRow(shopId: string, facts: InventoryItemFacts, now: number): InventoryItem {
 	return {
-		id: `${shopId}:${facts.inventoryItemId}`,
+		id: inventoryItemKey(shopId, facts.inventoryItemId),
 		shopId,
 		inventoryItemId: facts.inventoryItemId,
 		sku: facts.sku,
@@ -67,6 +74,65 @@ export function locationRow(shopId: string, location: { locationId: string; name
 // index-row builder every other domain uses — one code path, one key format.
 export function skuRowsForInventoryEvent(event: OperationalEvent, sku: string): EventSku[] {
 	return eventSkuRows({ ...event, skus: [sku] });
+}
+
+// Called as the event is written. An event that becomes visible after the sweep
+// has passed its receivedAt (a delivery replicated late from another node) is
+// indexed here if its item is cached; only a never-seen item depends on the sweep.
+export async function indexCachedInventoryEvent(
+	deps: { inventoryItems: Pick<EnrichReadTable, 'get'>; eventSkus: { put(row: EventSku): Promise<void> } },
+	event: OperationalEvent,
+): Promise<number> {
+	if (event.domain !== 'inventory' || !event.resourceId) return 0;
+	const item = (await deps.inventoryItems.get(inventoryItemKey(event.shopId, event.resourceId))) as InventoryItem | undefined;
+	if (!item?.sku) return 0;
+	const rows = skuRowsForInventoryEvent(event, item.sku);
+	for (const row of rows) await deps.eventSkus.put(row);
+	return rows.length;
+}
+
+// The `limit` oldest rows by receivedAt, plus every other row sharing the last
+// kept receivedAt, sorted ascending: every row at or below the last returned
+// receivedAt is returned. receivedAt is not indexed on the events table, so a
+// sorted query would buffer every match; this streams with bounded memory.
+export async function oldestByReceivedAt(rows: AsyncIterable<Record<string, unknown>>, limit: number): Promise<OperationalEvent[]> {
+	let kept: OperationalEvent[] = [];
+	let compactAt = limit * 2;
+	for await (const row of rows) {
+		kept.push(row as unknown as OperationalEvent);
+		if (kept.length >= compactAt) {
+			kept = keepOldest(kept, limit);
+			compactAt = kept.length + limit;
+		}
+	}
+	return keepOldest(kept, limit);
+}
+
+function keepOldest(events: OperationalEvent[], limit: number): OperationalEvent[] {
+	events.sort((a, b) => a.receivedAt - b.receivedAt);
+	if (events.length <= limit) return events;
+	const boundary = events[limit - 1].receivedAt;
+	let end = limit;
+	while (end < events.length && events[end].receivedAt === boundary) end++;
+	return events.slice(0, end);
+}
+
+// receivedAt of the shop's oldest delivery not yet processed. Its events are not
+// written yet, and deliveries are not processed in receivedAt order.
+async function oldestQueuedDelivery(deliveries: EnrichReadTable, shopId: string): Promise<number> {
+	let oldest = Number.POSITIVE_INFINITY;
+	for await (const d of deliveries.search({
+		conditions: [
+			{ attribute: 'shopId', value: shopId },
+			{ attribute: 'status', value: 'accepted' },
+		],
+		operator: 'and',
+		select: ['receivedAt'],
+	})) {
+		const receivedAt = Number(d.receivedAt);
+		if (receivedAt < oldest) oldest = receivedAt;
+	}
+	return oldest;
 }
 
 // ─── deps-injected sweep ────────────────────────────────────────────────────────
@@ -101,6 +167,7 @@ export interface EnrichDeps {
 	shopLocations: EnrichReadTable & { put(row: ShopLocation): Promise<void> };
 	eventSkus: { put(row: EventSku): Promise<void> };
 	checkpoints: EnrichReadTable & { put(row: WorkerCheckpoint): Promise<void> };
+	deliveries: EnrichReadTable;
 	getToken(shopId: string, now: number): Promise<string | null>;
 	fetchItems: typeof fetchInventoryItems;
 	fetchLocations: typeof fetchLocations;
@@ -122,8 +189,9 @@ const SEVEN_DAYS_MS = 7 * 86_400_000;
 // Convergence is enforced by a durable per-shop checkpoint (WorkerCheckpoint,
 // keyed `enrich:<shopId>`), NOT by ENRICH_BATCH alone — ENRICH_BATCH only caps
 // how many NEW item ids one tick resolves through the Admin API. The checkpoint
-// holds a `receivedAt` frontier: each tick reads only inventory events at or
-// after it, and advances it only past events whose SKU is now known. A call
+// holds a `receivedAt` frontier: each tick reads the oldest ENRICH_READ_LIMIT
+// inventory events at or after it, and advances it only past events whose SKU
+// is now known, and never past the shop's oldest still-queued delivery. A call
 // that THROWS holds the frontier at the oldest unresolved event's receivedAt,
 // so it is retried next tick instead of being silently skipped forever. A call
 // that SUCCEEDS but omits a requested id means that item is permanently gone
@@ -172,17 +240,20 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 		const checkpoint = await deps.checkpoints.get(checkpointId(shopId));
 		const cursor = Number((checkpoint as { cursor?: unknown } | undefined)?.cursor ?? now - SEVEN_DAYS_MS);
 
-		const inventoryEvents: OperationalEvent[] = [];
-		for await (const e of deps.events.search({
-			conditions: [
-				{ attribute: 'shopId', value: shopId },
-				{ attribute: 'domain', value: 'inventory' },
-				{ attribute: 'receivedAt', value: cursor, comparator: 'greater_than_equal' },
-			],
-			operator: 'and',
-		})) {
-			inventoryEvents.push(e as unknown as OperationalEvent);
-		}
+		// Read before the events: a delivery processed in between then has its
+		// events in the read below.
+		const queuedFloor = await oldestQueuedDelivery(deps.deliveries, shopId);
+		const inventoryEvents = await oldestByReceivedAt(
+			deps.events.search({
+				conditions: [
+					{ attribute: 'shopId', value: shopId },
+					{ attribute: 'domain', value: 'inventory' },
+					{ attribute: 'receivedAt', value: cursor, comparator: 'greater_than_equal' },
+				],
+				operator: 'and',
+			}),
+			ENRICH_READ_LIMIT,
+		);
 		// Nothing in the window: leave the checkpoint untouched (nothing was
 		// processed, so there is nothing to advance past).
 		if (inventoryEvents.length === 0) continue;
@@ -244,11 +315,11 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 		// than skipped forever. An event with no resourceId can never gain a SKU,
 		// so it never blocks the frontier (unresolvedIds already excludes it, and
 		// `resolved` is never checked against it here either).
-		const stillUnknown = inventoryEvents.filter((e) => e.resourceId && !resolved.has(e.resourceId));
-		const next =
-			stillUnknown.length > 0
-				? Math.min(...stillUnknown.map((e) => e.receivedAt))
-				: Math.max(...inventoryEvents.map((e) => e.receivedAt)) + 1;
+		const oldestUnknown = inventoryEvents.find((e) => e.resourceId && !resolved.has(e.resourceId));
+		const next = Math.min(
+			oldestUnknown ? oldestUnknown.receivedAt : inventoryEvents[inventoryEvents.length - 1].receivedAt + 1,
+			queuedFloor,
+		);
 		await deps.checkpoints.put({ id: checkpointId(shopId), cursor: String(next), updatedAt: now });
 	}
 	return { items, locations, indexed };

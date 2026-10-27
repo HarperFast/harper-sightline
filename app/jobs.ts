@@ -41,7 +41,12 @@ import {
 } from './src/shopify/adminApi.ts';
 import { synthesizeEvents } from './src/shopify/reconcile.ts';
 import { sweepOrdersSince, reconcileShops, type ReconcileShopsResult } from './src/shopify/reconcileSweep.ts';
-import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/ingest/inventoryEnrich.ts';
+import {
+	indexCachedInventoryEvent,
+	runInventoryEnrichment as runEnrichmentSweep,
+	type EnrichDeps,
+	type EnrichReadTable,
+} from './src/ingest/inventoryEnrich.ts';
 import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/jobs/stateBackfill.ts';
 import {
 	runDigestBuild as runDigestBuildSweep,
@@ -133,6 +138,11 @@ const orderTables: OrderTables = {
 	findings: Findings as unknown as OrderTables['findings'],
 };
 
+const inventoryIndexTables = {
+	inventoryItems: InventoryItems as unknown as EnrichReadTable,
+	eventSkus: EventSkus,
+};
+
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
 // into OperationalEvent rows (#10); the durable pipeline (#9) scans accepted
 // deliveries, processes idempotently, and marks processed / dead-letter.
@@ -189,6 +199,7 @@ const deps: ProcessDeps = {
 		// Deterministic eventId → idempotent upsert on reprocessing (ADR-002).
 		for (const event of normalizeDelivery(meta, payload)) {
 			await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
+			await indexCachedInventoryEvent(inventoryIndexTables, event);
 			// Maintain the order projection (#12), then evaluate the detector (#14)
 			// so paid/fulfilled/cancelled transitions are reflected immediately.
 			if (isOrderLinked(event)) await refreshOrder(orderTables, event.shopId, event.resourceId as string, Date.now());
@@ -437,6 +448,7 @@ const enrichDeps: EnrichDeps = {
 	shopLocations: ShopLocations as unknown as EnrichDeps['shopLocations'],
 	eventSkus: EventSkus,
 	checkpoints: Checkpoints as unknown as EnrichDeps['checkpoints'],
+	deliveries: Deliveries as unknown as EnrichReadTable,
 	getToken: (shopId, now) => getUsableAccessToken(tokenDeps, shopId, now),
 	fetchItems: fetchInventoryItems,
 	fetchLocations: fetchLocations,
