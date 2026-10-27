@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTicker } from '../src/jobs/tick.ts';
+import { setLogSink, type LogLevel } from '../src/observability/observe.ts';
 import { ADMIN_TIMEOUT_MS, fetchOrdersUpdatedSince } from '../src/shopify/adminApi.ts';
 
 // The failure this guards against: a background loop whose pass never settles
@@ -135,6 +136,29 @@ test('runBounded settles with the pass when it finishes in time', async () => {
 	});
 	assert.equal(done, true);
 	await assert.rejects(ticker.runBounded(() => Promise.reject(new Error('boom'))) as Promise<void>, /boom/);
+});
+
+test('a pass that rejects after the stall timer released the caller is logged at warn, not thrown', async () => {
+	const lines: Array<{ level: LogLevel; line: string }> = [];
+	setLogSink((level, line) => lines.push({ level, line }));
+	try {
+		const ticker = createTicker({ name: 'late', stallMs: 10 });
+		let reject!: (e: Error) => void;
+		const pass = new Promise<void>((_, r) => {
+			reject = r;
+		});
+		await ticker.runBounded(() => pass);
+		reject(new Error('late boom'));
+		await new Promise((r) => setTimeout(r, 5));
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0].level, 'warn');
+		const record = JSON.parse(lines[0].line.replace('[sightline] ', ''));
+		assert.equal(record.event, 'tick.late_rejection');
+		assert.equal(record.loop, 'late');
+		assert.match(record.message, /late boom/);
+	} finally {
+		setLogSink(null);
+	}
 });
 
 // ── the root cause: an unbounded external call ───────────────────────────────

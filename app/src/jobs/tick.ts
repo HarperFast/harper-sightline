@@ -1,3 +1,5 @@
+import { log } from '../observability/observe.ts';
+
 // One-run-at-a-time guard for background loops that cannot wedge forever: after
 // `stallMs` the previous run is presumed stuck and a new one may start. Overlap is
 // tolerable because the work is idempotent (deterministic event ids); a loop that
@@ -40,7 +42,11 @@ export function createTicker(options: TickerOptions): Ticker {
 			const pass = ticker.run(work);
 			if (pass === null) return null;
 			return new Promise<void>((resolve, reject) => {
-				const timer = setTimeout(resolve, options.stallMs);
+				let released = false;
+				const timer = setTimeout(() => {
+					released = true;
+					resolve();
+				}, options.stallMs);
 				timer.unref();
 				pass.then(
 					() => {
@@ -49,7 +55,8 @@ export function createTicker(options: TickerOptions): Ticker {
 					},
 					(err: unknown) => {
 						clearTimeout(timer);
-						reject(err);
+						if (released) log('warn', 'tick.late_rejection', { loop: options.name, message: (err as Error).message });
+						else reject(err);
 					},
 				);
 			});
