@@ -34,6 +34,11 @@ export interface Ticker {
 	// Starts `work` unless a run is already in flight and not yet considered
 	// stalled. Returns the promise when started, or null when skipped.
 	run(work: () => Promise<void>, now?: number): Promise<void> | null;
+	// Like `run`, but the returned promise settles after at most `stallMs`. Harper's
+	// scheduler arms a job's next occurrence only once its handler settles, so a
+	// handler awaiting a hung pass would never fire again and never reach the
+	// stall check in `run`.
+	runBounded(work: () => Promise<void>): Promise<void> | null;
 	isRunning(now?: number): boolean;
 }
 
@@ -44,7 +49,7 @@ export function createTicker(options: TickerOptions): Ticker {
 	let current: { startedAt: number; id: number } | null = null;
 	let seq = 0;
 
-	return {
+	const ticker: Ticker = {
 		run(work, now = Date.now()) {
 			if (current !== null) {
 				const ageMs = now - current.startedAt;
@@ -58,8 +63,27 @@ export function createTicker(options: TickerOptions): Ticker {
 				if (current?.id === id) current = null;
 			});
 		},
+		runBounded(work) {
+			const pass = ticker.run(work);
+			if (pass === null) return null;
+			return new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, options.stallMs);
+				timer.unref();
+				pass.then(
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					(err: unknown) => {
+						clearTimeout(timer);
+						reject(err);
+					},
+				);
+			});
+		},
 		isRunning(now = Date.now()) {
 			return current !== null && now - current.startedAt < options.stallMs;
 		},
 	};
+	return ticker;
 }

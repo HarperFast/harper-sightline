@@ -14,7 +14,7 @@ import {
 	DigestOutboxes,
 } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/domain/model.ts';
-import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from './src/ingest/processor.ts';
+import { drainAccepted, runProcessCycle, type DrainResult, type ProcessDeps, type DeliveryRow } from './src/ingest/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { isOrderLinked, rebuildProjection } from './src/ingest/projection.ts';
@@ -49,40 +49,27 @@ import type { QueryTable } from './src/api/queries.ts';
 
 // ── SCHEDULING ────────────────────────────────────────────────────────────────
 //
-// Seven of this file's eight periodic sweeps are declared as Harper scheduler
-// jobs in config.yaml and exported below as `*Job` handlers. The eighth — the
-// 10s delivery-processing loop — deliberately stays a per-node setInterval.
+// Every periodic sweep is a Harper scheduler job declared in config.yaml and
+// exported below as a `*Job` handler. This module is imported on every worker
+// thread, so a setInterval here would run on every thread of every node; the
+// scheduler runs each occurrence once, on the elected leader's primary worker.
 //
-// WHY THE SEVEN MOVED. This module is imported by src/resources/boot.ts, so
-// Harper used to start all eight timers on EVERY worker thread on EVERY node:
-// every thread swept every active shop through the Admin API every 10 minutes,
-// every thread ran the hourly purge. That was never a correctness problem —
-// every sweep is idempotent by construction (ADR-002) — but the duplicated work
-// and duplicated Admin API cost scaled with threads x nodes for no benefit. The
-// scheduler is leader-coordinated: one occurrence, one elected node.
+// The lease has no compare-and-set, so a failover can briefly leave two leaders
+// running the same occurrence. Every handler is idempotent (ADR-002) for that
+// reason, and delivery processing keeps one partition slot: two leaders cannot
+// learn distinct slots, so partitioning would not make them disjoint.
 //
-// WHY `process` DID NOT. Leader failover completes in ~6.5 minutes. For an
-// hourly purge that is invisible; for a 10s ingest loop it means webhook
-// deliveries sitting unprocessed for up to 6.5 minutes on every leader change —
-// past BACKLOG_STALE_MS (5 min), so ops.snapshot would report unhealthy every
-// time. Ingest latency is the product's core promise, and this is the one loop
-// whose per-node duplication is genuinely cheap: a bounded `limit: 50` read of
-// `status:'accepted'` rows, where concurrent threads converge by idempotency.
+// The accepted cost is ingest latency across a leader failover (~6.5 minutes),
+// which ops.snapshot reports truthfully as a stale backlog.
 //
-// WHY THE TICKER STAYS. The scheduler guarantees runs never overlap for one job
-// on the leader, but documents no stall timeout — and a hung handler on the
-// leader now wedges that job CLUSTER-WIDE, not just on one worker thread. The
-// backstop in src/jobs/tick.ts therefore matters more here than it did before,
-// not less. Its header explains the original failure (an unbounded `fetch`
-// leaving `running` true forever); nothing about that changed.
+// WHY THE TICKER STAYS. The scheduler serialises occurrences of one job on the
+// leader but has no stall timeout: a handler that never settles stops that job
+// cluster-wide until restart. job() bounds the wait at the ticker's stall budget.
 //
-// WHY HANDLERS IGNORE `context.scheduledAt`. Every sweep already defaults to
-// `Date.now()`, and a catch-up occurrence carries a scheduledAt in the PAST.
-// Feeding that in would compute ops.snapshot's ages against a stale clock and
-// would stamp reconcile's `lastReconciledAt` behind the real time — making a
-// freshly reconciled shop look stale. `scheduledAt`/`catchUp` are logged for
-// observability instead; the wall clock stays the source of truth, exactly as it
-// was under setInterval.
+// WHY HANDLERS IGNORE `context.scheduledAt`. An overdue occurrence carries a
+// scheduledAt in the past; feeding it in would age ops.snapshot against a stale
+// clock and stamp reconcile's `lastReconciledAt` behind real time. The wall clock
+// stays the source of truth; `scheduledAt`/`catchUp` are only logged.
 
 // Every background loop runs at most one pass at a time, but must never be able
 // to wedge permanently if a pass fails to settle (src/jobs/tick.ts). A detected stall
@@ -110,7 +97,7 @@ export interface JobContext {
 
 // Adapt a sweep to a scheduler handler: keep the stall-guarded ticker, and
 // return a promise the scheduler can await so a slow pass delays the next
-// occurrence rather than stacking on top of it.
+// occurrence rather than stacking on top of it, up to the ticker's stall budget.
 //
 // A skipped tick (`run` returns null) is not an error and not logged as one: on
 // the leader the scheduler already serialises occurrences, so the only way to
@@ -122,7 +109,7 @@ function job(name: string, t: Ticker, work: () => Promise<void>): (context?: Job
 		// restart, a pass that overran). Worth a line — it is the difference between
 		// "the schedule is healthy" and "we are running late".
 		if (context.catchUp) log('info', 'job.catchup', { job: context.jobName ?? name, scheduledAt: context.scheduledAt?.toISOString() });
-		await (t.run(work) ?? Promise.resolve());
+		await t.runBounded(work);
 	};
 }
 
@@ -259,44 +246,18 @@ const deps: ProcessDeps = {
 	},
 };
 
-export function processDeliveries(): Promise<{ processed: number; failed: number; deadLettered: number }> {
-	return processAcceptedBatch(deps);
-}
-
-// The ONE loop still driven by a timer rather than Harper's scheduler, and the
-// only reason this module has side effects on import at all. See SCHEDULING at
-// the top of this file: a ~6.5-minute leader failover is invisible for an hourly
-// purge but not for 10-second ingest, where it would park deliveries past
-// BACKLOG_STALE_MS and trip the health snapshot on every leader change.
-//
-// So this deliberately keeps the old per-node shape: resources.ts imports this
-// module, so Harper runs a copy on each worker thread. Processing is idempotent
-// (only 'accepted' rows are listed; downstream writes are keyed
-// deterministically), so concurrent ticks across threads/nodes are safe — that
-// idempotency, not a lease, is the correctness guarantee (ADR-002). The
-// duplication is bounded and cheap here in a way it was not for the sweeps that
-// moved: each tick is a `limit: 50` read of one indexed status, not a full-table
-// scan or a per-shop Admin API sweep. The ticker prevents overlap on one thread.
-const INTERVAL_MS = 10_000;
+// Sized to the 10s `sightline-process` interval in config.yaml, leaving headroom
+// so one occurrence ends before the next is due.
+const PROCESS_BUDGET_MS = 8_000;
 const processTicker = ticker('process', 5 * 60_000);
 
-export function startProcessingLoop(): void {
-	setInterval(() => {
-		void processTicker.run(async () => {
-			try {
-				const r = await processDeliveries();
-				metrics.inc(M.processProcessed, r.processed);
-				metrics.inc(M.processFailed, r.failed);
-				metrics.inc(M.processDeadLettered, r.deadLettered);
-				if (r.processed || r.failed)
-					log('trace', 'process.tick', { processed: r.processed, failed: r.failed, deadLettered: r.deadLettered });
-			} catch (e: unknown) {
-				metrics.inc(M.processError);
-				log('error', 'process.error', { message: (e as Error).message });
-			}
-		});
-	}, INTERVAL_MS);
+export function processDeliveries(): Promise<DrainResult> {
+	return drainAccepted(deps, { budgetMs: PROCESS_BUDGET_MS });
 }
+
+export const processDeliveriesJob = job('process', processTicker, async () => {
+	await runProcessCycle({ drain: processDeliveries, log, metrics });
+});
 
 // Seven-day retention purge (ADR-003). Hourly, from config.yaml's
 // `sightline-purge` job. The purge is idempotent, so a duplicate occurrence
@@ -682,12 +643,5 @@ export const opsSnapshotJob = job('ops.snapshot', snapshotTicker, async () => {
 
 // ── module-scope startup ──────────────────────────────────────────────────────
 //
-// All that remains on import: the 10s ingest loop (see SCHEDULING at the top for
-// why it did not move to the scheduler) and the purge's single post-deploy pass.
-// The other seven sweeps are started by Harper from config.yaml's `scheduler`
-// block, which is also why this file is now nearly side-effect-free on import —
-// src/retention/purgeCycle.ts's note about "importing jobs.ts starts eight
-// background loops" no longer holds, and src/resources/opsResource.ts can import
-// getOpsHealth without starting anything but these two.
-startProcessingLoop();
+// The only side effect on import: the purge's single post-deploy pass.
 startPurgeBootPass();

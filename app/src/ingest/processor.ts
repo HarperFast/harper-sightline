@@ -1,4 +1,5 @@
 import type { DeliveryStatus } from '../domain/model.ts';
+import { M, type LogLevel } from '../observability/observe.ts';
 
 export interface DeliveryRow {
 	id: string;
@@ -30,31 +31,101 @@ export interface ProcessDeps {
 
 export const MAX_ATTEMPTS = 5;
 
-// Process a batch of accepted deliveries. Each is handled idempotently and
-// marked processed; a transient failure increments attempts and stays accepted
-// for retry; after MAX_ATTEMPTS it moves to a visible dead-letter state (ADR-002).
-export async function processAcceptedBatch(
-	deps: ProcessDeps,
-	limit = 50,
-): Promise<{ processed: number; failed: number; deadLettered: number }> {
-	const rows = await deps.listAccepted(limit);
-	let processed = 0;
-	let failed = 0;
-	let deadLettered = 0;
-	for (const row of rows) {
-		try {
-			await deps.handle(row);
-			await deps.markProcessed(row.id);
-			processed += 1;
-		} catch (err) {
-			const attempts = (row.attempts ?? 0) + 1;
-			// A broken payload can never succeed — dead-letter it now rather than
-			// burning MAX_ATTEMPTS. Transient failures retry until the ceiling.
-			const dead = isPermanent(err) || attempts >= MAX_ATTEMPTS;
-			await deps.markFailed(row.id, attempts, dead);
-			failed += 1;
-			if (dead) deadLettered += 1;
+export interface Partition {
+	slot: number;
+	slots: number;
+}
+
+// FNV-1a (32-bit) of the id, modulo the slot count: a pure function of the id, so
+// every executor agrees on which slot owns a row without coordinating.
+export function partitionOf(id: string, slots: number): number {
+	if (!Number.isInteger(slots) || slots < 1) throw new RangeError(`slot count must be a positive integer, got ${slots}`);
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < id.length; i++) {
+		hash ^= id.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0) % slots;
+}
+
+export interface DrainOptions {
+	budgetMs: number;
+	batch?: number;
+	partition?: Partition;
+	now?: () => number;
+}
+
+export interface DrainResult {
+	processed: number;
+	failed: number;
+	deadLettered: number;
+	stoppedBy: 'empty' | 'budget';
+}
+
+// Process accepted deliveries in batches until none are left or `budgetMs` has
+// elapsed. Each is handled idempotently and marked processed; a transient failure
+// increments attempts and stays accepted for retry; after MAX_ATTEMPTS it moves to
+// a visible dead-letter state (ADR-002).
+//
+// A row that fails, or belongs to another slot, is skipped for the rest of the
+// drain: retrying it here would spend MAX_ATTEMPTS in one occurrence instead of
+// spacing them one per occurrence. The read limit grows by the skipped count so
+// skipped rows at the head of the backlog cannot hide the rows behind them.
+export async function drainAccepted(deps: ProcessDeps, options: DrainOptions): Promise<DrainResult> {
+	const { budgetMs, batch = 50, partition = { slot: 0, slots: 1 }, now = Date.now } = options;
+	const startedAt = now();
+	const skip = new Set<string>();
+	const result: DrainResult = { processed: 0, failed: 0, deadLettered: 0, stoppedBy: 'empty' };
+	for (;;) {
+		const rows: DeliveryRow[] = [];
+		for (const row of await deps.listAccepted(batch + skip.size)) {
+			if (skip.has(row.id)) continue;
+			if (partitionOf(row.id, partition.slots) === partition.slot) rows.push(row);
+			else skip.add(row.id);
+		}
+		if (rows.length === 0) return result;
+		for (const row of rows) {
+			if (now() - startedAt >= budgetMs) {
+				result.stoppedBy = 'budget';
+				return result;
+			}
+			try {
+				await deps.handle(row);
+				await deps.markProcessed(row.id);
+				result.processed += 1;
+			} catch (err) {
+				const attempts = (row.attempts ?? 0) + 1;
+				// A broken payload can never succeed — dead-letter it now rather than
+				// burning MAX_ATTEMPTS. Transient failures retry until the ceiling.
+				const dead = isPermanent(err) || attempts >= MAX_ATTEMPTS;
+				await deps.markFailed(row.id, attempts, dead);
+				result.failed += 1;
+				if (dead) result.deadLettered += 1;
+				skip.add(row.id);
+			}
 		}
 	}
-	return { processed, failed, deadLettered };
+}
+
+export interface ProcessCycleDeps {
+	drain(): Promise<DrainResult>;
+	log(level: LogLevel, event: string, fields?: Record<string, unknown>): void;
+	metrics: { inc(name: string, by?: number): void };
+}
+
+// One scheduler occurrence. Never throws: a failure is counted and logged, and
+// the next occurrence retries from the durable backlog.
+export async function runProcessCycle(deps: ProcessCycleDeps): Promise<DrainResult | undefined> {
+	try {
+		const r = await deps.drain();
+		deps.metrics.inc(M.processProcessed, r.processed);
+		deps.metrics.inc(M.processFailed, r.failed);
+		deps.metrics.inc(M.processDeadLettered, r.deadLettered);
+		if (r.processed || r.failed) deps.log('trace', 'process.tick', { ...r });
+		return r;
+	} catch (e: unknown) {
+		deps.metrics.inc(M.processError);
+		deps.log('error', 'process.error', { message: (e as Error).message });
+		return undefined;
+	}
 }

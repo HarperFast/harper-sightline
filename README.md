@@ -119,11 +119,11 @@ Shopify's embedded session token — not a Harper-issued JWT — is authoritativ
 
 Every sweep is idempotent, resumes from durable state, and is guarded against wedging.
 
-Seven of the eight run as **Harper scheduler jobs**, declared in [`app/config.yaml`](app/config.yaml) under `scheduler:` and handled by the `*Job` exports in `app/jobs.ts`. The scheduler is leader-coordinated — each occurrence runs **once, on one elected node**. That matters because `jobs.ts` is imported by every worker thread: as plain `setInterval` timers, all eight sweeps ran on every thread of every node, so each one swept the whole shop list, or the whole Admin API, N×M times over for one node's worth of result.
+All eight run as **Harper scheduler jobs**, declared in [`app/config.yaml`](app/config.yaml) under `scheduler:` and handled by the `*Job` exports in `app/jobs.ts`. The scheduler is leader-coordinated — each occurrence runs **once, on one elected node**. That matters because `jobs.ts` is imported by every worker thread: as plain `setInterval` timers, all eight sweeps ran on every thread of every node, so each one swept the whole shop list, or the whole Admin API, N×M times over for one node's worth of result.
 
 | Every | Job | Where |
 |---|---|---|
-| 10s | Process accepted deliveries: normalize → ledger → projection (dead-letters what it cannot process) | `setInterval`, per node |
+| 10s | Process accepted deliveries: normalize → ledger → projection (dead-letters what it cannot process); drains until empty or 8s spent | `sightline-process` |
 | 1m | Backfill the derived `state` column on pre-existing projections (converges after a deploy, then silent) | `sightline-state-backfill` |
 | 1m | Emit the `ops.snapshot` health heartbeat | `sightline-ops-snapshot` |
 | 5m | Expire pending expectations whose deadline passed with no new event | `sightline-detect` |
@@ -132,9 +132,9 @@ Seven of the eight run as **Harper scheduler jobs**, declared in [`app/config.ya
 | hourly | Retention purge — physical deletes, verified by re-query (plus one pass 30s after boot) | `sightline-purge` |
 | hourly | Build each subscriber's digest for the last complete period | `sightline-digest` |
 
-**The 10s loop deliberately stays a per-node timer.** Scheduler leader failover completes in ~6.5 minutes; for an hourly purge that is invisible, but for 10-second ingest it would park deliveries well past the 5-minute `BACKLOG_STALE_MS` and report unhealthy on every leader change. It is also the one sweep whose duplication is cheap — a bounded `limit: 50` read of one indexed status, where concurrent threads converge by idempotency rather than by a lease.
+**Ingest pauses across a leader failover.** Failover completes in ~6.5 minutes, during which no delivery is processed; the backlog is durable, and the first occurrence on the new leader drains it. Because that is longer than the 5-minute `BACKLOG_STALE_MS`, `ops.snapshot` reports the stale backlog until it drains.
 
-Handlers stay wrapped in the stall-guarded ticker (`app/src/jobs/tick.ts`). The scheduler serialises occurrences per job but documents no stall timeout, and a hung handler on the leader now wedges that job cluster-wide rather than on a single thread — so the backstop matters more there, not less.
+Handlers stay wrapped in the stall-guarded ticker (`app/src/jobs/tick.ts`). The scheduler serialises occurrences per job and arms the next one only when the handler settles, with no stall timeout, so a hung handler would stop that job cluster-wide; the handler stops waiting after the ticker's stall budget, and the next occurrence starts a fresh pass.
 
 ---
 

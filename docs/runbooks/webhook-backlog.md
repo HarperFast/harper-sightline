@@ -29,9 +29,11 @@ and detector fall behind, so the merchant UI goes stale.
 ### Diagnose
 1. Read recent `process.error` lines — a repeating `message` points at the failing
    dependency (table unavailable, schema flake, normalizer bug).
-2. Check whether the process loop is running at all: `process.tick` lines should
-   appear whenever there is work. Silence = worker not scheduled (component
-   didn't load `jobs.ts`, or the worker thread died).
+2. Check whether the `sightline-process` scheduler job is running at all:
+   `process.tick` lines should appear whenever there is work, and the
+   `system.hdb_scheduler_state` row `job:<component>:sightline-process` carries
+   its `lastRunAt` / `lastStatus`. No `ops.snapshot` lines either = no scheduler
+   leader; failover takes ~6.5 minutes, after which the backlog drains.
 3. Confirm the deliveries are genuinely `accepted` (not `dead_letter`) — a
    backlog of `accepted` rows retries; see [dead-letters](./dead-letters.md) if
    they are dead-lettering instead.
@@ -41,8 +43,8 @@ and detector fall behind, so the merchant UI goes stale.
   `harper-fabric-sealed-column-add-flaky`): the pipeline retries automatically
   (`MAX_ATTEMPTS`), so recovery is usually just waiting for the dependency to
   heal. Verify the table with `describe_table` after any recent schema deploy.
-- **Worker not running**: redeploy / restart the component so `jobs.ts` reloads
-  and `startProcessingLoop()` runs. Processing is idempotent (only `accepted`
+- **Worker not running**: redeploy / restart the component so the scheduler
+  re-registers `sightline-process`. Processing is idempotent (only `accepted`
   rows are listed; downstream writes are deterministically keyed), so a restart
   cannot double-process.
 - **Persistent normalizer bug**: the offending deliveries will dead-letter after

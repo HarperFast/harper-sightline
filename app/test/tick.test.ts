@@ -104,6 +104,39 @@ test('isRunning reports a stalled pass as not running', async () => {
 	assert.equal(ticker.isRunning(T0 + STALL), false, 'past the budget it is presumed stuck, not running');
 });
 
+test('runBounded releases a caller that serialises on it once the pass is presumed stuck', async () => {
+	// Harper's scheduler awaits a handler before arming the next occurrence. If
+	// the handler awaited a hung pass, the job would never fire again and the stall
+	// check above would never be reached.
+	const stalls: string[] = [];
+	const ticker = createTicker({ name: 'process', stallMs: 20, onStall: (n) => stalls.push(n) });
+	let starts = 0;
+	const hung = () => {
+		starts++;
+		return pending().promise;
+	};
+
+	const first = ticker.runBounded(hung);
+	assert.notEqual(first, null);
+	await first;
+	await new Promise((r) => setTimeout(r, 5));
+	const second = ticker.runBounded(hung);
+	assert.notEqual(second, null, 'the next occurrence reaches the stall check and starts a new pass');
+	await second;
+	assert.equal(starts, 2);
+	assert.deepEqual(stalls, ['process']);
+});
+
+test('runBounded settles with the pass when it finishes in time', async () => {
+	const ticker = createTicker({ name: 'x', stallMs: STALL });
+	let done = false;
+	await ticker.runBounded(async () => {
+		done = true;
+	});
+	assert.equal(done, true);
+	await assert.rejects(ticker.runBounded(() => Promise.reject(new Error('boom'))) as Promise<void>, /boom/);
+});
+
 // ── the root cause: an unbounded external call ───────────────────────────────
 
 test('every Admin API request carries an abort timeout', async () => {

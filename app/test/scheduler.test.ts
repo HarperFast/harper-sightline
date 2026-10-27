@@ -11,10 +11,9 @@ import { readFileSync } from 'node:fs';
 // wiring's shape from the outside.
 //
 // This is a SOURCE-level check on purpose. Importing jobs.ts to read the exports
-// directly would start the 10s processing interval and the purge's post-deploy
-// timer inside the test process — which is precisely why every sweep's logic
-// lives in a deps-injected module (see src/retention/purgeCycle.ts's note) and
-// why no other test imports jobs.ts either.
+// directly would start the purge's post-deploy timer inside the test process —
+// which is precisely why every sweep's logic lives in a deps-injected module (see
+// src/retention/purgeCycle.ts's note) and why no other test imports jobs.ts either.
 
 const config = readFileSync(new URL('../config.yaml', import.meta.url), 'utf8');
 const jobsSource = readFileSync(new URL('../jobs.ts', import.meta.url), 'utf8');
@@ -34,15 +33,16 @@ function declaredJobs(): Array<{ name: string; schedule: string; handler: string
 	return out;
 }
 
-test('the scheduler block declares the seven sweeps that moved off setInterval', () => {
+test('the scheduler block declares all eight sweeps', () => {
 	const jobs = declaredJobs();
-	assert.equal(jobs.length, 7, `expected 7 scheduler jobs, parsed ${jobs.length}: ${jobs.map((j) => j.name).join(', ')}`);
+	assert.equal(jobs.length, 8, `expected 8 scheduler jobs, parsed ${jobs.length}: ${jobs.map((j) => j.name).join(', ')}`);
 	const names = jobs.map((j) => j.name).sort();
 	assert.deepEqual(names, [
 		'sightline-detect',
 		'sightline-digest',
 		'sightline-inventory-enrich',
 		'sightline-ops-snapshot',
+		'sightline-process',
 		'sightline-purge',
 		'sightline-reconcile',
 		'sightline-state-backfill',
@@ -79,29 +79,18 @@ test('schedules stay within the scheduler intervals Harper accepts', () => {
 	}
 });
 
-test('the 10s processing loop is NOT on the scheduler, and is still started on import', () => {
-	// The deliberate exception, documented under SCHEDULING in jobs.ts: a ~6.5-minute
-	// leader failover would park deliveries past BACKLOG_STALE_MS (5 min) and trip
-	// the health snapshot on every leader change. If someone later moves it, this
-	// test should fail and make them re-read that reasoning first.
-	assert.ok(
-		!declaredJobs().some((j) => /process/i.test(j.handler)),
-		'the delivery-processing loop must stay a per-node setInterval — see SCHEDULING in jobs.ts',
-	);
-	assert.match(jobsSource, /^startProcessingLoop\(\);$/m, 'jobs.ts must still start the processing loop on import');
+test('delivery processing runs on the scheduler every 10s, and nothing starts a timer of its own', () => {
+	const process = declaredJobs().find((j) => j.name === 'sightline-process');
+	assert.deepEqual(process, { name: 'sightline-process', schedule: '10s', handler: './jobs.ts#processDeliveriesJob' });
+	// A stray setInterval puts that sweep back on every worker thread of every node,
+	// in addition to the leader's occurrence.
+	assert.doesNotMatch(jobsSource, /setInterval\(/, 'jobs.ts must not start interval timers; declare a scheduler job instead');
+	assert.doesNotMatch(jobsSource, /startProcessingLoop/);
 	assert.match(
 		jobsSource,
 		/^startPurgeBootPass\(\);$/m,
 		'the purge keeps one post-deploy pass; the scheduler does not fire a new job on deploy',
 	);
-});
-
-test('no sweep is left starting its own interval timer', () => {
-	// The regression this whole change prevents: a stray setInterval means that
-	// sweep is back to running on every worker thread on every node, in addition to
-	// the leader-coordinated occurrence.
-	const intervals = jobsSource.match(/setInterval\(/g) ?? [];
-	assert.equal(intervals.length, 1, `expected exactly one setInterval (the processing loop), found ${intervals.length}`);
 });
 
 test('config.yaml declares the secrets the component cannot run without', () => {

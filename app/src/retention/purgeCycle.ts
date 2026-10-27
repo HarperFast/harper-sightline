@@ -15,15 +15,10 @@ import { M, type LogLevel } from '../observability/observe.ts';
 // not just its return value — the property under test IS the wiring: which
 // events/counters fire when one sweep throws and the other doesn't. Lives in its
 // own module, not jobs.ts, for the same reason src/ingest/inventoryEnrich.ts and
-// src/jobs/stateBackfill.ts do: jobs.ts starts eight background loops at module scope,
-// so importing it — even indirectly through src/db.ts — starts real timers. This
-// module and retention.ts import nothing that reaches db.ts, so a test can import
-// it directly under plain `node --test`.
-//
-// (jobs.ts is far quieter on import than it was — seven of its eight sweeps are
-// now Harper scheduler jobs declared in config.yaml, leaving only the 10s
-// processing timer and the purge's one post-deploy pass — but importing it still
-// starts those two, so the split stands.)
+// src/jobs/stateBackfill.ts do: importing jobs.ts starts the purge's post-deploy
+// timer and reaches the Harper runtime through src/db.ts. This module and
+// retention.ts import nothing that reaches db.ts, so a test can import it
+// directly under plain `node --test`.
 
 export interface PurgeCycleDeps {
 	purge(now: number): Promise<PurgeResult>;
