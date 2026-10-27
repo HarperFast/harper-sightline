@@ -1,14 +1,10 @@
-# Sightline data model (dev plan §9). All tables are @sealed and PRIVATE (no
-# @export). Retention is the explicit purge job (ADR-003) — no `expiration`
-# directive. Epoch-ms timestamps are Float (GraphQL Int is 32-bit, Spike C).
-# Required fields are non-null (!).
+# Sightline data model. All tables are @sealed and private (no @export). Retention
+# is the explicit purge job (ADR-003), not an `expiration` directive. Epoch-ms
+# timestamps are Float (GraphQL Int is 32-bit). Required fields are non-null (!).
 #
-# Databases (Harper transactions are per-database; transactionally-coupled tables
-# must share one — dev plan §9):
-#   sightline_core   — identity / credentials / audit (cold, install-time)
-#   sightline_ledger — the operational pipeline (capture → normalize → project →
-#                      detect → aggregate) + the durable worker checkpoint, which
-#                      commit together, so they share one database.
+# Harper transactions are per-database, so transactionally-coupled tables share one:
+#   sightline_core   - identity / credentials / audit (install-time)
+#   sightline_ledger - the operational pipeline and the durable worker checkpoint
 
 # ─── sightline_core ──────────────────────────────────────────────────────────
 
@@ -20,9 +16,8 @@ type Shop @table(database: "sightline_core") @sealed {
 	uninstalledAt: Float
 	lastReconciledAt: Float
 	reconciliationState: String
-	# The shop's own IANA zone (Admin API `shop.ianaTimezone`), so merchant-facing
-	# timestamps render in the store's configured timezone rather than the
-	# viewer's. Cached once per install; not PII.
+	# The shop's IANA zone (Admin API `shop.ianaTimezone`), so merchant-facing
+	# timestamps render in the store's timezone. Cached once per install; not PII.
 	ianaTimezone: String
 }
 
@@ -48,78 +43,49 @@ type AppAuditEvent @table(database: "sightline_core") @sealed {
 }
 
 type DigestSubscription @table(database: "sightline_core") @sealed {
-	# One notification address per shop. The ONLY merchant-identifying string this
-	# app stores — it is a staff address supplied by the merchant, not customer
-	# data, and it is disclosed on the Privacy screen and in the privacy policy.
-	# Erased on uninstall and on shop redaction.
+	# One notification address per shop: the only merchant-identifying string stored
+	# (a staff address, disclosed on the Privacy screen). Erased on uninstall and shop redaction.
 	shopId: ID! @primaryKey
 	email: String
 	cadence: String # daily | weekly
 	status: String @indexed # active | paused
 	createdAt: Float
 	updatedAt: Float
-	# Period start of the last digest built for this shop. The build decision keys
-	# on this, so a re-run inside the same period is a no-op.
+	# Period start of the last digest built; the build decision keys on it.
 	lastBuiltAt: Float
 }
 
 type DigestOutbox @table(database: "sightline_core") @sealed {
-	# A durable RECORD of what a period looked like, kept because the ledger
-	# purges at seven days and a digest about a purged period is not
-	# recomputable after that. It is not the message: no sender exists yet, and
-	# when one ships it renders its own body (src/digest.ts's digestText /
-	# digestHtml) from freshly-gathered input rather than reading one back from
-	# here. Keyed `${shopId}:${periodStart}` so rebuilding a period upserts one
-	# row rather than duplicating it.
+	# A durable record of a period (subject + counts), kept because the ledger purges
+	# at seven days. Not the message: a future sender renders its own body from fresh
+	# input. Keyed `${shopId}:${periodStart}` so a rebuild upserts.
 	#
-	# Deliberately NO `bodyText`/`bodyHtml` and NO `email` column. `subject` and
-	# the count columns below are derived from the period and its counts only —
-	# they name no order and no customer, which is what lets this row outlive
-	# the seven-day ledger for 30 days without becoming a second place merchant
-	# data can leak from. The address itself lives only on DigestSubscription:
-	# the privacy policy and the Notifications screen both tell merchants the
-	# address is deleted when they clear it or uninstall, and uninstallShop
-	# deletes only DigestSubscriptions — so a copy on every outbox row would
-	# have survived that promise until the 30-day purge. A future sender reads
-	# the address from the subscription at send time, which is the only moment
-	# it is actually needed.
+	# No `bodyText`/`bodyHtml` and no `email`: `subject` and the counts name no order
+	# or customer, so the row can outlive the ledger for 30 days. The address lives
+	# only on DigestSubscription, which uninstallShop deletes.
 	id: ID! @primaryKey
 	shopId: String! @indexed
 	cadence: String
 	periodStart: Float! @indexed
 	periodEnd: Float
 	subject: String
-	# The headline numbers, kept as columns so an operator can see what a digest
-	# said without parsing its body. They are NOT all in the same tense, and the
-	# names say which is which, because an operator comparing them against the
-	# Overview has nothing else to go on.
+	# Headline numbers as columns, so an operator can see what a digest said. They are
+	# not all in the same tense; the names say which.
 	#
-	# `ordersAwaiting` is CURRENT-STATE and counts ORDERS: how many of this shop's
-	# orders were awaiting fulfillment confirmation at the moment the digest was
-	# built (isAwaitingConfirmation, src/orders.ts — the same population as the
-	# Overview's awaiting tile). It is deliberately NOT period-scoped, and it is not
-	# a count of findings: this column was called `unconfirmed` while it held a
-	# findings tally, which collides with GapFinding.status 'unconfirmed' — a
-	# different population in a different tense, rendered on the Overview as its own
-	# "Unconfirmed" findings tile. One order can carry two findings, so the two
-	# numbers legitimately differ and must never be read as the same figure.
+	# `ordersAwaiting` is current-state and counts ORDERS awaiting fulfillment
+	# confirmation when built (isAwaitingConfirmation, src/domain/orders.ts, the
+	# Overview's awaiting tile). Not period-scoped and not a findings tally, hence not
+	# `unconfirmed`, which is a GapFinding status.
 	ordersAwaiting: Int
-	# The two below ARE scoped to this row's period, [periodStart, periodEnd) — and
-	# the first one's name says so, because getSummary's `findings.failedAttempts`
-	# counts the same findings with NO time bound (capped only by 7-day retention).
-	# Same population, different window, and nothing but the name to tell them apart.
-	#
-	# It also counts ORDERS, not attempts: DETECTOR_FAILED writes one finding per
-	# (order, ruleVersion), so two failed attempts on one order are ONE finding. The
-	# rendered copy says "orders with a fulfillment attempt Shopify recorded as
-	# unsuccessful" for that reason.
+	# `failedAttemptsInPeriod` is scoped to [periodStart, periodEnd), unlike
+	# getSummary's `findings.failedAttempts`, and counts ORDERS (one finding per
+	# order and ruleVersion).
 	failedAttemptsInPeriod: Int
-	# Reconciliation-sourced changes with no matching webhook, in this period — see
-	# gatherDigestInput for why matching is best-effort and uses a one-day margin.
+	# Reconciliation-sourced changes with no matching webhook in the period; see
+	# gatherDigestInput for why matching is best-effort with a one-day margin.
 	deliveryGaps: Int
-	# Recorder health at build time (current-state, like ordersAwaiting): false means
-	# the numbers above may be incomplete, and the rendered digest (src/digest.ts's
-	# digestText/digestHtml) says so.
+	# Recorder health at build time (current-state): false means the numbers above
+	# may be incomplete, and the rendered digest says so.
 	recorderHealthy: Boolean
 	status: String! @indexed # pending | sent | skipped
 	createdAt: Float! @indexed # retention key (30 days, not the ledger's 7)
@@ -191,13 +157,11 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	trackingCompany: String
 	trackingAt: Float # earliest fulfillment observed carrying tracking (latch) — keys trackingCompany
 	fulfillableItemCount: Int
-	state: String @indexed # unpaid | awaiting | fulfilled | no_fulfillment_expected | cancelled | refunded (derived, src/orders.ts)
+	state: String @indexed # unpaid | awaiting | fulfilled | no_fulfillment_expected | cancelled | refunded (derived, src/domain/orders.ts)
 	deadline: Float @indexed # RESERVED — not written; the expectation owns the deadline
-	# The read window for EVERY order-derived surface: the Overview tiles, the flow
-	# lanes and the worklist all bound on `lastEventAt >= now − 7 days`, and the
-	# state backfill sweep pages on it. Indexed so the hottest read (getSummary, on
-	# every screen load) is a bounded index scan rather than a scan of every
-	# projection the shop has ever stored.
+	# The read window for every order-derived surface (Overview tiles, flow lanes,
+	# worklist: `lastEventAt >= now - 7 days`) and the state backfill's paging key.
+	# Indexed so getSummary's scan is bounded.
 	lastEventAt: Float @indexed
 	# The rebuild guard (src/ingest/orderRefresh.ts): a rebuild that saw fewer events
 	# than `eventCount` read a stale event set and is not written, unless
@@ -244,8 +208,8 @@ type FlowAggregate @table(database: "sightline_ledger") @sealed {
 }
 
 type WorkerCheckpoint @table(database: "sightline_ledger") @sealed {
-	# id = `${worker}:${partition}` — durable cursor + lease. Commits with the
-	# processing it checkpoints, so it lives in the ledger database.
+	# id = `${worker}:${partition}`: durable cursor. Commits with the processing it
+	# checkpoints, so it lives in the ledger database. The lease columns are unused.
 	id: ID! @primaryKey
 	cursor: String
 	leaseHolder: String
@@ -255,14 +219,13 @@ type WorkerCheckpoint @table(database: "sightline_ledger") @sealed {
 }
 
 type EventSku @table(database: "sightline_ledger") @sealed {
-	# One row per (event, SKU) — the index that makes the SKU filter real. The
-	# events table can only hold a scalar sku, and an order has many; filtering by
-	# SKU therefore has to page over this table and hydrate events by id.
+	# One row per (event, SKU): the index behind the SKU filter. The events table holds
+	# a scalar sku and an order has many, so SKU filtering pages this table and
+	# hydrates events by id.
 	#
-	# The common event filters are DENORMALIZED here on purpose so a SKU-filtered
-	# query is an ordinary keyset page with no post-filtering (which would return
-	# short pages and break the "more results" signal). Drift is not a risk: both
-	# rows are written from the same event in one place and purged/redacted together.
+	# The common event filters are denormalized here so a SKU-filtered query is an
+	# ordinary keyset page with no post-filtering (which would return short pages).
+	# Both rows are written from the same event and purged together.
 	id: ID! @primaryKey # `${eventId}:${sku}`
 	shopId: String! @indexed
 	eventId: String! @indexed

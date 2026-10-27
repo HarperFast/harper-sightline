@@ -16,9 +16,8 @@ if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 	process.exit(2);
 }
 const auth = 'Basic ' + Buffer.from(`${HARPER_USER}:${HARPER_PASS}`).toString('base64');
-// `url` defaults to the configured ops endpoint. It is explicit because a Fabric
-// cluster has several nodes and each must be addressed individually — see the
-// multi-node section below.
+// `url` defaults to the configured ops endpoint; a Fabric cluster has several nodes
+// and each must be addressed individually (see below).
 const opAt = async (url, b) => {
 	try {
 		const r = await fetch(url, {
@@ -50,27 +49,19 @@ console.log('deploy:', (await op({ operation: 'deploy_component', project: 'sigh
 
 const base = process.env.SIGHTLINE_BASE ?? HARPER_OPS_URL.replace(/:9925\/?$/, '');
 
-// The version marker we can actually verify from outside: the hashed SPA bundle
-// name that Vite just produced. `/api/v1/health` is useless for this — the OLD
-// component answers it 200 just as happily, so polling it made a deploy that
-// shipped nothing report success.
+// The verifiable version marker is the hashed SPA bundle name Vite just produced;
+// `/api/v1/health` is useless because the old component answers it 200 too.
 const localHtml = existsSync(join(appDir, 'web/dist/index.html')) ? readFileSync(join(appDir, 'web/dist/index.html'), 'utf8') : '';
 const expectedAsset = localHtml.match(/assets\/index-[A-Za-z0-9_-]+\.js/)?.[0];
 if (!expectedAsset) console.log('warn: no built web/dist asset to verify against — run `npm run build` first');
 
-// A Fabric cluster runs several nodes behind one hostname, and COMPONENT CODE IS
-// NOT REPLICATED THE WAY DATABASES ARE. `restart` sent to the load-balanced ops
-// endpoint reaches exactly one node, so the others keep serving the previous
-// build — the app then flip-flops between versions depending on which node the
-// request lands on. Enumerate the peers and restart every node by its own
-// hostname.
-// Discovery has to start from whichever node the load balancer hands us, then
-// walk outward: `cluster_status.connections` lists that node's PEERS but not
-// itself, and its own identity is `replication.hostname` from its configuration.
-// (Do NOT use the CA subject — the CA is cluster-wide and always names the
-// issuing node, so on any other node it silently reports the wrong name and the
-// real one gets missed.) Walking every discovered node's peers as well means a
-// cluster larger than two is covered too.
+// Component code is not replicated like databases: `restart` sent to the
+// load-balanced ops endpoint reaches one node, so the others keep serving the old
+// build. Enumerate the peers and restart every node by its own hostname.
+// Discovery starts from whichever node the load balancer returns and walks outward:
+// `cluster_status.connections` lists a node's peers but not itself, whose identity
+// is `replication.hostname` (not the CA subject, which is cluster-wide and names the
+// issuing node). Walking each discovered node's peers covers clusters larger than two.
 const nodeNames = new Set();
 const queue = [HARPER_OPS_URL];
 const visited = new Set();
@@ -113,8 +104,7 @@ for (const t of targets) {
 	let ok = false;
 	for (let i = 0; i < 25 && !ok; i++) {
 		await sleep(4000);
-		// Verified per node, and against the ASSET the build just produced — not
-		// merely "is something answering".
+		// Verified per node against the asset the build produced, not merely "something answers".
 		const asset = await servedAsset(t.base);
 		if (asset && (!expectedAsset || asset === expectedAsset)) {
 			console.log(`${t.name}: live after ~${(i + 1) * 4}s serving ${asset}`);
@@ -124,8 +114,7 @@ for (const t of targets) {
 	if (!ok) failures.push(`${t.name}: did not come back serving ${expectedAsset ?? 'the app'}`);
 }
 
-// Finally confirm the load-balanced hostname is consistent, several times — a
-// single probe can hit the one node that happens to be current.
+// Confirm the load-balanced hostname is consistent several times; one probe can hit the current node.
 if (!failures.length && expectedAsset) {
 	const seen = new Set();
 	for (let i = 0; i < 8; i++) seen.add(await servedAsset(base));
@@ -143,10 +132,9 @@ if (failures.length) {
 	process.exit(1);
 }
 
-// Self-heal the Harper Fabric @sealed column-add flake: deploy_component
-// intermittently fails to (re)add optional columns to an existing sealed table,
-// which silently drops data and degrades the detector. Verify every column in
-// schema.graphql and re-create any that are missing. Idempotent.
+// Self-heals the Fabric @sealed column-add flake: deploy_component intermittently
+// fails to add optional columns to an existing sealed table, silently dropping data.
+// Verifies every column in schema.graphql and re-creates missing ones; idempotent.
 const EXPECTED_COLUMNS = expectedColumns(readFileSync(new URL('../schema.graphql', import.meta.url), 'utf8'));
 const described = new Map();
 for (const [database, table, attribute] of EXPECTED_COLUMNS) {

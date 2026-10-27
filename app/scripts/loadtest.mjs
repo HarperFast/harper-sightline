@@ -1,18 +1,14 @@
-// Webhook ingress load harness (#24). Fires a burst of HMAC-signed webhooks at
-// /webhooks/shopify/events, then proves the accepted work actually DRAINED.
-// This is a MANUAL / staged tool — the production-like 10-minute 100 rps burst
-// runs against the staged environment (#25), not in CI.
+// Webhook ingress load harness. Fires a burst of HMAC-signed webhooks at
+// /webhooks/shopify/events, then proves the accepted work drained. A manual,
+// staged tool, not run in CI.
 //
 //   SIGHTLINE_BASE=https://<host> \
 //   SHOPIFY_API_SECRET=<app secret> SIGHTLINE_OPS_TOKEN=<ops token> \
 //   LOAD_RPS=100 LOAD_DURATION=600 \
 //   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/loadtest.mjs
 //
-// WHY the drain phase exists: acking fast is exactly what the design guarantees by
-// deferring all work to the worker (ADR-002), so ack latency alone cannot fail.
-// Measuring only the ack meant this harness printed LOAD PASS on a run where every
-// delivery was accepted and NONE was ever processed — a silent, total loss of the
-// product's actual promise. Draining is the guarantee worth gating.
+// The drain phase exists because ack latency alone cannot fail (work is deferred,
+// ADR-002); a run once printed LOAD PASS with every delivery accepted and none processed.
 //
 // Gates: ack p95 < 1s, ack max < 5s (Shopify's timeout), 0 rejected deliveries,
 // the backlog returns to its pre-burst level, no new dead letters, and the
@@ -26,12 +22,10 @@ const shop = process.env.LOAD_SHOP ?? 'load-test.myshopify.com';
 const rps = Number(process.env.LOAD_RPS ?? 100);
 const durationSec = Number(process.env.LOAD_DURATION ?? 60);
 const topic = process.env.LOAD_TOPIC ?? 'orders/updated';
-// How long to wait for the backlog to return to its pre-burst level, and how
-// often to sample it. Processing is a periodic batch, so samples are coarse.
+// How long to wait for the backlog to return to its pre-burst level; processing is periodic, so samples are coarse.
 const drainTimeoutSec = Number(process.env.LOAD_DRAIN_TIMEOUT ?? 900);
 const drainPollMs = Number(process.env.LOAD_DRAIN_POLL_MS ?? 5000);
 
-// Gates.
 const P95_MS = 1000;
 const MAX_MS = 5000;
 
@@ -39,17 +33,14 @@ if (!secret) {
 	console.error('SHOPIFY_API_SECRET is required to sign webhooks. Refusing to run.');
 	process.exit(2);
 }
-// Refusing rather than degrading is deliberate: a run that cannot read the
-// backlog can only re-report the ack latency this harness already over-trusted,
-// and would print a PASS that means nothing.
+// Refuse rather than degrade: without the backlog the harness could only re-report ack latency.
 if (!opsToken) {
 	console.error('SIGHTLINE_OPS_TOKEN is required to verify the burst drained. Refusing to run a drain-blind load test.');
 	process.exit(2);
 }
 process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 
-// Operator health (backlog + dead letters), cluster-wide because it is derived
-// from replicated tables rather than one node's log.
+// Backlog and dead letters, cluster-wide (derived from replicated tables).
 async function readOps() {
 	const r = await fetch(`${base}/api/v1/ops`, { headers: { 'x-sightline-ops-token': opsToken } });
 	if (r.status === 404) {
@@ -64,9 +55,8 @@ function sign(body) {
 	return createHmac('sha256', secret).update(Buffer.from(body, 'utf8')).digest('base64');
 }
 
-// One signed webhook POST; returns { ms, status, ok }.
 async function fireOne(seq) {
-	// A minimal, PII-free order payload — the ingress only needs a valid body + headers.
+	// Minimal PII-free order payload; the ingress needs only a valid body and headers.
 	const body = JSON.stringify({ id: 5_000_000_000_000 + seq, updated_at: new Date(0).toISOString(), test: true });
 	const headers = {
 		'content-type': 'application/json',
@@ -91,9 +81,7 @@ function pct(sorted, p) {
 	return sorted[i];
 }
 
-// Wait for the accepted backlog to fall back to its pre-burst level, sampling as
-// it goes so the drain RATE is measured rather than assumed. Returns the samples
-// and whether it got there inside the timeout.
+// Waits for the backlog to fall to its pre-burst level, sampling so the drain rate is measured.
 async function waitForDrain(baselineAccepted) {
 	const startedAt = performance.now();
 	const samples = [];
@@ -116,10 +104,9 @@ async function waitForDrain(baselineAccepted) {
 	return { drained, samples };
 }
 
-// Deliveries cleared per second, measured between the first and last samples.
-// `reason` matters as much as the number: an unmeasurable rate because nothing was
-// ever queued is a pass, while an unmeasurable rate because the backlog never
-// moved is the worst possible result and must not be reported as "kept up".
+// Deliveries cleared per second between the first and last samples. `reason` matters:
+// an unmeasurable rate because nothing was queued is a pass; one because the backlog
+// never moved is the worst result and must not read as "kept up".
 function drainProgress(samples, baselineAccepted) {
 	if (samples.length === 0) return { rate: null, reason: 'no-samples' };
 	const first = samples[0];
@@ -160,7 +147,6 @@ async function main() {
 			statuses.set(res.status, (statuses.get(res.status) ?? 0) + 1);
 			if (!res.ok) lost += 1;
 		}
-		// Pace to ~1s per batch (a burst then wait; never negative).
 		const elapsed = performance.now() - tick;
 		if (elapsed < 1000) await new Promise((r) => setTimeout(r, 1000 - elapsed));
 		if ((second + 1) % 10 === 0) console.log(`  ${second + 1}/${durationSec}s sent=${sent} lost=${lost}`);
@@ -174,16 +160,14 @@ async function main() {
 	console.log(`sent=${sent} lost=${lost} statuses=${JSON.stringify(Object.fromEntries(statuses))}`);
 	console.log(`ack latency ms: p50=${p50.toFixed(1)} p95=${p95.toFixed(1)} max=${max.toFixed(1)}`);
 
-	// ── drain: the half that actually proves the deferred work happened ──────────
 	console.log(`\nwaiting up to ${drainTimeoutSec}s for the backlog to return to ${baseline.accepted}...`);
 	const { drained, samples } = await waitForDrain(baseline.accepted);
 	const finalOps = samples.length > 0 ? samples[samples.length - 1] : await readOps();
 	const drainSec = samples.length > 0 ? samples[samples.length - 1].atSec : 0;
 	const progress = drainProgress(samples, baseline.accepted);
 	const deadLetterDelta = finalOps.deadLetter - baseline.deadLetter;
-	// A drain slower than ingest means the backlog grows without bound under
-	// sustained load, so the burst only "passed" because it ended. Only a genuinely
-	// empty queue is exempt.
+	// A drain slower than ingest means the backlog grows without bound under sustained
+	// load; only an empty queue is exempt.
 	const keepsUp = progress.reason === 'nothing-queued' ? true : progress.rate !== null && progress.rate >= rps;
 
 	console.log(

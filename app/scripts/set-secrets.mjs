@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Provision this component's secrets as SCOPED Harper secrets — `set_secret` with
-// `grants: ['sightline']`, so the values are readable only through the component's
-// own `secrets` accessor and never materialise into `process.env`.
+// Provisions this component's secrets as scoped Harper secrets (`set_secret` with
+// `grants: ['sightline']`): readable only through the component's `secrets`
+// accessor, never in `process.env`.
 //
 //   HARPER_OPS_URL=https://…:9925 HARPER_USER=… HARPER_PASS=… \
 //   SHOPIFY_API_SECRET=shpss_… SIGHTLINE_TOKEN_KEY=$(openssl rand -hex 32) \
@@ -11,17 +11,13 @@
 // Values come from the environment and are never written to disk or echoed. Pass
 // --check to audit what the store holds without sending any value.
 //
-// PRECONDITION: custody. A scoped secret is encrypted on ingest with the
-// cluster's custody keypair, so `set_secret` on a node with no custody stores an
-// envelope nobody can open — and the component then fails to load with
-// `custody-unavailable` rather than falling back, because the fallbacks are gone.
-// This script therefore checks `get_secrets_public_key` FIRST and refuses to write
-// if custody is uninitialised. That is the exact state this instance has been in
-// (`custody_fingerprint` null cluster-wide); it needs a Fabric-side re-init before
-// this script can do anything useful.
+// Precondition: custody. A scoped secret is encrypted with the cluster's custody
+// keypair, so `set_secret` on a node without custody stores an envelope nobody can
+// open and the component fails to load with `custody-unavailable`. This script checks
+// `get_secrets_public_key` first and refuses to write if custody is uninitialised.
 import { argv, env, exit } from 'node:process';
 
-// The dev instance terminates TLS with a self-signed cert, same as deploy.mjs.
+// The dev instance uses a self-signed cert, as in deploy.mjs.
 env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = env;
@@ -33,18 +29,15 @@ if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 const COMPONENT = 'sightline';
 const checkOnly = argv.includes('--check');
 
-// Exactly the three names config.yaml declares as required. Keeping the list here
-// rather than parsing config.yaml is deliberate: this script must be able to tell
-// you that a name is MISSING from the store, which means it needs its own
-// statement of what ought to be there.
+// The three names config.yaml requires. Kept here rather than parsed from config.yaml
+// so the script can report a name MISSING from the store.
 const REQUIRED = [
 	{ name: 'SHOPIFY_API_SECRET', validate: (v) => (v.startsWith('shpss_') ? null : 'expected a Shopify app secret (shpss_…)') },
 	{
 		name: 'SIGHTLINE_TOKEN_KEY',
 		validate: (v) => (/^[0-9a-f]{64}$/i.test(v) ? null : 'expected 64 hex characters — generate with: openssl rand -hex 32'),
 	},
-	// 32 is opsAuth.ts's OPS_TOKEN_MIN_LENGTH; a shorter token is treated as absent
-	// by the gate, so accepting one here would silently disable /api/v1/ops.
+	// 32 is opsAuth.ts's OPS_TOKEN_MIN_LENGTH; a shorter token is treated as absent by the gate.
 	{ name: 'SIGHTLINE_OPS_TOKEN', validate: (v) => (v.length >= 32 ? null : 'must be at least 32 characters (openssl rand -hex 16)') },
 ];
 
@@ -68,13 +61,11 @@ async function op(body) {
 	return parsed;
 }
 
-// Custody gate. Without a public key there is no encryption key, so every write
-// would produce an envelope this cluster cannot decrypt.
+// Custody gate: without a public key every write would produce an undecryptable envelope.
 let fingerprint;
 try {
 	const key = await op({ operation: 'get_secrets_public_key' });
-	// The response shape is not pinned across versions: take a fingerprint/kid if
-	// one is offered, otherwise treat the presence of a public key as proof enough.
+	// The response shape varies by version: take a fingerprint/kid if offered, else a public key suffices.
 	fingerprint = key.fingerprint ?? key.kid ?? (key.publicKey || key.public_key ? '(key present, no fingerprint reported)' : undefined);
 } catch (e) {
 	console.error(`custody check failed: ${e.message}`);
@@ -93,8 +84,7 @@ if (!fingerprint) {
 }
 console.log(`custody: ${fingerprint}`);
 
-// What the store already holds. `list_secrets` returns names and grants, never
-// values.
+// `list_secrets` returns names and grants, never values.
 const listed = await op({ operation: 'list_secrets' });
 const rows = Array.isArray(listed) ? listed : (listed.secrets ?? []);
 const byName = new Map(rows.map((r) => [r.name, r]));
@@ -112,15 +102,13 @@ for (const { name, validate } of REQUIRED) {
 
 	const value = env[name];
 	if (!value) {
-		// Not fatal: provisioning one secret at a time is a normal thing to do, and
-		// an already-granted row does not need re-sending.
+		// Not fatal: provisioning one secret at a time is normal.
 		console.log(`${name}: skipped (not in the environment) — store says: ${state}`);
 		continue;
 	}
 	const problem = validate(value.trim());
 	if (problem) {
-		// Refuse rather than store a value the component will reject at load. A
-		// wrong-shaped secret that reaches the store fails later, further from here.
+		// Refuse rather than store a value the component will reject at load.
 		console.error(`${name}: refusing to store — ${problem}`);
 		exit(1);
 	}

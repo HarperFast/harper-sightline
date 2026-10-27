@@ -1,6 +1,6 @@
-// Post-deploy staging smoke test (#24/#25). Guards the "component healthy but no
-// routes registered" failure mode (ADR-001) and exercises the read/auth/webhook
-// surfaces. Exits non-zero on any miss so it can gate a deploy.
+// Post-deploy staging smoke test. Guards the "component healthy but no routes
+// registered" failure (ADR-001) and exercises the read, auth and webhook surfaces.
+// Exits non-zero on any miss so it can gate a deploy.
 //   SIGHTLINE_BASE=https://<host> \
 //   SHOPIFY_API_SECRET=<app secret> SHOPIFY_API_KEY=<client id> \
 //   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/smoke.mjs
@@ -31,15 +31,14 @@ async function req(path, { method = 'GET', headers = {}, body } = {}) {
 	try {
 		const r = await fetch(`${base}${path}`, opts);
 		const text = await r.text();
-		// `body` stays truncated for log lines; `bodyFull` is for callers that need
-		// to parse the response (a truncated JSON body is not parseable).
+		// `body` is truncated for logs; `bodyFull` is for callers that parse the response.
 		return { status: r.status, body: text.slice(0, 200).replace(/\n/g, ' '), bodyFull: text };
 	} catch (e) {
 		return { status: 0, body: e.code ?? e.message, bodyFull: '' };
 	}
 }
 
-// A Shopify session JWT signed with the app secret (matches verifySessionToken).
+// A session JWT signed with the app secret (matches verifySessionToken).
 function mintSessionToken(smokeShop = defaultSmokeShop) {
 	const now = Math.floor(Date.now() / 1000);
 	const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
@@ -60,17 +59,15 @@ function mintSessionToken(smokeShop = defaultSmokeShop) {
 	return `${header}.${claims}.${sig}`;
 }
 
-// ── unauthenticated surface ───────────────────────────────────────────────────
 const health = await req('/api/v1/health');
 check('GET /api/v1/health = 200', health.status === 200, `${health.status} ${health.body}`);
 
 const noAuth = await req('/api/v1/session');
 check('GET /api/v1/session unauthenticated = 401', noAuth.status === 401, String(noAuth.status));
 
-// The App Store listing links to this and a reviewer reads it WITHOUT installing,
-// so it must be 200 unauthenticated. Also guards the silent-404 failure mode: an
-// unregistered resource falls through to the SPA catch-all and returns 200 HTML,
-// so assert on the content, not just the status.
+// A reviewer reads this without installing, so it must be 200 unauthenticated.
+// Assert on the content: an unregistered resource falls through to the SPA
+// catch-all and returns 200 HTML.
 const policy = await req('/privacy-policy');
 check(
 	'GET /privacy-policy unauthenticated = 200 and is the policy',
@@ -78,7 +75,6 @@ check(
 	`${policy.status} ${policy.body.slice(0, 120)}`,
 );
 
-// Webhook ingress rejects a bad HMAC with 401 and NO mutation (constant-time verify).
 const badHmac = await req('/webhooks/shopify/events', {
 	method: 'POST',
 	headers: {
@@ -92,7 +88,6 @@ const badHmac = await req('/webhooks/shopify/events', {
 });
 check('POST /webhooks/shopify/events bad HMAC = 401', badHmac.status === 401, String(badHmac.status));
 
-// ── authenticated surface (needs the app secret) ──────────────────────────────
 if (secret) {
 	const token = mintSessionToken();
 	const auth = { 'X-Shopify-Session-Token': token };
@@ -112,12 +107,10 @@ if (secret) {
 	const findings = await req('/api/v1/findings', { headers: auth });
 	check('GET /api/v1/findings authenticated = 200', findings.status === 200, String(findings.status));
 
-	// Opt-in: if an export is throttled, it must be a 429, never a 401 (the SPA
-	// turns a 401 into "reauthorize"). The counters are per worker thread, so no
-	// run can tell whether the limit exists: requests land on arbitrary threads and
-	// may never trip it. This asserts only what holds under any distribution.
-	//
-	// Uses a throwaway shop domain so it cannot burn the real smoke shop's budget.
+	// Opt-in: a throttled export must be a 429, never a 401 (the SPA turns a 401 into
+	// "reauthorize"). Counters are per worker thread, so no run can prove the limit
+	// exists; this asserts only what holds under any distribution. Uses a throwaway
+	// shop domain so it cannot burn the real smoke shop's budget.
 	if (process.env.SMOKE_RATE_LIMIT === '1') {
 		const rateShop = `sightline-smoke-rate-${Date.now().toString(36)}.myshopify.com`;
 		const rateAuth = { 'X-Shopify-Session-Token': mintSessionToken(rateShop) };
@@ -135,7 +128,6 @@ if (secret) {
 		);
 	}
 
-	// Opt-in signed webhook round-trip (writes a synthetic delivery — staging only).
 	if (process.env.SMOKE_WEBHOOK === '1') {
 		const wbody = JSON.stringify({ id: 9_900_000_000_000, updated_at: new Date(0).toISOString(), smoke: true });
 		const hmac = createHmac('sha256', secret).update(Buffer.from(wbody, 'utf8')).digest('base64');
@@ -153,19 +145,15 @@ if (secret) {
 		check('POST /webhooks/shopify/events signed = 2xx', accepted.status >= 200 && accepted.status < 300, String(accepted.status));
 	}
 
-	// ── app/uninstalled round-trip (app-store-review-checklist §1) ────────────────
-	// Shopify's reviewer WILL uninstall the app, and uninstall is the one lifecycle
-	// path that revokes the offline token and stops all Admin API work, so a
-	// regression here is both a review failure and a "kept a credential we have no
-	// right to" problem. Opt-in because it writes state, and it uses a shop domain
-	// unique to this run: ensureShopRecord only creates a shop when one is missing,
-	// so re-running against a fixed domain would start from an already-uninstalled
-	// shop and assert nothing. Leaves one uninstalled Shop row per run (staging).
+	// app/uninstalled round-trip (app-store-review-checklist §1): uninstall revokes the
+	// offline token and stops Admin API work, and a reviewer will do it. Opt-in because
+	// it writes state, with a shop domain unique to this run (ensureShopRecord only
+	// creates a missing shop, so a fixed domain would start already uninstalled).
+	// Leaves one uninstalled Shop row per run (staging).
 	if (process.env.SMOKE_UNINSTALL === '1') {
 		const uninstallShopDomain = `sightline-smoke-uninstall-${Date.now().toString(36)}.myshopify.com`;
 		const uninstallAuth = { 'X-Shopify-Session-Token': mintSessionToken(uninstallShopDomain) };
 
-		// Session bootstraps the shop record as active — the state uninstall must clear.
 		const bootstrapped = await req('/api/v1/session', { headers: uninstallAuth });
 		check('uninstall: session bootstraps the throwaway shop = 200', bootstrapped.status === 200, String(bootstrapped.status));
 
@@ -197,8 +185,9 @@ if (secret) {
 			String(uninstallAck.status),
 		);
 
-		// Uninstall is applied by the background processing job, not at ack time
-		// (ADR-002), so poll rather than assume. The job runs every 10s.
+		// Uninstall is applied by the scheduled process job, not at ack time (ADR-002), so
+		// poll. The job is leader-coordinated: a deploy restart can move leadership and a
+		// failover takes ~5-6.5 minutes, so raise SMOKE_UNINSTALL_TIMEOUT_MS right after a deploy.
 		const deadline = Date.now() + Number(process.env.SMOKE_UNINSTALL_TIMEOUT_MS ?? 90_000);
 		let installedAfter = true;
 		let lastBody = '';

@@ -6,19 +6,11 @@ jsResource:
 # The SPA + assets are served by the AppHome resource (resources.ts) so the HTML
 # can carry a frame-ancestors CSP for embedding in Shopify Admin.
 
-# Secret material this component REQUIRES, declared so a misconfigured deploy
-# fails at component load with a NAMED reason (`missing` / `ungranted` /
-# `custody-unavailable`) instead of silently running on a weak fallback. That
-# named reason is the whole point: the previous design fell back to a hardcoded
-# dev secret and a publicly-derivable AES key, and the only signal was a log line
-# nobody read.
-#
-# All three are provisioned as SCOPED secrets (`set_secret` with
-# `grants: ['sightline']`, see scripts/set-secrets.mjs), not `processEnv: true`.
-# Scoped values are readable only through the per-component `secrets` accessor:
-# they never land in `process.env`, so they are absent from environment dumps,
-# child processes, and anything that enumerates the environment. `process.env`
-# remains a fallback in code for local dev and CI only.
+# Secret material this component requires, declared so a misconfigured deploy fails
+# at load with a named reason (`missing` / `ungranted` / `custody-unavailable`).
+# Provisioned as scoped secrets (`set_secret` with `grants: ['sightline']`, see
+# scripts/set-secrets.mjs), readable only through the `secrets` accessor and never
+# in `process.env`; `process.env` is a code fallback for local dev and CI only.
 env:
   # Shopify app secret. Verifies webhook HMACs (shopifyWebhook.ts,
   # complianceWebhook.ts) and embedded session tokens (identity.ts).
@@ -29,9 +21,9 @@ env:
   # treats it as absent.
   SIGHTLINE_OPS_TOKEN: { required: true, description: Operator token for /api/v1/ops }
 
-# Periodic background work. Harper's scheduler runs each occurrence once, on
-# the elected leader; see the "SCHEDULING" comment at the top of jobs.ts.
-# Every handler must be idempotent: a failover can deliver an occurrence twice.
+# Periodic background work: each occurrence runs once, on the elected leader (see
+# the comment at the top of jobs.ts). Handlers must be idempotent, since a
+# failover can deliver an occurrence twice.
 scheduler:
   jobs:
     # Processes accepted webhook deliveries: normalize -> ledger -> projection.
@@ -39,19 +31,15 @@ scheduler:
     - name: sightline-process
       interval: 10s
       handler: ./jobs.ts#processDeliveriesJob
-    # One-time repair of the derived `state` column on projections written before
-    # it existed. Short interval so a deploy converges quickly, then it goes
-    # quiet — a converged pass reads one small batch and writes nothing.
+    # One-time repair of the derived `state` column; a converged pass writes nothing.
     - name: sightline-state-backfill
       interval: 1m
       handler: ./jobs.ts#stateBackfillJob
-    # Ops-health heartbeat: backlog age/count, dead letters, reconcile staleness,
-    # reauth. Emitted at warn when unhealthy so an alert can key off the level.
+    # Ops-health heartbeat, emitted at warn when unhealthy.
     - name: sightline-ops-snapshot
       interval: 1m
       handler: ./jobs.ts#opsSnapshotJob
-    # Expires pending expectations whose deadline passed with NO new event. The
-    # event-driven path in delivery processing already handles transitions.
+    # Expires pending expectations whose deadline passed with no new event.
     - name: sightline-detect
       interval: 5m
       handler: ./jobs.ts#detectJob
@@ -67,8 +55,8 @@ scheduler:
     - name: sightline-purge
       interval: 1h
       handler: ./jobs.ts#purgeJob
-    # Builds each subscriber's digest for the last COMPLETE period. Hourly tick;
-    # shouldBuild() does the real cadence gating, so cadence lives in data.
+    # Builds each subscriber's digest for the last complete period; shouldBuild()
+    # does the cadence gating.
     - name: sightline-digest
       interval: 1h
       handler: ./jobs.ts#digestJob
