@@ -16,7 +16,7 @@ import { log } from '../observability/observe.ts';
 // cursor-scoped (it only re-fetches orders updated since its checkpoint) and a
 // quiet order is never re-fetched. It needs its own sweep.
 //
-// WHY IT SETS `state` FROM THE ROW rather than calling jobs.ts's
+// WHY IT SETS `state` FROM THE ROW rather than calling orderRefresh.ts's
 // updateOrderProjection (a full rebuild from the ledger): `state` is BY
 // CONSTRUCTION a pure function of this row's own latches — the reducer computes
 // it as `deriveOrderLane(next)` at the end of every fold — so re-deriving it

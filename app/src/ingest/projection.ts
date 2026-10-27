@@ -40,6 +40,7 @@ export function applyEvent(current: OrderProjection | undefined, event: Operatio
 	const next: OrderProjection = {
 		...base,
 		lastEventAt: Math.max(base.lastEventAt ?? 0, event.receivedAt),
+		firstEventAt: Math.min(base.firstEventAt ?? event.receivedAt, event.receivedAt),
 		lastSourceVersion: Math.max(base.lastSourceVersion ?? event.occurredAt, event.occurredAt),
 	};
 
@@ -101,8 +102,11 @@ export function applyEvent(current: OrderProjection | undefined, event: Operatio
 // no order-linked events exist.
 export function rebuildProjection(events: OperationalEvent[]): OrderProjection | undefined {
 	let projection: OrderProjection | undefined;
+	let eventCount = 0;
 	for (const event of events) {
-		if (isOrderLinked(event)) projection = applyEvent(projection, event);
+		if (!isOrderLinked(event)) continue;
+		projection = applyEvent(projection, event);
+		eventCount++;
 	}
-	return projection;
+	return projection && { ...projection, eventCount };
 }

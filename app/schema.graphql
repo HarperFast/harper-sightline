@@ -199,6 +199,12 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 	# every screen load) is a bounded index scan rather than a scan of every
 	# projection the shop has ever stored.
 	lastEventAt: Float @indexed
+	# The rebuild guard (src/ingest/orderRefresh.ts): a rebuild that saw fewer events
+	# than `eventCount` read a stale event set and is not written, unless
+	# `firstEventAt` is old enough that the purge may have removed some of them.
+	# Absent on rows written before the guard, which every rebuild overwrites.
+	firstEventAt: Float # earliest receivedAt folded in
+	eventCount: Int # order-linked events the row was rebuilt from
 	lastSourceVersion: Float
 }
 

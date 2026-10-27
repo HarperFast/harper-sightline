@@ -182,6 +182,10 @@ export const M = {
 	processFailed: 'process.failed',
 	processDeadLettered: 'process.dead_lettered',
 	processError: 'process.error',
+	// An order rebuild read fewer events than the stored projection was built from
+	// and was not written (src/ingest/orderRefresh.ts). Occasional counts are
+	// concurrent writers racing; a steady climb means the guard is starving writes.
+	projectionStaleSkipped: 'projection.stale_skipped',
 	// Detector sweep.
 	detectEvaluated: 'detect.evaluated',
 	detectError: 'detect.error',

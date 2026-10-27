@@ -13,7 +13,7 @@ import {
 	DigestSubscriptions,
 	DigestOutboxes,
 } from './src/db.ts';
-import type { Expectation, GapFinding, OperationalEvent } from './src/domain/model.ts';
+import type { Expectation } from './src/domain/model.ts';
 import {
 	drainAccepted,
 	emptyDrainResult,
@@ -24,9 +24,9 @@ import {
 } from './src/ingest/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
-import { isOrderLinked, rebuildProjection } from './src/ingest/projection.ts';
+import { isOrderLinked } from './src/ingest/projection.ts';
+import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
 import { uninstallShop } from './src/shopify/lifecycle.ts';
-import { evaluateOrder, detectorKey, FAILED_RULE, evaluateFailedFulfillment } from './src/domain/detector.ts';
 import { purgeExpired, OUTBOX_RETENTION_DAYS, type PurgeResult } from './src/retention/retention.ts';
 import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/retention/ledgerTargets.ts';
 import { runPurgeCycle } from './src/retention/purgeCycle.ts';
@@ -124,68 +124,14 @@ function job(name: string, t: Ticker, work: () => Promise<void>): (context?: Job
 // from the ledger (rather than an incremental read-modify-write) is order-safe
 // and far more robust to concurrent writers: every writer recomputes the full
 // state from the persisted events, so a lost write self-heals on the next event.
-// The reducer is commutative, so query order is irrelevant.
-async function updateOrderProjection(shopId: string, orderId: string): Promise<void> {
-	const events: OperationalEvent[] = [];
-	for await (const e of Events.search({
-		conditions: [
-			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'resourceId', value: orderId },
-		],
-		operator: 'and',
-	})) {
-		events.push(e as unknown as OperationalEvent);
-	}
-	const projection = rebuildProjection(events);
-	if (projection) await Projections.put(projection);
-}
-
-// Run every detector for one order (#14 + failed-attempt detector): evaluate the
-// projection against each rule and upsert its expectation/finding. Deterministic
-// keys make this idempotent; evidence is the order's normalized event ids.
-//
-// The failed-attempt detector writes NO expectation — it has no deadline, so
-// there is nothing for the periodic sweep to expire. It is therefore evaluated
-// only on order events (which is sufficient: its state changes only when a new
-// fulfillment/cancel/refund event arrives).
-async function runDetectorForOrder(shopId: string, orderId: string, now = Date.now()): Promise<void> {
-	const projection = await Projections.get(`${shopId}:${orderId}`);
-	if (!projection) return;
-	const evidenceEventIds: string[] = [];
-	for await (const e of Events.search({
-		conditions: [
-			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'resourceId', value: orderId },
-		],
-		operator: 'and',
-		select: ['eventId'],
-	})) {
-		const eid = (e as { eventId?: unknown }).eventId;
-		if (typeof eid === 'string') evidenceEventIds.push(eid);
-	}
-	evidenceEventIds.sort();
-
-	const confirmationId = detectorKey(shopId, orderId);
-	const [expectation, finding] = await Promise.all([Expectations.get(confirmationId), Findings.get(confirmationId)]);
-	const result = evaluateOrder({
-		projection,
-		now,
-		evidenceEventIds,
-		prior: { expectation: expectation as Expectation | undefined, finding: finding as GapFinding | undefined },
-	});
-	if (result.expectation) await Expectations.put(result.expectation);
-	if (result.finding) await Findings.put(result.finding);
-
-	const failedId = detectorKey(shopId, orderId, FAILED_RULE);
-	const priorFailed = (await Findings.get(failedId)) as GapFinding | undefined;
-	const failed = evaluateFailedFulfillment({
-		projection,
-		now,
-		evidenceEventIds,
-		prior: { finding: priorFailed },
-	});
-	if (failed.finding) await Findings.put(failed.finding);
-}
+// The reducer is commutative, so query order is irrelevant. A writer that read a
+// stale event set is not written (src/ingest/orderRefresh.ts).
+const orderTables: OrderTables = {
+	events: Events as unknown as OrderTables['events'],
+	projections: Projections as unknown as OrderTables['projections'],
+	expectations: Expectations as unknown as OrderTables['expectations'],
+	findings: Findings as unknown as OrderTables['findings'],
+};
 
 // Harper-backed processing deps. `handle` normalizes a delivery's stored payload
 // into OperationalEvent rows (#10); the durable pipeline (#9) scans accepted
@@ -245,10 +191,7 @@ const deps: ProcessDeps = {
 			await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
 			// Maintain the order projection (#12), then evaluate the detector (#14)
 			// so paid/fulfilled/cancelled transitions are reflected immediately.
-			if (isOrderLinked(event)) {
-				await updateOrderProjection(event.shopId, event.resourceId as string);
-				await runDetectorForOrder(event.shopId, event.resourceId as string);
-			}
+			if (isOrderLinked(event)) await refreshOrder(orderTables, event.shopId, event.resourceId as string, Date.now());
 		}
 	},
 };
@@ -321,7 +264,7 @@ export async function runDetectorSweep(now = Date.now()): Promise<number> {
 	let due = 0;
 	for (const exp of pending) {
 		if ((exp.deadline ?? Number.POSITIVE_INFINITY) <= now) {
-			await runDetectorForOrder(exp.shopId, exp.orderId, now);
+			await runDetectorForOrder(orderTables, exp.shopId, exp.orderId, now);
 			due += 1;
 		}
 	}
@@ -404,8 +347,7 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 				for (const event of synthesizeEvents(shopId, order)) {
 					await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
 				}
-				await updateOrderProjection(shopId, order.orderId);
-				await runDetectorForOrder(shopId, order.orderId, now);
+				await refreshOrder(orderTables, shopId, order.orderId, now);
 			},
 			// A partial pass advances `cursor` but must leave `updatedAt` alone —
 			// that field is computeOpsHealth's reconcile-staleness signal, so

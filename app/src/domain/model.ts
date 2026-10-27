@@ -156,6 +156,8 @@ export interface OrderProjection {
 	state?: ProjectionState;
 	deadline?: number;
 	lastEventAt?: number;
+	firstEventAt?: number;
+	eventCount?: number;
 	lastSourceVersion?: number;
 }
 
