@@ -61,10 +61,10 @@ jobs:
         run: |
           set -euo pipefail
           # Match the REAL token shapes (32 hex), not short test fixtures like 'shpat_x'.
-          if git grep -nE 'shpat_[0-9a-f]{32}' -- . ':(exclude).github/workflows/ci.yml'; then
+          if git grep -niE 'shpat_[0-9a-f]{32}' -- . ':(exclude).github/workflows/ci.yml'; then
             echo "::error::Committed Shopify access token (shpat_) found."; exit 1
           fi
-          leaked=$(git grep -lE 'shpss_[0-9a-f]{32}' -- . \
+          leaked=$(git grep -liE 'shpss_[0-9a-f]{32}' -- . \
             ':(exclude)app/src/secrets/readSecret.ts' \
             ':(exclude)docs/security-review.md' \
             ':(exclude).github/workflows/ci.yml' || true)

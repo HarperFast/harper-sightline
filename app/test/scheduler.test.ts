@@ -64,6 +64,13 @@ test('every declared handler names an export that actually exists in jobs.ts', (
 	}
 });
 
+test('every exported job handler in jobs.ts is declared in config.yaml', () => {
+	const declared = new Set(declaredJobs().map((j) => j.handler.split('#')[1]));
+	const exported = [...jobsSource.matchAll(/^export const (\w+) = job\(/gm)].map((m) => m[1]);
+	assert.ok(exported.length > 0, 'found no `export const X = job(` handlers in jobs.ts');
+	for (const name of exported) assert.ok(declared.has(name), `jobs.ts exports ${name} but config.yaml never schedules it`);
+});
+
 test('every job handler is registered exactly once', () => {
 	// Two jobs sharing a handler means one sweep runs at two cadences — cheap to
 	// introduce by copy-paste when adding a job, invisible afterwards.

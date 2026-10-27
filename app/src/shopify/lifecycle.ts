@@ -3,16 +3,6 @@ import { saveCredential, deleteCredential, markCredentialStatus } from './creden
 import { Shops, Credentials, DigestSubscriptions } from '../db.ts';
 import type { Shop } from '../domain/model.ts';
 
-// Managed install: exchange the verified session token for an offline token,
-// create/update the Shop record, store the encrypted credential. (The live
-// token exchange requires a real Admin session token — verified at dev-store
-// install time.)
-export async function installShop(args: { shop: string; sessionToken: string; apiKey: string; secret: string }): Promise<void> {
-	const tok = await exchangeOfflineToken({ shop: args.shop, sessionToken: args.sessionToken, apiKey: args.apiKey, secret: args.secret });
-	await Shops.put({ shopId: args.shop, status: 'active', scopes: tok.scope, installedAt: Date.now(), reconciliationState: 'pending' });
-	await saveCredential(args.shop, tok);
-}
-
 // app/uninstalled: mark inactive and invalidate the credential (documented
 // redaction timing handled by the compliance flow, #20/#21).
 export async function uninstallShop(shopId: string): Promise<void> {
@@ -43,11 +33,9 @@ export async function markReauthRequired(shopId: string): Promise<void> {
 // applied without the other's context):
 //
 //  1. `scopes` — the granted scope list arrives WITH the token, and this is the
-//     only path that ever sees it on a managed install. `installShop` also records
-//     it, but managed install has no OAuth callback, so that function has no call
-//     site: without recording it here the Shop row kept an empty `scopes` forever,
-//     and the Privacy screen's "Granted access" field had nothing to show —
-//     indefinitely, not "pending".
+//     only path that ever sees it on a managed install (there is no OAuth
+//     callback). Without recording it here the Shop row keeps an empty `scopes`
+//     forever and the Privacy screen's "Granted access" field has nothing to show.
 //  2. `status` — saveCredential resets the CREDENTIAL to active, but nothing resets
 //     the SHOP, and runReconcileSweep only iterates status:'active'. Without this a
 //     single refresh failure would park the shop in reauthorization_required

@@ -9,9 +9,8 @@ const SCOPES = 'read_orders,read_fulfillments,read_inventory,read_products,read_
 
 // The defect this pins: the Privacy screen's "Granted access" field was empty on
 // every managed install, because the scope list arrives with the token exchange and
-// only `installShop` — the OAuth-callback path, which managed install never takes —
-// recorded it. The screen then said "pending confirmation" forever, which reads to a
-// merchant as a broken app rather than as a fact nobody was ever going to write.
+// nothing on that path recorded it. The screen then said "pending confirmation"
+// forever, which reads to a merchant as a broken app.
 test('a successful exchange records the granted scopes on the shop', () => {
 	assert.deepEqual(shopPatchAfterExchange(shop(), SCOPES), { scopes: SCOPES });
 });

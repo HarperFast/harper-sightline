@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { expectedColumns } from './schemaColumns.mjs';
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = process.env;
@@ -144,22 +145,14 @@ if (failures.length) {
 
 // Self-heal the Harper Fabric @sealed column-add flake: deploy_component
 // intermittently fails to (re)add optional columns to an existing sealed table,
-// which silently drops data and degrades the detector. Verify the columns added
-// after initial table creation and re-create any that are missing. Idempotent.
-const EXPECTED_COLUMNS = [
-	['sightline_ledger', 'WebhookDelivery', 'payload'],
-	['sightline_ledger', 'OperationalEvent', 'fulfillableItemCount'],
-	['sightline_ledger', 'OrderProjection', 'requiresFulfillment'],
-	['sightline_ledger', 'OrderProjection', 'fulfilledAt'],
-	['sightline_ledger', 'OrderProjection', 'firstEventAt'],
-	['sightline_ledger', 'OrderProjection', 'eventCount'],
-	// Added in #62 for store-timezone rendering. Degrades to the viewer's zone if
-	// dropped, so it is cosmetic rather than an outage — but self-healing it here
-	// beats a manual describe_table check after every deploy.
-	['sightline_core', 'Shop', 'ianaTimezone'],
-];
+// which silently drops data and degrades the detector. Verify every column in
+// schema.graphql and re-create any that are missing. Idempotent.
+const EXPECTED_COLUMNS = expectedColumns(readFileSync(new URL('../schema.graphql', import.meta.url), 'utf8'));
+const described = new Map();
 for (const [database, table, attribute] of EXPECTED_COLUMNS) {
-	const desc = await op({ operation: 'describe_table', database, table });
+	const tableKey = `${database}.${table}`;
+	if (!described.has(tableKey)) described.set(tableKey, await op({ operation: 'describe_table', database, table }));
+	const desc = described.get(tableKey);
 	const has = Array.isArray(desc?.attributes) && desc.attributes.some((a) => a.attribute === attribute);
 	if (!has) {
 		const r = await op({ operation: 'create_attribute', database, table, attribute });

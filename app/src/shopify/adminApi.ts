@@ -187,12 +187,6 @@ export async function fetchOrdersUpdatedSince(
 	return { orders, nextCursor: data.orders.pageInfo.hasNextPage ? last : undefined };
 }
 
-// A trivial authenticated call used to prove the offline token works.
-export async function fetchShopName(shop: string, token: string, fetchImpl: typeof fetch = fetch): Promise<string> {
-	const data = await adminGraphql<{ shop: { name: string } }>(shop, token, `{shop{name}}`, {}, fetchImpl);
-	return data.shop.name;
-}
-
 // The store's configured IANA timezone, so merchant-facing timestamps render in
 // the shop's zone rather than the viewer's (screen spec: "merchant timezone").
 // A shop-level setting, not protected customer data, and readable with the scopes
