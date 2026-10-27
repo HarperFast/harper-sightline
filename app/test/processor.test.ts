@@ -116,15 +116,34 @@ test('stops starting new rows once the time budget is spent, leaving the rest ac
 	assert.equal(statuses(state, 'processed'), 12, 'the next occurrence resumes where the last stopped');
 });
 
-test('a failing row does not stop the drain, and a full batch of failures cannot pin it in place', async () => {
-	const failing = new Set(accepted(60, 'f').map((r) => r.id));
-	const { deps, state, handled } = memDeps([...accepted(60, 'f'), ...accepted(30, 'ok')], failing);
+test('poison rows among healthy ones do not stop the healthy rows from draining', async () => {
+	const rows = accepted(120);
+	const poison = new Set(['d3', 'd40', 'd41', 'd77', 'd119']);
+	const { deps, state, handled } = memDeps(rows, poison);
 	const r = await drainAccepted(deps, { budgetMs: BUDGET, batch: 50 });
 	assert.equal(r.stoppedBy, 'empty');
-	assert.equal(r.failed, 60);
-	assert.equal(r.processed, 30, 'healthy rows behind more than a batch of failures still drain');
-	assert.equal(handled.length, 90, 'every row is attempted exactly once in the occurrence');
-	for (const id of failing) assert.equal(state.get(id)!.attempts, 1);
+	assert.equal(r.processed, 115);
+	assert.equal(r.failed, 5);
+	assert.equal(handled.length, 120, 'every row is attempted exactly once in the occurrence');
+	for (const id of poison) assert.equal(state.get(id)!.attempts, 1);
+});
+
+test('a drain stops after one batch of failures, so an outage burns no more attempts than the old one-batch tick', async () => {
+	const failing = new Set(accepted(60, 'f').map((r) => r.id));
+	const { deps, handled } = memDeps([...accepted(60, 'f'), ...accepted(30, 'ok')], failing);
+	const r = await drainAccepted(deps, { budgetMs: BUDGET, batch: 50 });
+	assert.equal(r.stoppedBy, 'failures');
+	assert.equal(r.failed, 50);
+	assert.equal(handled.length, 50);
+});
+
+test('a systemic outage dead-letters at most one batch over MAX_ATTEMPTS occurrences, with bounded reads', async () => {
+	const rows = accepted(200);
+	const { deps, state, listLimits } = memDeps(rows, new Set(rows.map((r) => r.id)));
+	for (let occurrence = 0; occurrence < MAX_ATTEMPTS; occurrence++) await drainAccepted(deps, { budgetMs: BUDGET, batch: 50 });
+	assert.ok(statuses(state, 'dead_letter') <= 50, `dead-lettered ${statuses(state, 'dead_letter')}`);
+	assert.equal(statuses(state, 'accepted'), 150, 'the rest of the backlog survives to be processed once the outage ends');
+	assert.ok(Math.max(...listLimits) <= 100, `read limits grew to ${Math.max(...listLimits)}`);
 });
 
 test('an error from the store propagates out of the drain', async () => {
@@ -208,8 +227,14 @@ function recorder() {
 
 test('runProcessCycle counts each outcome and traces a drain that did work', async () => {
 	const rec = recorder();
+	const r = await runProcessCycle({
+		drain: async (into) => {
+			Object.assign(into, { processed: 7, failed: 2, deadLettered: 1, stoppedBy: 'budget' });
+		},
+		log: rec.log,
+		metrics: rec.metrics,
+	});
 	const drained: DrainResult = { processed: 7, failed: 2, deadLettered: 1, stoppedBy: 'budget' };
-	const r = await runProcessCycle({ drain: async () => drained, log: rec.log, metrics: rec.metrics });
 	assert.deepEqual(r, drained);
 	assert.deepEqual(rec.counters, [
 		{ name: M.processProcessed, by: 7 },
@@ -221,24 +246,30 @@ test('runProcessCycle counts each outcome and traces a drain that did work', asy
 
 test('runProcessCycle stays silent on an idle occurrence', async () => {
 	const rec = recorder();
-	await runProcessCycle({
-		drain: async () => ({ processed: 0, failed: 0, deadLettered: 0, stoppedBy: 'empty' }),
-		log: rec.log,
-		metrics: rec.metrics,
-	});
+	await runProcessCycle({ drain: async () => {}, log: rec.log, metrics: rec.metrics });
 	assert.deepEqual(rec.logs, []);
 });
 
-test('runProcessCycle never lets a drain failure escape to the scheduler', async () => {
+test('runProcessCycle never lets a drain failure escape to the scheduler, and keeps the work done before it', async () => {
 	const rec = recorder();
+	const { deps } = memDeps(accepted(5), new Set(['d2']));
+	deps.markFailed = async () => {
+		throw new Error('table unavailable');
+	};
 	const r = await runProcessCycle({
-		drain: async () => {
-			throw new Error('table unavailable');
-		},
+		drain: (into) => drainAccepted(deps, { budgetMs: BUDGET }, into),
 		log: rec.log,
 		metrics: rec.metrics,
 	});
-	assert.equal(r, undefined);
-	assert.deepEqual(rec.counters, [{ name: M.processError, by: 1 }]);
-	assert.deepEqual(rec.logs, [{ level: 'error', event: 'process.error', fields: { message: 'table unavailable' } }]);
+	assert.deepEqual(r, { processed: 2, failed: 0, deadLettered: 0, stoppedBy: 'error' });
+	assert.deepEqual(rec.counters, [
+		{ name: M.processError, by: 1 },
+		{ name: M.processProcessed, by: 2 },
+		{ name: M.processFailed, by: 0 },
+		{ name: M.processDeadLettered, by: 0 },
+	]);
+	assert.deepEqual(rec.logs, [
+		{ level: 'error', event: 'process.error', fields: { message: 'table unavailable' } },
+		{ level: 'trace', event: 'process.tick', fields: r },
+	]);
 });

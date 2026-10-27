@@ -123,7 +123,7 @@ All eight run as **Harper scheduler jobs**, declared in [`app/config.yaml`](app/
 
 | Every | Job | Where |
 |---|---|---|
-| 10s | Process accepted deliveries: normalize → ledger → projection (dead-letters what it cannot process); drains until empty or 8s spent | `sightline-process` |
+| 10s | Process accepted deliveries: normalize → ledger → projection (dead-letters what it cannot process); drains until empty, 8s spent, or 50 rows failed | `sightline-process` |
 | 1m | Backfill the derived `state` column on pre-existing projections (converges after a deploy, then silent) | `sightline-state-backfill` |
 | 1m | Emit the `ops.snapshot` health heartbeat | `sightline-ops-snapshot` |
 | 5m | Expire pending expectations whose deadline passed with no new event | `sightline-detect` |

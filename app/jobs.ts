@@ -14,7 +14,14 @@ import {
 	DigestOutboxes,
 } from './src/db.ts';
 import type { Expectation, GapFinding, OperationalEvent } from './src/domain/model.ts';
-import { drainAccepted, runProcessCycle, type DrainResult, type ProcessDeps, type DeliveryRow } from './src/ingest/processor.ts';
+import {
+	drainAccepted,
+	emptyDrainResult,
+	runProcessCycle,
+	type DrainResult,
+	type ProcessDeps,
+	type DeliveryRow,
+} from './src/ingest/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { isOrderLinked, rebuildProjection } from './src/ingest/projection.ts';
@@ -251,8 +258,8 @@ const deps: ProcessDeps = {
 const PROCESS_BUDGET_MS = 8_000;
 const processTicker = ticker('process', 5 * 60_000);
 
-export function processDeliveries(): Promise<DrainResult> {
-	return drainAccepted(deps, { budgetMs: PROCESS_BUDGET_MS });
+export function processDeliveries(into: DrainResult = emptyDrainResult()): Promise<DrainResult> {
+	return drainAccepted(deps, { budgetMs: PROCESS_BUDGET_MS }, into);
 }
 
 export const processDeliveriesJob = job('process', processTicker, async () => {

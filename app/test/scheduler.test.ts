@@ -93,6 +93,17 @@ test('delivery processing runs on the scheduler every 10s, and nothing starts a 
 	);
 });
 
+test('the processing time budget is shorter than the interval it runs on', () => {
+	const UNIT_MS: Record<string, number> = { '': 1_000, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+	const [, amount, unit] = /^(\d+)([smhd]?)$/.exec(declaredJobs().find((j) => j.name === 'sightline-process')?.schedule ?? '') ?? [];
+	const budget = /^const PROCESS_BUDGET_MS = ([\d_]+);$/m.exec(jobsSource)?.[1];
+	assert.ok(amount && budget, 'could not read the sightline-process interval or PROCESS_BUDGET_MS');
+	assert.ok(
+		Number(budget.replaceAll('_', '')) < Number(amount) * UNIT_MS[unit],
+		'PROCESS_BUDGET_MS must leave headroom inside the interval',
+	);
+});
+
 test('config.yaml declares the secrets the component cannot run without', () => {
 	// With the dev fallbacks deleted, an undeclared secret surfaces as a
 	// MissingSecretError on the first request that needs it. Declaring it makes the

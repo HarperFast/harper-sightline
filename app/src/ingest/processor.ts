@@ -59,23 +59,32 @@ export interface DrainResult {
 	processed: number;
 	failed: number;
 	deadLettered: number;
-	stoppedBy: 'empty' | 'budget';
+	stoppedBy: 'empty' | 'budget' | 'failures' | 'error';
 }
 
-// Process accepted deliveries in batches until none are left or `budgetMs` has
-// elapsed. Each is handled idempotently and marked processed; a transient failure
-// increments attempts and stays accepted for retry; after MAX_ATTEMPTS it moves to
-// a visible dead-letter state (ADR-002).
+export function emptyDrainResult(): DrainResult {
+	return { processed: 0, failed: 0, deadLettered: 0, stoppedBy: 'empty' };
+}
+
+// Process accepted deliveries in batches until none are left, `budgetMs` has
+// elapsed, or `batch` rows have failed. Each is handled idempotently and marked
+// processed; a transient failure increments attempts and stays accepted for retry;
+// after MAX_ATTEMPTS it moves to a visible dead-letter state (ADR-002).
 //
 // A row that fails, or belongs to another slot, is skipped for the rest of the
 // drain: retrying it here would spend MAX_ATTEMPTS in one occurrence instead of
 // spacing them one per occurrence. The read limit grows by the skipped count so
 // skipped rows at the head of the backlog cannot hide the rows behind them.
-export async function drainAccepted(deps: ProcessDeps, options: DrainOptions): Promise<DrainResult> {
+//
+// The failure cap bounds an outage to one batch of attempts per occurrence;
+// without it every reachable row would dead-letter after MAX_ATTEMPTS occurrences.
+//
+// Counts accumulate into `result` row by row, so a caller still holds the work
+// done before a throw.
+export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, result = emptyDrainResult()): Promise<DrainResult> {
 	const { budgetMs, batch = 50, partition = { slot: 0, slots: 1 }, now = Date.now } = options;
 	const startedAt = now();
 	const skip = new Set<string>();
-	const result: DrainResult = { processed: 0, failed: 0, deadLettered: 0, stoppedBy: 'empty' };
 	for (;;) {
 		const rows: DeliveryRow[] = [];
 		for (const row of await deps.listAccepted(batch + skip.size)) {
@@ -102,30 +111,35 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions): P
 				result.failed += 1;
 				if (dead) result.deadLettered += 1;
 				skip.add(row.id);
+				if (result.failed >= batch) {
+					result.stoppedBy = 'failures';
+					return result;
+				}
 			}
 		}
 	}
 }
 
 export interface ProcessCycleDeps {
-	drain(): Promise<DrainResult>;
+	drain(into: DrainResult): Promise<unknown>;
 	log(level: LogLevel, event: string, fields?: Record<string, unknown>): void;
 	metrics: { inc(name: string, by?: number): void };
 }
 
 // One scheduler occurrence. Never throws: a failure is counted and logged, and
 // the next occurrence retries from the durable backlog.
-export async function runProcessCycle(deps: ProcessCycleDeps): Promise<DrainResult | undefined> {
+export async function runProcessCycle(deps: ProcessCycleDeps): Promise<DrainResult> {
+	const r = emptyDrainResult();
 	try {
-		const r = await deps.drain();
-		deps.metrics.inc(M.processProcessed, r.processed);
-		deps.metrics.inc(M.processFailed, r.failed);
-		deps.metrics.inc(M.processDeadLettered, r.deadLettered);
-		if (r.processed || r.failed) deps.log('trace', 'process.tick', { ...r });
-		return r;
+		await deps.drain(r);
 	} catch (e: unknown) {
+		r.stoppedBy = 'error';
 		deps.metrics.inc(M.processError);
 		deps.log('error', 'process.error', { message: (e as Error).message });
-		return undefined;
 	}
+	deps.metrics.inc(M.processProcessed, r.processed);
+	deps.metrics.inc(M.processFailed, r.failed);
+	deps.metrics.inc(M.processDeadLettered, r.deadLettered);
+	if (r.processed || r.failed) deps.log('trace', 'process.tick', { ...r });
+	return r;
 }

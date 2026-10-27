@@ -42,7 +42,8 @@ and detector fall behind, so the merchant UI goes stale.
 - **Transient dependency error** (DB blip, schema flake per
   `harper-fabric-sealed-column-add-flaky`): the pipeline retries automatically
   (`MAX_ATTEMPTS`), so recovery is usually just waiting for the dependency to
-  heal. Verify the table with `describe_table` after any recent schema deploy.
+  heal. Each occurrence stops after 50 failed rows, so a sustained outage
+  dead-letters at most 50 deliveries per `MAX_ATTEMPTS` occurrences (~50s). Verify the table with `describe_table` after any recent schema deploy.
 - **Worker not running**: redeploy / restart the component so the scheduler
   re-registers `sightline-process`. Processing is idempotent (only `accepted`
   rows are listed; downstream writes are deterministically keyed), so a restart
