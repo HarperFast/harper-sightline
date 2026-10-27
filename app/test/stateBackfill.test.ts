@@ -226,3 +226,37 @@ test('the backfill checkpoint survives a corrupt cursor rather than skipping the
 	const r = await runStateBackfill(NOW, deps(projections, checkpoints));
 	assert.equal(r.fixed, 1, 'an unparseable cursor restarts from the beginning of time, never skips forward');
 });
+
+test('a group tied on one millisecond larger than the batch is examined in full, never skipped', async () => {
+	const total = BACKFILL_BATCH * 2 + 37;
+	const projections = new FakeTable(
+		'id',
+		Array.from({ length: total }, (_unused, i) => ({
+			id: `s1:o${String(i).padStart(4, '0')}`,
+			shopId: 's1',
+			orderId: `o${i}`,
+			paidAt: NOW - HOUR,
+			requiresFulfillment: true,
+			lastEventAt: NOW - HOUR,
+		})),
+	);
+	await projections.put({ id: 's1:later', shopId: 's1', orderId: 'later', paidAt: NOW, lastEventAt: NOW });
+	const checkpoints = new FakeTable('id', []);
+	for (let tick = 0; tick < 8; tick++) await runStateBackfill(NOW, deps(projections, checkpoints));
+	const unfixed = [...projections.rows.values()].filter((r) => r.state === undefined).map((r) => r.id);
+	assert.deepEqual(unfixed, [], 'every row in the oversized tie group, and the row after it, got a lane');
+	const quiet = await runStateBackfill(NOW, deps(projections, checkpoints));
+	assert.equal(quiet.scanned, 0, 'converged');
+});
+
+test('a tie group that spans a batch boundary is resumed after the rows already examined', async () => {
+	const rows = [
+		...Array.from({ length: BACKFILL_BATCH - 3 }, (_unused, i) => ({ ...legacyRow(`a${i}`, 50), lastEventAt: NOW - 2 * HOUR })),
+		...Array.from({ length: 10 }, (_unused, i) => ({ ...legacyRow(`b${i}`, 40), lastEventAt: NOW - HOUR })),
+	];
+	const projections = new FakeTable('id', rows);
+	const checkpoints = new FakeTable('id', []);
+	await runStateBackfill(NOW, deps(projections, checkpoints));
+	await runStateBackfill(NOW, deps(projections, checkpoints));
+	assert.equal([...projections.rows.values()].filter((r) => r.state === undefined).length, 0);
+});

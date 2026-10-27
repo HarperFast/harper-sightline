@@ -13,7 +13,6 @@ import {
 	DigestSubscriptions,
 	DigestOutboxes,
 } from './src/db.ts';
-import type { Expectation } from './src/domain/model.ts';
 import {
 	drainAccepted,
 	emptyDrainResult,
@@ -25,6 +24,7 @@ import {
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { isOrderLinked } from './src/ingest/projection.ts';
+import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
 import { uninstallShop } from './src/shopify/lifecycle.ts';
 import { purgeExpired, OUTBOX_RETENTION_DAYS, type PurgeResult } from './src/retention/retention.ts';
@@ -267,19 +267,14 @@ export function startPurgeBootPass(): void {
 // Every 5 minutes, from config.yaml's `sightline-detect` job.
 const detectorTicker = ticker('detect', 15 * 60_000);
 
-export async function runDetectorSweep(now = Date.now()): Promise<number> {
-	const pending: Expectation[] = [];
-	for await (const exp of Expectations.search({ conditions: [{ attribute: 'state', value: 'pending' }] })) {
-		pending.push(exp as unknown as Expectation);
-	}
-	let due = 0;
-	for (const exp of pending) {
-		if ((exp.deadline ?? Number.POSITIVE_INFINITY) <= now) {
-			await runDetectorForOrder(orderTables, exp.shopId, exp.orderId, now);
-			due += 1;
-		}
-	}
-	return due;
+export function runDetectorSweep(now = Date.now()): Promise<number> {
+	return sweepDueExpectations(
+		{
+			expectations: Expectations as unknown as DetectorSweepDeps['expectations'],
+			evaluate: (shopId, orderId) => runDetectorForOrder(orderTables, shopId, orderId, now),
+		},
+		now,
+	);
 }
 
 export const detectJob = job('detect', detectorTicker, async () => {

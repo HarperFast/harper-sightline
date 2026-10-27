@@ -1,6 +1,5 @@
 import type { OrderProjection, WorkerCheckpoint } from '../domain/model.ts';
 import { deriveOrderLane } from '../domain/orders.ts';
-import { log } from '../observability/observe.ts';
 
 // One-time backfill of the derived `state` column on order projections written
 // before that column existed.
@@ -50,6 +49,7 @@ export interface BackfillQuerySpec {
 	sort?: { attribute: string; descending?: boolean };
 	select?: string[];
 	limit?: number;
+	offset?: number;
 }
 export interface BackfillReadTable {
 	search(spec: BackfillQuerySpec): AsyncIterable<Record<string, unknown>>;
@@ -73,10 +73,20 @@ export interface BackfillResult {
 	cursor: number;
 }
 
+// The checkpoint cursor is `ms` or `ms:skip`: `skip` counts rows already examined
+// at exactly `ms`, so a group tied on one millisecond is paged through with an
+// offset instead of being skipped or re-read forever.
+function parseCursor(raw: unknown): { ms: number; skip: number } {
+	const [msPart, skipPart] = String(raw ?? '').split(':');
+	const ms = Number(msPart);
+	if (!msPart || !Number.isFinite(ms)) return { ms: 0, skip: 0 };
+	const skip = Number(skipPart);
+	return { ms, skip: Number.isInteger(skip) && skip > 0 ? skip : 0 };
+}
+
 export async function runStateBackfill(now: number, deps: BackfillDeps): Promise<BackfillResult> {
 	const checkpoint = await deps.checkpoints.get(BACKFILL_CHECKPOINT_ID);
-	const raw = Number((checkpoint as { cursor?: unknown } | undefined)?.cursor);
-	const cursor = Number.isFinite(raw) ? raw : 0;
+	const { ms: cursor, skip } = parseCursor((checkpoint as { cursor?: unknown } | undefined)?.cursor);
 
 	const rows: Array<Record<string, unknown>> = [];
 	for await (const row of deps.projections.search({
@@ -84,6 +94,7 @@ export async function runStateBackfill(now: number, deps: BackfillDeps): Promise
 		operator: 'and',
 		sort: { attribute: 'lastEventAt' },
 		limit: BACKFILL_BATCH,
+		...(skip > 0 ? { offset: skip } : {}),
 	})) {
 		rows.push(row);
 	}
@@ -104,21 +115,22 @@ export async function runStateBackfill(now: number, deps: BackfillDeps): Promise
 	}
 
 	// Advance the frontier. A FULL batch may have cut off rows tied at its highest
-	// lastEventAt, so the frontier stops there and re-reads that tie group next
-	// tick (idempotent — those rows now have `state` and are skipped). A partial
-	// batch means we reached the present, so the frontier moves past it.
+	// lastEventAt, so the frontier stays at that millisecond and records how many
+	// rows there it has already examined; the next tick resumes after them. A
+	// partial batch means we reached the present, so the frontier moves past it.
 	const maxSeen = Math.max(...rows.map((r) => Number(r.lastEventAt)));
-	const full = rows.length >= BACKFILL_BATCH;
-	let next = full && maxSeen > cursor ? maxSeen : maxSeen + 1;
-	if (full && maxSeen <= cursor) {
-		// A whole batch sharing one millisecond. Advancing is the only way to make
-		// progress, and more than BACKFILL_BATCH projections with an identical
-		// lastEventAt would leave a residue — loud rather than silent, because the
-		// symptom (a lane count that still disagrees with its list) is otherwise
-		// indistinguishable from the defect this sweep exists to close.
-		log('warn', 'state.backfill.tied_batch', { cursor, batch: rows.length, action: 'advancing past the tie' });
-		next = maxSeen + 1;
+	let nextMs: number;
+	let nextSkip = 0;
+	if (rows.length < BACKFILL_BATCH) {
+		nextMs = maxSeen + 1;
+	} else {
+		nextMs = maxSeen;
+		nextSkip = rows.filter((r) => Number(r.lastEventAt) === maxSeen).length + (maxSeen === cursor ? skip : 0);
 	}
-	await deps.checkpoints.put({ id: BACKFILL_CHECKPOINT_ID, cursor: String(next), updatedAt: now });
-	return { scanned: rows.length, fixed, cursor: next };
+	await deps.checkpoints.put({
+		id: BACKFILL_CHECKPOINT_ID,
+		cursor: nextSkip > 0 ? `${nextMs}:${nextSkip}` : String(nextMs),
+		updatedAt: now,
+	});
+	return { scanned: rows.length, fixed, cursor: nextMs };
 }

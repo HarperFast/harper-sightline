@@ -55,7 +55,9 @@ export class FakeTable implements PurgeableTable {
 		}
 	}
 
-	async *search(query: SearchQuery & { sort?: { attribute: string; descending?: boolean } }): AsyncIterable<Record<string, unknown>> {
+	async *search(
+		query: SearchQuery & { sort?: { attribute: string; descending?: boolean }; offset?: number },
+	): AsyncIterable<Record<string, unknown>> {
 		FakeTable.validate(query);
 		let matched = [...this.rows.values()].filter((row) => FakeTable.matches(row, query));
 		const sort = query.sort;
@@ -66,6 +68,7 @@ export class FakeTable implements PurgeableTable {
 				return sort.descending ? bv - av : av - bv;
 			});
 		}
+		matched = matched.slice(query.offset ?? 0);
 		const limit = query.limit ?? Number.POSITIVE_INFINITY;
 		let yielded = 0;
 		for (const row of matched) {
