@@ -58,8 +58,9 @@ export async function getUsableAccessToken(deps: TokenDeps, shopId: string, now:
 	const needsRefresh = credential.expiresAt === undefined || credential.expiresAt - now <= REFRESH_MARGIN_MS;
 	if (!needsRefresh) return deps.loadAccessToken(shopId);
 
-	// rotateCredential marks the shop reauthorization_required on failure, so a
-	// false here is already recorded as merchant-actionable state.
+	// rotateCredential marks the shop reauthorization_required when Shopify rejects
+	// the refresh token, so a false here is already recorded as merchant-actionable
+	// state. A transient failure throws instead and leaves the shop untouched.
 	if (!(await deps.rotate(shopId))) return null;
 	return deps.loadAccessToken(shopId);
 }

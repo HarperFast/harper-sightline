@@ -62,3 +62,34 @@ export async function sweepOrdersSince(deps: ReconcileSweepDeps, sinceMs: number
 	await deps.saveCheckpoint(latest, true);
 	return { orders, latest, complete: true };
 }
+
+export interface ReconcileShopsDeps {
+	reconcile(shopId: string): Promise<{ orders: number } | null>;
+	onFailure(shopId: string, err: unknown): void;
+}
+
+export interface ReconcileShopsResult {
+	shops: number;
+	orders: number;
+	failed: number;
+}
+
+// Visit every shop, isolating failures: a shop that keeps throwing (frozen,
+// locked, deleted, throttled mid-backfill) must not abort the sweep and starve
+// every shop after it on every tick.
+export async function reconcileShops(shopRows: AsyncIterable<{ shopId: string }>, deps: ReconcileShopsDeps): Promise<ReconcileShopsResult> {
+	const result: ReconcileShopsResult = { shops: 0, orders: 0, failed: 0 };
+	for await (const { shopId } of shopRows) {
+		try {
+			const r = await deps.reconcile(shopId);
+			if (r) {
+				result.shops += 1;
+				result.orders += r.orders;
+			}
+		} catch (err) {
+			result.failed += 1;
+			deps.onFailure(shopId, err);
+		}
+	}
+	return result;
+}

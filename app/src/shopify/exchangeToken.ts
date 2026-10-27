@@ -1,3 +1,5 @@
+import { ADMIN_TIMEOUT_MS } from './adminApi.ts';
+
 // Shopify token exchange + refresh for expiring OFFLINE access tokens
 // (ADR-001, contract §2). Promoted from Spike A. The offline token is obtained
 // by exchanging a verified session token; expiring tokens are later renewed via
@@ -51,6 +53,7 @@ export async function exchangeOfflineToken(args: {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
 		body,
+		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) throw mapError(res.status, 'token exchange');
 	return parse((await res.json()) as Record<string, unknown>);
@@ -75,6 +78,7 @@ export async function refreshOfflineToken(args: {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
 		body,
+		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) throw mapError(res.status, 'token refresh');
 	return parse((await res.json()) as Record<string, unknown>);

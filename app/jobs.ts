@@ -40,7 +40,7 @@ import {
 	isThrottledAdminError,
 } from './src/shopify/adminApi.ts';
 import { synthesizeEvents } from './src/shopify/reconcile.ts';
-import { sweepOrdersSince } from './src/shopify/reconcileSweep.ts';
+import { sweepOrdersSince, reconcileShops, type ReconcileShopsResult } from './src/shopify/reconcileSweep.ts';
 import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/ingest/inventoryEnrich.ts';
 import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/jobs/stateBackfill.ts';
 import {
@@ -434,17 +434,22 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 	return { orders };
 }
 
-export async function runReconcileSweep(now = Date.now()): Promise<{ shops: number; orders: number }> {
-	let shops = 0;
-	let orders = 0;
-	for await (const s of Shops.search({ conditions: [{ attribute: 'status', value: 'active' }] })) {
-		const result = await reconcileShop((s as { shopId: string }).shopId, now);
-		if (result) {
-			shops += 1;
-			orders += result.orders;
-		}
+// A failing shop is counted and logged here, not rethrown. Its status is left
+// alone (rotateCredential already parks a rejected refresh token); a shop that
+// never completes a pass shows as stale in ops.snapshot via its checkpoint.
+function recordShopFailure(shopId: string, err: unknown): void {
+	if (isThrottledAdminError(err)) {
+		metrics.inc(M.reconcileThrottled);
+		log('warn', 'reconcile.shop.throttled', { shop: shopId, message: (err as Error).message });
+	} else {
+		metrics.inc(M.reconcileError);
+		log('error', 'reconcile.shop.error', { shop: shopId, message: (err as Error).message });
 	}
-	return { shops, orders };
+}
+
+export function runReconcileSweep(now = Date.now()): Promise<ReconcileShopsResult> {
+	const active = Shops.search({ conditions: [{ attribute: 'status', value: 'active' }] }) as AsyncIterable<{ shopId: string }>;
+	return reconcileShops(active, { reconcile: (shopId) => reconcileShop(shopId, now), onFailure: recordShopFailure });
 }
 
 export const reconcileJob = job('reconcile', reconcileTicker, async () => {
@@ -454,7 +459,8 @@ export const reconcileJob = job('reconcile', reconcileTicker, async () => {
 		metrics.observeMs(M.reconcileMs, Date.now() - startedAt);
 		metrics.inc(M.reconcileShops, r.shops);
 		metrics.inc(M.reconcileOrders, r.orders);
-		if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
+		if (r.failed) log('warn', 'reconcile.partial', { shops: r.shops, orders: r.orders, failed: r.failed });
+		else if (r.orders) log('trace', 'reconcile.tick', { shops: r.shops, orders: r.orders });
 	} catch (e: unknown) {
 		// A throttle is a capacity signal, not a fault: the sweep persisted its
 		// partial progress and the next tick resumes, so it is counted (and

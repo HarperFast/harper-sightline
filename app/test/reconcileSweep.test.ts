@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ReconcileOrder } from '../src/shopify/adminApi.ts';
-import { sweepOrdersSince, type ReconcileSweepDeps } from '../src/shopify/reconcileSweep.ts';
+import { sweepOrdersSince, reconcileShops, type ReconcileSweepDeps, type ReconcileShopsDeps } from '../src/shopify/reconcileSweep.ts';
 
 // The reconcile sweep is the gap-fill that stops the detector reporting an
 // absence Sightline caused rather than the store. Before this module the paging
@@ -111,6 +111,52 @@ test('a finished pass marks the pass complete, so staleness clears', async () =>
 	await sweepOrdersSince(deps, 500);
 
 	assert.deepEqual(saved, [{ cursorMs: 1000, complete: true }]);
+});
+
+// One shop that keeps failing (402 frozen, 423 locked, 404, a throttle during
+// backfill, a failed rotation) must not stop the shops after it from reconciling.
+function shopDeps(outcomes: Record<string, { orders: number } | null | Error>) {
+	const attempted: string[] = [];
+	const failures: Array<{ shopId: string; message: string }> = [];
+	const deps: ReconcileShopsDeps = {
+		reconcile: async (shopId) => {
+			attempted.push(shopId);
+			const outcome = outcomes[shopId];
+			if (outcome === undefined) throw new Error(`unscripted shop ${shopId}`);
+			if (outcome instanceof Error) throw outcome;
+			return outcome;
+		},
+		onFailure: (shopId, err) => failures.push({ shopId, message: (err as Error).message }),
+	};
+	return { deps, attempted, failures };
+}
+
+async function* shops(...ids: string[]) {
+	for (const shopId of ids) yield { shopId };
+}
+
+test('a shop that throws does not stop later shops from reconciling', async () => {
+	const { deps, attempted, failures } = shopDeps({
+		a: { orders: 2 },
+		b: new Error('admin graphql 402'),
+		c: { orders: 3 },
+		d: null,
+	});
+
+	const result = await reconcileShops(shops('a', 'b', 'c', 'd'), deps);
+
+	assert.deepEqual(attempted, ['a', 'b', 'c', 'd']);
+	assert.deepEqual(failures, [{ shopId: 'b', message: 'admin graphql 402' }]);
+	assert.deepEqual(result, { shops: 2, orders: 5, failed: 1 });
+});
+
+test('every shop failing still visits every shop and reports each failure', async () => {
+	const { deps, failures } = shopDeps({ a: new Error('423'), b: new Error('404') });
+
+	const result = await reconcileShops(shops('a', 'b'), deps);
+
+	assert.equal(failures.length, 2);
+	assert.deepEqual(result, { shops: 0, orders: 0, failed: 2 });
 });
 
 test('orders with no updatedAt cannot drag the cursor backwards', async () => {

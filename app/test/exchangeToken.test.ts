@@ -49,3 +49,36 @@ test('refresh posts the refresh_token grant', async () => {
 	assert.match(body, /refresh_token=r/);
 	assert.equal(t.accessToken, 'a2');
 });
+
+const calls = [
+	['exchange', () => exchangeOfflineToken({ shop: 's', sessionToken: 't', apiKey: 'k', secret: 'x' })],
+	['refresh', () => refreshOfflineToken({ shop: 's', refreshToken: 'r', apiKey: 'k', secret: 'x' })],
+] as const;
+
+for (const [name, call] of calls) {
+	test(`${name} passes an abort signal so a hung connection cannot block forever`, async () => {
+		let signal: AbortSignal | undefined;
+		globalThis.fetch = (async (_url: string, init: { signal?: AbortSignal }) => {
+			signal = init.signal;
+			return new Response(JSON.stringify({ access_token: 'a' }), { status: 200 });
+		}) as typeof fetch;
+		await call();
+		assert.ok(signal instanceof AbortSignal);
+	});
+
+	test(`${name} timing out rejects as a transient error, not an auth error`, async () => {
+		// A fetch that never answers and only ends when its signal aborts, as real
+		// fetch does; the timeout is shortened so the test does not wait 30s.
+		globalThis.fetch = (async (_url: string, init: { signal: AbortSignal }) =>
+			new Promise((_resolve, reject) => {
+				init.signal.addEventListener('abort', () => reject(init.signal.reason));
+			})) as typeof fetch;
+		const realTimeout = AbortSignal.timeout;
+		AbortSignal.timeout = () => realTimeout.call(AbortSignal, 5);
+		try {
+			await assert.rejects(call, (e: Error & { statusCode?: number }) => e.name === 'TimeoutError' && e.statusCode !== 401);
+		} finally {
+			AbortSignal.timeout = realTimeout;
+		}
+	});
+}
