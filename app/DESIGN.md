@@ -131,8 +131,8 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
   shop's throw is logged (`reconcile.shop.error`) and counted, and the sweep goes on.
   `rotateCredential` is single-flight per shop within a worker; across threads and
   nodes a concurrent loser holds a spent refresh token, so on failure it re-reads the
-  credential version and treats a higher one as success. Only a 401 from Shopify parks
-  the shop (`reauthorization_required`), and only after a 1s settle delay and a final
+  credential version and treats a higher one as success. Only a 400 or 401 from Shopify (a
+  rejected refresh grant) parks the shop (`reauthorization_required`), and only after a 1s settle delay and a final
   version re-read; timeouts, network errors and 5xx rethrow and never park.
 - **Inventory enrichment frontier.** The per-shop `enrich:<shopId>` cursor is
   capped at the `receivedAt` of the shop's oldest delivery still `accepted`, so

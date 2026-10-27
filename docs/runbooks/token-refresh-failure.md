@@ -15,7 +15,7 @@
   mid-sweep.
 - Rotation is single-flight per shop within a worker. If it fails, the credential
   version is re-read: a higher one means another thread or node already rotated, and
-  the shop is not parked. Only a `401` from Shopify parks a shop, and only after a 1s
+  the shop is not parked. Only a `400` or `401` from Shopify (a rejected refresh grant, normally `invalid_grant`) parks a shop, and only after a 1s
   settle and one more version re-read; timeouts, network errors and 5xx are transient,
   throw, and leave the shop `active`. One shop's failure does not stop the reconcile
   sweep for the others (`reconcile.shop.error`).

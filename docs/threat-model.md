@@ -66,7 +66,7 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 | Double-processing under multi-node/thread | Per-item atomic single-winner insert → exactly-once regardless of worker count (ADR-002) | M |
 | Work lost on restart | Durable inbox + startup recovery scan (ADR-002, proven) | M |
 | Duplicate active schedulers | Periodic sweeps run as Harper scheduler jobs (leader-coordinated, lease without compare-and-set, so a transient dual-leader window is possible); every sweep is idempotent (ADR-002) | M |
-| Poison message stalls the pipeline | TTL'd processing claim + attempt-count dead-letter (ADR-002 → #9) | S |
+| Poison message stalls the pipeline | Processing is a scheduler job with a failure-capped drain; a delivery dead-letters after MAX_ATTEMPTS (permanent errors immediately) and is skipped for the rest of the drain (ADR-002) | S |
 
 ### 3.5 Admin API access (Harper → Shopify)
 | Threat | Mitigation | Status |

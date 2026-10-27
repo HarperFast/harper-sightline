@@ -98,8 +98,8 @@ failed".
 ### Verify recovery
 `digest.build.subscription.failed` stops recurring for the affected shop (or
 `digest.error` stops recurring / `tick.stalled` for `loop: "digest"` stops
-repeating), and the next scheduled tick (hourly; `DIGEST_INTERVAL_MS`,
-`app/jobs.ts`) advances `lastBuiltAt` for the affected shop and, if that period
+repeating), and the next scheduled tick (hourly; the `sightline-digest` job `interval` in
+`app/config.yaml`) advances `lastBuiltAt` for the affected shop and, if that period
 has something to report, writes exactly one new `DigestOutbox` row for it.
 Re-running the tick must not create a second row for the same period — the
 outbox id is `${shopId}:${periodStart}`, so a rebuild upserts rather than

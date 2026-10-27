@@ -89,7 +89,7 @@ export interface WebhookDelivery {
 	status: DeliveryStatus;
 	attempts?: number;
 	hmacVerified?: boolean;
-	payload?: string; // PII-stripped JSON body, for the worker to normalize (#10)
+	payload?: string; // PII-stripped JSON body, for the worker to normalize
 }
 
 export interface OperationalEvent {
@@ -100,7 +100,7 @@ export interface OperationalEvent {
 	resourceId?: string;
 	sku?: string;
 	quantity?: number;
-	fulfillableItemCount?: number; // order events: units still requiring fulfillment (#12)
+	fulfillableItemCount?: number; // order events: units still requiring fulfillment
 	orderName?: string;
 	totalPrice?: number;
 	currency?: string;

@@ -92,7 +92,7 @@ export interface JobContext {
 	catchUp?: boolean;
 }
 
-// Every stall budget is at least the job's interval, so when runBounded releases
+// Most stall budgets are at least the job's interval, so when runBounded releases
 // the scheduler may fire the next occurrence immediately and a slow (not hung)
 // pass can overlap a second one; idempotency (ADR-002) covers correctness. A
 // skipped tick (`run` returns null) is not an error.
