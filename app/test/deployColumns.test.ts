@@ -30,7 +30,10 @@ type Bar @table(database: "db_b") @sealed {
 test('every non-key schema field is in the derived list, so a new column cannot be forgotten', () => {
 	const derived = new Set(expectedColumns(sdl).map(key));
 	const bodies = [...sdl.replace(/#.*$/gm, '').matchAll(/^type (\w+) @table\(database: "(\w+)"\)[^{]*\{([^}]*)\}/gm)];
-	assert.ok(bodies.length >= 10);
+	const tablesWithColumns = new Set(expectedColumns(sdl).map(([database, table]) => `${database}.${table}`));
+	const declared = sdl.split('@table(').length - 1;
+	assert.equal(bodies.length, declared, 'every @table type in schema.graphql is parsed');
+	assert.equal(tablesWithColumns.size, declared, 'every @table type yields derived columns');
 	for (const [, table, database, body] of bodies) {
 		for (const line of body.split('\n')) {
 			const m = /^\t(\w+):/.exec(line);

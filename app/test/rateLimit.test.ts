@@ -1,11 +1,21 @@
-import { test } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { API_REQUESTS_PER_MINUTE, createRateLimiter, EXPORTS_PER_MINUTE, RATE_WINDOW_MS, RateLimitError } from '../src/auth/rateLimit.ts';
 import { createShopifyIdentityAdapter } from '../src/auth/identity.ts';
 import { MAX_TOKEN_CHARS } from '../src/auth/verifySessionToken.ts';
 import { mintToken, validClaims } from './mintToken.ts';
+import { setLogSink, type LogLevel } from '../src/observability/observe.ts';
 
 const NOW = 1_760_000_000_000;
+
+let logLines: string[] = [];
+
+beforeEach(() => {
+	logLines = [];
+	setLogSink((_level: LogLevel, line: string) => logLines.push(line));
+});
+
+afterEach(() => setLogSink(null));
 
 test('a limiter admits exactly `limit` calls per window, then refuses', () => {
 	const limiter = createRateLimiter({ limit: 3, windowMs: 1000 });
@@ -109,6 +119,9 @@ test('an authenticated caller is limited per shop, and the refusal is a 429', as
 			return true;
 		},
 	);
+	const limited = logLines.filter((l) => l.includes('api.rate_limited'));
+	assert.equal(limited.length, 1);
+	assert.equal(JSON.parse(limited[0].replace('[sightline] ', '')).level, 'warn');
 });
 
 // The limit keys on the VERIFIED shop, so a second shop's token is unaffected by
