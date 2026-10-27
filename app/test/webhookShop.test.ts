@@ -26,7 +26,7 @@ test('a malformed shop domain is rejected 400 before any lookup', async () => {
 	assert.equal(looked, false);
 });
 
-test('an unknown shop is rejected 404 so Shopify retries a delivery racing install', async () => {
+test('an unknown shop is rejected 404 so a delivery racing install is retried', async () => {
 	assert.deepEqual(await check({ shopId: 'c.myshopify.com' }), { ok: false, status: 404, reason: 'unknown shop' });
 });
 
@@ -56,9 +56,10 @@ test('an event body replayed with its topic header swapped to app/uninstalled is
 
 test('compliance topics bind to the body and tolerate an already-redacted shop', async () => {
 	for (const topic of ['shop/redact', 'customers/redact', 'customers/data_request']) {
+		const own = { ...SHAPES[topic], shop_domain: 'gone.myshopify.com' };
 		const args = { topic, requireKnownShop: false, shopId: 'gone.myshopify.com' };
-		assert.deepEqual(await check({ ...args, body: { shop_domain: 'gone.myshopify.com' } }), { ok: true }, topic);
-		assert.equal((await check({ ...args, body: { shop_domain: 'a.myshopify.com' } })).ok, false, topic);
+		assert.deepEqual(await check({ ...args, body: own }), { ok: true }, topic);
+		assert.equal((await check({ ...args, body: { ...own, shop_domain: 'a.myshopify.com' } })).ok, false, topic);
 		assert.equal((await check({ ...args, body: {} })).ok, false, topic);
 	}
 });
@@ -70,5 +71,39 @@ test('a swapped header on a signed shop/redact body cannot redact another tenant
 		shopId: 'b.myshopify.com',
 		body: { shop_id: 1, shop_domain: 'a.myshopify.com' },
 	});
+	assert.equal(v.ok, false);
+});
+
+const SHAPES: Record<string, Record<string, unknown>> = {
+	'app/uninstalled': { id: 1, myshopify_domain: 'a.myshopify.com', domain: 'a.example' },
+	'shop/redact': { shop_id: 1, shop_domain: 'a.myshopify.com' },
+	'customers/redact': { shop_id: 1, shop_domain: 'a.myshopify.com', customer: { id: 2 }, orders_to_redact: [3] },
+	'customers/data_request': {
+		shop_id: 1,
+		shop_domain: 'a.myshopify.com',
+		customer: { id: 2 },
+		orders_requested: [3],
+		data_request: { id: 4 },
+	},
+};
+
+test('each real topic shape is accepted under its own topic', async () => {
+	for (const [topic, body] of Object.entries(SHAPES)) {
+		assert.equal((await check({ topic, body, requireKnownShop: false })).ok, true, topic);
+	}
+});
+
+test('a body of one lifecycle or compliance topic is rejected under every other topic', async () => {
+	for (const [real, body] of Object.entries(SHAPES)) {
+		for (const claimed of Object.keys(SHAPES)) {
+			if (claimed === real) continue;
+			const v = await check({ topic: claimed, body, requireKnownShop: false });
+			assert.ok(!v.ok && v.status === 400, `${real} replayed as ${claimed}`);
+		}
+	}
+});
+
+test('a compliance body replayed as app/uninstalled for the same shop is rejected', async () => {
+	const v = await check({ topic: 'app/uninstalled', body: SHAPES['customers/data_request'] });
 	assert.equal(v.ok, false);
 });
