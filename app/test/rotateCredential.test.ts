@@ -48,6 +48,7 @@ function fakeDeps(over: Partial<RotateDeps> & { versions?: number[] } = {}) {
 		async markReauth() {
 			calls.push('markReauth');
 		},
+		async settle() {},
 		...overrides,
 	};
 	return { deps, calls };
@@ -123,6 +124,96 @@ test('an unchanged version after a failure is not mistaken for a concurrent win'
 	});
 	assert.equal(await rotateCredential(ARGS, deps), false);
 	assert.ok(calls.includes('markReauth'));
+});
+
+test('a version that bumps only on the second re-read is a win, not a park', async () => {
+	// The winner's write was still landing when the loser's 401 arrived.
+	const { deps, calls } = fakeDeps({
+		versions: [1, 1, 2],
+		async refresh() {
+			throw httpError(401);
+		},
+	});
+	assert.equal(await rotateCredential(ARGS, deps), true);
+	assert.ok(!calls.includes('markReauth'));
+});
+
+test('a genuine 401 waits the settle delay once, then still parks', async () => {
+	const delays: number[] = [];
+	const { deps, calls } = fakeDeps({
+		versions: [1, 1, 1],
+		async refresh() {
+			throw httpError(401);
+		},
+		async settle(ms) {
+			delays.push(ms);
+		},
+	});
+	assert.equal(await rotateCredential(ARGS, deps), false);
+	assert.equal(delays.length, 1);
+	assert.ok(calls.includes('markReauth'));
+});
+
+test('a transient failure does not wait for the settle delay', async () => {
+	const delays: number[] = [];
+	const { deps } = fakeDeps({
+		async refresh() {
+			throw httpError(502);
+		},
+		async settle(ms) {
+			delays.push(ms);
+		},
+	});
+	await assert.rejects(() => rotateCredential(ARGS, deps));
+	assert.deepEqual(delays, []);
+});
+
+test('concurrent callers for one shop share a single refresh', async () => {
+	let refreshes = 0;
+	let release: () => void = () => {};
+	const gate = new Promise<void>((r) => (release = r));
+	const { deps } = fakeDeps({
+		async refresh() {
+			refreshes++;
+			await gate;
+			return TOKEN;
+		},
+	});
+	const a = rotateCredential(ARGS, deps);
+	const b = rotateCredential(ARGS, deps);
+	release();
+	assert.deepEqual(await Promise.all([a, b]), [true, true]);
+	assert.equal(refreshes, 1);
+});
+
+test('different shops rotate independently', async () => {
+	let refreshes = 0;
+	const { deps } = fakeDeps({
+		async refresh() {
+			refreshes++;
+			return TOKEN;
+		},
+	});
+	await Promise.all([rotateCredential(ARGS, deps), rotateCredential({ ...ARGS, shopId: 'other.myshopify.com' }, deps)]);
+	assert.equal(refreshes, 2);
+});
+
+test('the single-flight entry is cleared after success and after failure', async () => {
+	let refreshes = 0;
+	let fail = false;
+	const { deps } = fakeDeps({
+		async refresh() {
+			refreshes++;
+			if (fail) throw httpError(502);
+			return TOKEN;
+		},
+	});
+	await rotateCredential(ARGS, deps);
+	fail = true;
+	await assert.rejects(() => rotateCredential(ARGS, deps));
+	fail = false;
+	assert.equal(await rotateCredential(ARGS, deps), true);
+	assert.equal(refreshes, 3, 'each sequential call rotates again');
 });
 
 test('a shop with no refresh token is parked', async () => {

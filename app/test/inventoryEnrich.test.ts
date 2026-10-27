@@ -271,3 +271,26 @@ test('a failing Admin API call for one shop does not abort the sweep for the res
 		setLogSink(null);
 	}
 });
+
+test('a shop whose token fetch throws does not stop later shops from enriching', async () => {
+	const raw = harness();
+	await raw.shops.put({ shopId: 's2', status: 'active' });
+	await raw.shops.put({ shopId: 's3', status: 'active' });
+	for (const shopId of ['s1', 's2', 's3']) {
+		await raw.events.put(inventoryEvent({ eventId: `${shopId}:e1`, shopId, resourceId: 'i1' }));
+	}
+	const deps = buildDeps(raw, {
+		getToken: async (shopId: string) => {
+			if (shopId === 's1') throw new Error('shopify token refresh failed: 502');
+			return 'tok';
+		},
+		fetchItems: (async (_shop: string, _token: string, ids: string[]) =>
+			ids.map((id) => ({ inventoryItemId: id, sku: `SKU-${id}` }))) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+
+	const result = await runInventoryEnrichment(NOW, deps);
+
+	assert.equal(result.items, 2, 's2 and s3 were enriched');
+	assert.equal(raw.checkpoints.rows.has('enrich:s1'), false, 'the failing shop checkpoint is untouched');
+});

@@ -1,6 +1,6 @@
 import type { EventSku, InventoryItem, OperationalEvent, ShopLocation, WorkerCheckpoint } from '../domain/model.ts';
 import { eventSkuRows } from './eventSkus.ts';
-import { log } from '../observability/observe.ts';
+import { log, metrics, M } from '../observability/observe.ts';
 import { isPermanentAdminError, type fetchInventoryItems, type fetchLocations } from '../shopify/adminApi.ts';
 
 // Inventory webhooks carry only `inventory_item_id` and a number, which is
@@ -137,7 +137,15 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 	let indexed = 0;
 	for await (const s of deps.shops.search({ conditions: [{ attribute: 'status', value: 'active' }] })) {
 		const shopId = (s as { shopId: string }).shopId;
-		const token = await deps.getToken(shopId, now);
+		let token: string | null;
+		try {
+			token = await deps.getToken(shopId, now);
+		} catch (e: unknown) {
+			// A transient refresh failure for one shop must not starve the shops after it.
+			metrics.inc(M.enrichError);
+			log('error', 'enrich.shop.error', { shop: shopId, message: (e as Error).message });
+			continue;
+		}
 		if (!token) continue;
 
 		// Locations: one small call, refreshed when we have none cached.
