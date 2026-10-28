@@ -360,7 +360,6 @@ if (DRY_RUN) {
 	process.exit(0);
 }
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = process.env;
 if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 	console.error('\nset HARPER_OPS_URL, HARPER_USER, HARPER_PASS (or pass --dry-run)');

@@ -1,7 +1,9 @@
 // Deploy the Sightline component to a Harper instance via the operations API,
 // then restart and wait for it to load. Creds from env; nothing secret committed.
 //   HARPER_OPS_URL=https://<host>:9925/ HARPER_USER=... HARPER_PASS=... \
-//   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/deploy.mjs
+//   node scripts/deploy.mjs
+// TLS is verified. Only a host with a self-signed certificate needs an explicit
+// NODE_TLS_REJECT_UNAUTHORIZED=0 on the command line.
 import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +11,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expectedColumns } from './schemaColumns.mjs';
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = process.env;
 if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 	console.error('set HARPER_OPS_URL, HARPER_USER, HARPER_PASS');

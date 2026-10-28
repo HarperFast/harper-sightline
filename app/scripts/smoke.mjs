@@ -3,14 +3,14 @@
 // Exits non-zero on any miss so it can gate a deploy.
 //   SIGHTLINE_BASE=https://<host> \
 //   SHOPIFY_API_SECRET=<app secret> SHOPIFY_API_KEY=<client id> \
-//   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/smoke.mjs
+//   node scripts/smoke.mjs
+// TLS is verified; a self-signed host needs an explicit NODE_TLS_REJECT_UNAUTHORIZED=0.
 // Without SHOPIFY_API_SECRET/KEY the authenticated + signed-webhook checks are
 // skipped (the unauthenticated subset still runs). SMOKE_WEBHOOK=1 opts in to a
 // signed webhook round-trip (writes a synthetic delivery — staging only), and
 // SMOKE_RATE_LIMIT=1 opts in to the 429-is-not-401 check on a throttled export.
 import { createHmac } from 'node:crypto';
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 const base = process.env.SIGHTLINE_BASE ?? 'https://ayoo.josh-test.harperfabric.com';
 const secret = process.env.SHOPIFY_API_SECRET;
 const apiKey = process.env.SHOPIFY_API_KEY ?? 'e446bda5edb3ee3bae6e0ba280ef8b12';

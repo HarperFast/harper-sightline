@@ -5,7 +5,8 @@
 //   SIGHTLINE_BASE=https://<host> \
 //   SHOPIFY_API_SECRET=<app secret> SIGHTLINE_OPS_TOKEN=<ops token> \
 //   LOAD_RPS=100 LOAD_DURATION=600 \
-//   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/loadtest.mjs
+//   node scripts/loadtest.mjs
+// TLS is verified; a self-signed host needs an explicit NODE_TLS_REJECT_UNAUTHORIZED=0.
 //
 // The drain phase exists because ack latency alone cannot fail (work is deferred,
 // ADR-002); a run once printed LOAD PASS with every delivery accepted and none processed.
@@ -38,7 +39,6 @@ if (!opsToken) {
 	console.error('SIGHTLINE_OPS_TOKEN is required to verify the burst drained. Refusing to run a drain-blind load test.');
 	process.exit(2);
 }
-process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 
 // Backlog and dead letters, cluster-wide (derived from replicated tables).
 async function readOps() {

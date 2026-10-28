@@ -17,9 +17,7 @@
 // `get_secrets_public_key` first and refuses to write if custody is uninitialised.
 import { argv, env, exit } from 'node:process';
 
-// The dev instance uses a self-signed cert, as in deploy.mjs.
-env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
-
+// TLS is verified; a self-signed host needs an explicit NODE_TLS_REJECT_UNAUTHORIZED=0.
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = env;
 if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 	console.error('set HARPER_OPS_URL, HARPER_USER and HARPER_PASS');
