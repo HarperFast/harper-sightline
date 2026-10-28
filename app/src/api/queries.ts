@@ -23,12 +23,18 @@ import { RECONCILE_STALE_MS } from '../observability/opsHealth.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every query
 // derives shopId from the authenticated principal and constrains the search by it.
+export type QueryCondition = { attribute: string; value: unknown; comparator?: string } | QuerySpec;
 export interface QuerySpec {
-	conditions: Array<{ attribute: string; value: unknown; comparator?: string }>;
+	conditions: QueryCondition[];
 	operator?: 'and' | 'or';
-	sort?: { attribute: string; descending?: boolean };
+	sort?: QuerySort;
 	select?: string[];
 	limit?: number;
+}
+export interface QuerySort {
+	attribute: string;
+	descending?: boolean;
+	next?: QuerySort;
 }
 export interface QueryTable {
 	search(spec: QuerySpec): AsyncIterable<Record<string, unknown>>;
@@ -40,8 +46,9 @@ export interface Page {
 	nextCursor?: string;
 }
 
-// Keyset pagination over a numeric sort field with the row id as tiebreak; the
-// over-fetched buffer lets equal-timestamp rows page correctly.
+// Keyset pagination over a numeric sort field with the row id as tiebreak. The store
+// orders by (sortField, id) and the cursor condition excludes everything up to and
+// including the cursor row, so a tie group of any size pages without a read-ahead.
 async function keysetPage(
 	table: QueryTable,
 	baseConditions: QuerySpec['conditions'],
@@ -56,43 +63,31 @@ async function keysetPage(
 	const cursor = decodeCursor(cursorRaw);
 	const conditions = [...baseConditions];
 	if (cursor) {
+		// Harper rejects an `or` over fewer than two conditions; this one has exactly two.
 		conditions.push({
-			attribute: sortField,
-			value: cursor.sortValue,
-			comparator: descending ? 'less_than_equal' : 'greater_than_equal',
+			operator: 'or',
+			conditions: [
+				{ attribute: sortField, value: cursor.sortValue, comparator: descending ? 'less_than' : 'greater_than' },
+				{
+					operator: 'and',
+					conditions: [
+						{ attribute: sortField, value: cursor.sortValue, comparator: 'equals' },
+						{ attribute: idField, value: cursor.id, comparator: descending ? 'less_than' : 'greater_than' },
+					],
+				},
+			],
 		});
 	}
 
-	const rows: Array<Record<string, unknown>> = [];
+	const page: Array<Record<string, unknown>> = [];
 	for await (const row of table.search({
 		conditions,
 		operator: 'and',
-		sort: { attribute: sortField, descending },
-		limit: limit + 25,
+		sort: { attribute: sortField, descending, next: { attribute: idField, descending } },
+		limit,
 	})) {
-		rows.push(row);
+		page.push(row);
 	}
-	rows.sort((a, b) => {
-		const av = Number(a[sortField]);
-		const bv = Number(b[sortField]);
-		if (av !== bv) return descending ? bv - av : av - bv;
-		const aid = String(a[idField]);
-		const bid = String(b[idField]);
-		return descending ? bid.localeCompare(aid) : aid.localeCompare(bid);
-	});
-
-	let start = 0;
-	if (cursor) {
-		start = rows.findIndex((r) => {
-			const v = Number(r[sortField]);
-			const id = String(r[idField]);
-			return descending
-				? v < cursor.sortValue || (v === cursor.sortValue && id < cursor.id)
-				: v > cursor.sortValue || (v === cursor.sortValue && id > cursor.id);
-		});
-		if (start < 0) start = rows.length;
-	}
-	const page = rows.slice(start, start + limit);
 	const items = page.map((r) => pick(r, fields));
 	let nextCursor: string | undefined;
 	if (page.length === limit && page.length > 0) {
@@ -443,7 +438,12 @@ export async function getOrderDetail(
 
 async function countWhere(table: QueryTable, conditions: QuerySpec['conditions']): Promise<number> {
 	let n = 0;
-	for await (const _r of table.search({ conditions, operator: 'and', select: conditions.length ? [conditions[0].attribute] : undefined }))
+	const first = conditions[0];
+	for await (const _r of table.search({
+		conditions,
+		operator: 'and',
+		select: first && 'attribute' in first ? [first.attribute] : undefined,
+	}))
 		n++;
 	return n;
 }

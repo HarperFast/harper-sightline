@@ -1,5 +1,15 @@
 import type { PurgeableTable, SearchQuery } from '../src/retention/retention.ts';
 
+type FakeCondition = SearchQuery['conditions'][number] | FakeQuery;
+interface FakeQuery extends Omit<SearchQuery, 'conditions'> {
+	conditions: FakeCondition[];
+}
+interface FakeSort {
+	attribute: string;
+	descending?: boolean;
+	next?: FakeSort;
+}
+
 // In-memory table for time-controlled tests. Implements the search/delete/get
 // surface used by retention, redaction, and the read layer. Supports the
 // comparators and (and/or) operators, sort, and limit those modules use. Not
@@ -12,19 +22,24 @@ export class FakeTable implements PurgeableTable {
 		for (const record of records) this.rows.set(String(record[keyField]), { ...record });
 	}
 
+	// Ordering comparators hold for two numbers or two strings (Harper orders strings by code unit).
+	private static ordered(value: unknown, target: unknown): value is number | string {
+		return (typeof value === 'number' || typeof value === 'string') && typeof value === typeof target;
+	}
+
 	private static compare(value: unknown, comparator: string | undefined, target: unknown): boolean {
 		switch (comparator) {
 			case undefined:
 			case 'equals':
 				return value === target;
 			case 'less_than':
-				return typeof value === 'number' && value < (target as number);
+				return FakeTable.ordered(value, target) && FakeTable.order(value, target) < 0;
 			case 'less_than_equal':
-				return typeof value === 'number' && value <= (target as number);
+				return FakeTable.ordered(value, target) && FakeTable.order(value, target) <= 0;
 			case 'greater_than':
-				return typeof value === 'number' && value > (target as number);
+				return FakeTable.ordered(value, target) && FakeTable.order(value, target) > 0;
 			case 'greater_than_equal':
-				return typeof value === 'number' && value >= (target as number);
+				return FakeTable.ordered(value, target) && FakeTable.order(value, target) >= 0;
 			case 'starts_with':
 				return typeof value === 'string' && value.startsWith(String(target));
 			default:
@@ -32,8 +47,10 @@ export class FakeTable implements PurgeableTable {
 		}
 	}
 
-	private static matches(row: Record<string, unknown>, query: SearchQuery): boolean {
-		const results = query.conditions.map((c) => FakeTable.compare(row[c.attribute], c.comparator, c.value));
+	private static matches(row: Record<string, unknown>, query: FakeQuery): boolean {
+		const results = query.conditions.map((c) =>
+			'conditions' in c ? FakeTable.matches(row, c) : FakeTable.compare(row[c.attribute], c.comparator, c.value),
+		);
 		return query.operator === 'or' ? results.some(Boolean) : results.every(Boolean);
 	}
 
@@ -44,7 +61,7 @@ export class FakeTable implements PurgeableTable {
 	// and this fake answered it happily while the live instance 500'd every time.
 	// A fake that is more permissive than the thing it stands in for does not
 	// simplify a test — it hides the contract.
-	private static validate(query: SearchQuery): void {
+	private static validate(query: FakeQuery): void {
 		const count = query.conditions?.length ?? 0;
 		if (query.operator === 'or') {
 			if (count < 2) throw new Error('An "or" operator requires at least two conditions');
@@ -53,19 +70,25 @@ export class FakeTable implements PurgeableTable {
 		} else {
 			throw new Error('Invalid operator ' + query.operator);
 		}
+		for (const c of query.conditions) if ('conditions' in c) FakeTable.validate(c);
 	}
 
-	async *search(
-		query: SearchQuery & { sort?: { attribute: string; descending?: boolean }; offset?: number },
-	): AsyncIterable<Record<string, unknown>> {
+	private static order(a: unknown, b: unknown): number {
+		if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0;
+		return Number(a) - Number(b);
+	}
+
+	async *search(query: FakeQuery & { sort?: FakeSort; offset?: number }): AsyncIterable<Record<string, unknown>> {
 		FakeTable.validate(query);
 		let matched = [...this.rows.values()].filter((row) => FakeTable.matches(row, query));
 		const sort = query.sort;
 		if (sort) {
 			matched = matched.sort((a, b) => {
-				const av = Number(a[sort.attribute]);
-				const bv = Number(b[sort.attribute]);
-				return sort.descending ? bv - av : av - bv;
+				for (let s: FakeSort | undefined = sort; s; s = s.next) {
+					const cmp = FakeTable.order(a[s.attribute], b[s.attribute]);
+					if (cmp !== 0) return s.descending ? -cmp : cmp;
+				}
+				return 0;
 			});
 		}
 		matched = matched.slice(query.offset ?? 0);

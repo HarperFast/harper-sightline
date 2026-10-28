@@ -1671,3 +1671,52 @@ test('order detail only surfaces events inside the retention window', async () =
 		['s1:in'],
 	);
 });
+
+// Findings from one detector sweep share `detectedAt`, so a tie group can exceed any
+// fixed over-fetch. Every row must still be reachable, once, in id order.
+test('listFindings pages through a tie group larger than the page and any read-ahead', async () => {
+	const rows = Array.from({ length: 200 }, (_, i) => ({
+		id: `s1:fulfillment_confirmation:o${String(i).padStart(3, '0')}:1`,
+		shopId: 's1',
+		orderId: `o${i}`,
+		detector: 'fulfillment_confirmation',
+		status: 'pending',
+		detectedAt: NOW - HOUR,
+	}));
+	const findings = new FakeTable('id', rows);
+	const none = new FakeTable('id');
+	const seen: string[] = [];
+	let cursor: string | undefined;
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listFindings(findings, none, none, 's1', { limit: 50, cursor });
+		seen.push(...page.items.map((i) => String(i.id)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	assert.deepEqual(seen, rows.map((r) => r.id).reverse(), 'all 200 rows, each once, descending by id');
+});
+
+test('listOrders pages a tie group in the ascending direction too', async () => {
+	const rows = Array.from({ length: 120 }, (_, i) => ({
+		id: `s1:o${String(i).padStart(3, '0')}`,
+		shopId: 's1',
+		orderId: `o${String(i).padStart(3, '0')}`,
+		state: 'unfulfilled',
+		lastEventAt: NOW - HOUR,
+		paidAt: NOW - HOUR,
+	}));
+	const projections = new FakeTable('id', rows);
+	const seen: string[] = [];
+	let cursor: string | undefined;
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listOrders(projections, 's1', NOW, { sort: 'oldest', limit: 50, cursor });
+		seen.push(...page.items.map((i) => String(i.orderId)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	assert.deepEqual(
+		seen,
+		rows.map((r) => r.orderId),
+		'all 120 rows, each once, ascending by id',
+	);
+});
