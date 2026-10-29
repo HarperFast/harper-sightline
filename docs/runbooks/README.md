@@ -13,7 +13,7 @@ Sightline has no external metrics backend in the MVP. Instead:
   name, never keyed by shop).
 - **The `ops.snapshot` heartbeat** (`app/jobs.ts`, once a minute) derives an
   aggregate health view from tables — backlog age/count, dead-letter count,
-  reconciliation staleness, reauthorization count — via
+  reconciliation staleness, reauthorization count, rows overdue for the purge — via
   `computeOpsHealth` (`app/src/opsHealth.ts`) and logs it together with the
   metrics tally as one structured line. When health is degraded the line is
   emitted at `warn`, so a log-based alert can key off
@@ -44,7 +44,7 @@ below is paged.
 | `webhook.signature_fail` spiking, or elevated non-2xx on `/webhooks/shopify/events` | [webhook-backlog](./webhook-backlog.md#hmac-rejection-spike) | Sightline on-call → security owner |
 | `ops.snapshot.health.reconciliation.staleShops > 0` (`RECONCILE_STALE_MS` 30m), or `reconcile.error` rising | [stale-reconciliation](./stale-reconciliation.md) | Sightline on-call → Harper Fabric on-call |
 | `ops.snapshot.health.reauthorization.shops > 0`, or repeated `reconcile.error` for one shop | [token-refresh-failure](./token-refresh-failure.md) | Sightline on-call |
-| `purge.residue` or `purge.outbox.residue` warn line, `purge.failure`/`purge.error`/`purge.outbox.error` rising, or expired rows still present | [purge-failure](./purge-failure.md) | Sightline on-call → data/privacy owner |
+| `ops.snapshot.health.retention.overdueRows > 0` (`RETENTION_OVERDUE_MS` 30m past the window), `purge.residue` or `purge.outbox.residue` warn line, or `purge.failure`/`purge.error`/`purge.outbox.error` rising | [purge-failure](./purge-failure.md) | Sightline on-call → data/privacy owner |
 | Failed deploy, health-probe 404, or post-deploy smoke failure | [deployment-rollback](./deployment-rollback.md) | Sightline on-call → Harper Fabric on-call |
 | Shopify Admin API / webhook delivery outage (widespread `reconcile.error`, backlog with no ingress) | [shopify-outage](./shopify-outage.md) | Sightline on-call |
 | `digest.error` rising, `tick.stalled` with `loop="digest"`, or `digest.build.subscription.failed` rising (esp. repeating for one `shopId`, which the per-shop isolation lets happen silently otherwise) — **not** a quiet shop's absent outbox row, which is expected behavior | [digest-not-building](./digest-not-building.md) | Sightline on-call |

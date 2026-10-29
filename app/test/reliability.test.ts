@@ -133,7 +133,7 @@ test('high-volume summary counts correctly over a large ledger', async () => {
 test('seven-day purge removes only expired rows at volume', async () => {
 	const NOW = 1000 * DAY_MS;
 	const cutoff = cutoffMs(NOW);
-	// 8k expired stays under MAX_DELETES_PER_RUN (10k), so a single run fully drains.
+	// A single run drains it (retention.test.ts covers more than one batch's worth).
 	const expired = Array.from({ length: 8_000 }, (_, i) => ({ eventId: `x${i}`, shopId: 's', receivedAt: cutoff - DAY_MS }));
 	const fresh = Array.from({ length: 5_000 }, (_, i) => ({ eventId: `f${i}`, shopId: 's', receivedAt: NOW - 1000 }));
 	const events = new FakeTable('eventId', [...expired, ...fresh]);

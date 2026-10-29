@@ -60,7 +60,7 @@ Recovery interplay: because capture is durable and reconciliation backfills from
 
 ## 5. Capacity assumptions
 
-- **Retention bounds storage:** all ledger tables are 7-day, physically purged every 5 minutes on the leader (`MAX_DELETES_PER_RUN` = 10,000/table/run; multiple runs drain a larger backlog). Steady-state storage ≈ 7 days of a shop's order/fulfillment/inventory/refund events.
+- **Retention bounds storage:** all ledger tables are 7-day, physically purged every 5 minutes on the leader. Each run deletes in batches of 1,000 per table, one batch per table in turn, until every table is clear or its 60 s budget is spent; a larger backlog drains over several runs. Rows more than 30 minutes past their window turn `ops.snapshot`/`/api/v1/ops` health false (`retention.overdueRows`). Steady-state storage ≈ 7 days of a shop's order/fulfillment/inventory/refund events.
 - **High-volume inventory is the watched cost** (plan §13/§17): `inventory_levels/update` can be voluminous. Monitored via the `ops.snapshot` event counts; if it dominates, an ingest filter or shorter inventory retention is the lever (extension seam, not MVP).
 - **Query memory is bounded** by cursor pagination (`MAX_LIMIT` per page, keyset over a small over-fetch buffer) — a large ledger never materializes in one response. Aggregates (`summary`/`flows`) iterate the shop's window; acceptable at MVP volumes, revisit with the staged high-volume fixture.
 - **Ingress is O(1) per webhook** before ack (verify HMAC, idempotent insert, fast 2xx); normalization is deferred to the worker, keeping ack latency flat under burst.

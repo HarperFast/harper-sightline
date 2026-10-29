@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { computeOpsHealth, BACKLOG_STALE_MS, RECONCILE_STALE_MS, type OpsHealthDeps } from '../src/observability/opsHealth.ts';
+import {
+	computeOpsHealth,
+	BACKLOG_STALE_MS,
+	RECONCILE_STALE_MS,
+	RETENTION_OVERDUE_MS,
+	type OpsHealthDeps,
+} from '../src/observability/opsHealth.ts';
 import type { QueryTable } from '../src/api/queries.ts';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +15,7 @@ import { indexedColumns } from '../scripts/schemaColumns.mjs';
 
 const NOW = 10_000_000_000;
 const MIN = 60_000;
+const DAY = 86_400_000;
 
 function deps(args: {
 	deliveries?: Record<string, unknown>[];
@@ -103,6 +110,43 @@ test('empty system is healthy with null ages', async () => {
 	assert.equal(health.healthy, true);
 	assert.equal(health.backlog.oldestAgeMs, null);
 	assert.equal(health.reconciliation.stalestAgeMs, null);
+	assert.deepEqual(health.retention, { overdueRows: 0, overdueTables: [] });
+});
+
+// The purge falling behind was a warn line only: live, /ops said healthy with 85k
+// expired rows present. A row past its window by more than RETENTION_OVERDUE_MS
+// means the purge is behind, so health turns false.
+function retentionDeps(rows: Record<string, unknown>[]): OpsHealthDeps {
+	const events = new FakeTable('eventId', rows) as unknown as QueryTable;
+	// Twenty days old is inside the outbox's thirty-day window.
+	const outbox = new FakeTable('id', [{ id: 'o', createdAt: NOW - 20 * DAY }]) as unknown as QueryTable;
+	return {
+		...deps({}),
+		retention: [
+			{ name: 'OperationalEvent', keyField: 'eventId', tsField: 'receivedAt', retentionDays: 7, table: events },
+			{ name: 'DigestOutbox', keyField: 'id', tsField: 'createdAt', retentionDays: 30, table: outbox },
+		],
+	};
+}
+
+test('rows past their retention window beyond the grace make the system unhealthy', async () => {
+	const window = 7 * DAY;
+	const health = await computeOpsHealth(
+		retentionDeps([
+			{ eventId: 'due', receivedAt: NOW - window - MIN },
+			{ eventId: 'late1', receivedAt: NOW - window - RETENTION_OVERDUE_MS - MIN },
+			{ eventId: 'late2', receivedAt: NOW - window - RETENTION_OVERDUE_MS - 2 * MIN },
+		]),
+		NOW,
+	);
+	assert.deepEqual(health.retention, { overdueRows: 2, overdueTables: ['OperationalEvent'] });
+	assert.equal(health.healthy, false);
+});
+
+test('a row just past its window is the next purge pass, not unhealthy', async () => {
+	const health = await computeOpsHealth(retentionDeps([{ eventId: 'due', receivedAt: NOW - 7 * DAY - MIN }]), NOW);
+	assert.deepEqual(health.retention, { overdueRows: 0, overdueTables: [] });
+	assert.equal(health.healthy, true);
 });
 
 // computeOpsHealth collected every accepted delivery whole, payload included, into

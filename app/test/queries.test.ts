@@ -897,8 +897,8 @@ test('the order scans bound the window in the database, not only in code', async
 	const { events, findings, deliveries, shops } = fixtures();
 	const projections = new FakeTable('id', [
 		{ id: 's1:in', shopId: 's1', orderId: 'in', paidAt: NOW - HOUR, requiresFulfillment: true, state: 'awaiting', lastEventAt: NOW - HOUR },
-		// Purge residue: expired but still queryable (a purge run capped at
-		// MAX_DELETES_PER_RUN leaves some behind).
+		// Purge residue: expired but still queryable (a purge run that runs out of
+		// time leaves some behind).
 		{
 			id: 's1:old',
 			shopId: 's1',

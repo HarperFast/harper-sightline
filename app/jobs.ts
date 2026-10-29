@@ -27,7 +27,7 @@ import { isOrderLinked } from './src/ingest/projection.ts';
 import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
 import { uninstallShop } from './src/shopify/lifecycle.ts';
-import { purgeExpired, OUTBOX_RETENTION_DAYS, type PurgeResult } from './src/retention/retention.ts';
+import { purgeExpired, OUTBOX_RETENTION_DAYS, RETENTION_DAYS, type PurgeResult } from './src/retention/retention.ts';
 import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/retention/ledgerTargets.ts';
 import { runPurgeCycle } from './src/retention/purgeCycle.ts';
 import { getUsableAccessToken, isAuthError } from './src/shopify/accessToken.ts';
@@ -55,7 +55,7 @@ import {
 	type DigestBuildResult,
 } from './src/digest/digestBuild.ts';
 import { log, metrics, M } from './src/observability/observe.ts';
-import { computeOpsHealth, type OpsHealth } from './src/observability/opsHealth.ts';
+import { computeOpsHealth, type OpsHealth, type RetentionCheck } from './src/observability/opsHealth.ts';
 import { createTicker, type Ticker } from './src/jobs/tick.ts';
 import type { QueryTable } from './src/api/queries.ts';
 
@@ -430,6 +430,11 @@ export const digestJob = job('digest', digestTicker, async () => {
 // scheduler has no leader.
 const snapshotTicker = ticker('ops.snapshot', 5 * 60_000);
 
+const retentionChecks: RetentionCheck[] = [
+	...RETENTION_TARGETS.map((t) => ({ ...t, retentionDays: RETENTION_DAYS })),
+	...OUTBOX_RETENTION_TARGETS.map((t) => ({ ...t, retentionDays: OUTBOX_RETENTION_DAYS })),
+];
+
 // Shared with /api/v1/ops, which answers from replicated tables rather than a log line.
 export function getOpsHealth(now = Date.now()): Promise<OpsHealth> {
 	return computeOpsHealth(
@@ -437,6 +442,7 @@ export function getOpsHealth(now = Date.now()): Promise<OpsHealth> {
 			deliveries: Deliveries as unknown as QueryTable,
 			checkpoints: Checkpoints as unknown as QueryTable,
 			credentials: Credentials as unknown as QueryTable,
+			retention: retentionChecks,
 		},
 		now,
 	);
