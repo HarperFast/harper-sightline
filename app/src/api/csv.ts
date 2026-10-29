@@ -83,9 +83,11 @@ export function exportFilename(kind: string, now: number): string {
 }
 
 // Pages a query function until it is exhausted or `cap` rows are collected, and
-// reports whether more existed. `truncated` must come from whether a cursor remained,
-// not from `rows.length > cap`: the cap is a multiple of the page size, so a
-// truncated set lands on exactly `cap` and that check is false when it matters.
+// reports whether more existed. A cursor alone does not say so: a full last page still
+// carries one (keysetPage), so a source of exactly `cap` rows ends on a cursor that
+// leads nowhere. When the cap is reached with a cursor left, one more page is read and
+// `truncated` is true only if it holds a row. `rows.length > cap` is not enough either:
+// the cap is a multiple of the page size, so a truncated set lands on exactly `cap`.
 export async function collectExportRows<T>(
 	fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
 	cap: number,
@@ -93,14 +95,19 @@ export async function collectExportRows<T>(
 ): Promise<{ rows: T[]; truncated: boolean }> {
 	const rows: T[] = [];
 	let cursor = initialCursor;
+	let stuck = false;
 	do {
 		const page = await fetchPage(cursor);
 		rows.push(...page.items);
 		// A pager returning the cursor it was given is not advancing; stop rather than
 		// refetch the same page to the cap, and let `truncated` report that more may exist.
-		if (page.nextCursor !== undefined && page.nextCursor === cursor) break;
+		if (page.nextCursor !== undefined && page.nextCursor === cursor) {
+			stuck = true;
+			break;
+		}
 		cursor = page.nextCursor;
 	} while (cursor && rows.length < cap);
-	const truncated = Boolean(cursor);
+	let truncated = stuck || rows.length > cap;
+	if (!truncated && cursor) truncated = (await fetchPage(cursor)).items.length > 0;
 	return { rows: rows.slice(0, cap), truncated };
 }
