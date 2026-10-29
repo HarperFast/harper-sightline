@@ -36,8 +36,8 @@ failed".
   any per-subscription scope; the whole tick for every shop that iteration is
   aborted).
 - `event="tick.stalled"` with `loop: "digest"` (a previous pass never returned;
-  the ticker's **180-minute (3-hour)** stall budget let a new one start anyway —
-  `ticker('digest', 180 * 60_000)` in `jobs.ts`, three times the hourly interval).
+  the ticker's **45-minute** stall budget let a new one start anyway —
+  `ticker('digest', 45 * 60_000)` in `jobs.ts`, three times the 15-minute interval).
 - `event="digest.built"` — logged when `built > 0`, `skippedQuiet > 0`, **or
   `failed > 0`** (`jobs.ts`'s `digestTick`; the `failed` disjunct exists
   precisely so a sweep with per-shop failures is never mistaken for a quiet,
@@ -98,7 +98,7 @@ failed".
 ### Verify recovery
 `digest.build.subscription.failed` stops recurring for the affected shop (or
 `digest.error` stops recurring / `tick.stalled` for `loop: "digest"` stops
-repeating), and the next scheduled tick (hourly; the `sightline-digest` job `interval` in
+repeating), and the next scheduled tick (every 15 minutes; the `sightline-digest` job `interval` in
 `app/config.yaml`) advances `lastBuiltAt` for the affected shop and, if that period
 has something to report, writes exactly one new `DigestOutbox` row for it.
 Re-running the tick must not create a second row for the same period — the

@@ -403,8 +403,8 @@ export const stateBackfillJob = job('state.backfill', backfillTicker, async () =
 // Writes each subscriber's digest to the outbox as 'pending'. There is no sender:
 // delivery has its own compliance surface. Idempotent: the outbox id is
 // `${shopId}:${periodStart}` and the build keys on lastBuiltAt.
-// 3x the hourly interval, matching reconcile's margin for full-table reads per shop.
-const digestTicker = ticker('digest', 180 * 60_000);
+// 3x the 15-minute interval, matching reconcile's margin for full-table reads per shop.
+const digestTicker = ticker('digest', 45 * 60_000);
 
 const digestBuildDeps: DigestBuildDeps = {
 	subscriptions: DigestSubscriptions as unknown as DigestBuildDeps['subscriptions'],

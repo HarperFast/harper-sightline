@@ -130,7 +130,7 @@ All eight run as **Harper scheduler jobs**, declared in [`app/config.yaml`](app/
 | 10m | Reconcile against the Admin API (first run backfills 7 days), refreshing credentials as needed | `sightline-reconcile` |
 | 15m | Resolve inventory item → product/variant titles and location names | `sightline-inventory-enrich` |
 | hourly | Retention purge — physical deletes, verified by re-query (plus one pass 30s after boot) | `sightline-purge` |
-| hourly | Build each subscriber's digest for the last complete period | `sightline-digest` |
+| 15m | Build each subscriber's digest for the last complete period | `sightline-digest` |
 
 **Ingest pauses across a leader failover.** Failover completes in ~6.5 minutes, during which no delivery is processed; the backlog is durable, and the first occurrence on the new leader drains it. Because that is longer than the 5-minute `BACKLOG_STALE_MS`, `ops.snapshot` reports the stale backlog until it drains.
 

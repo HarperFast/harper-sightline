@@ -56,7 +56,8 @@ scheduler:
       interval: 1h
       handler: ./jobs.ts#purgeJob
     # Builds each subscriber's digest for the last complete period; shouldBuild()
-    # does the cadence gating.
+    # does the cadence gating, so the short interval is cheap and a restart cannot
+    # postpone a never-run job by an hour.
     - name: sightline-digest
-      interval: 1h
+      interval: 15m
       handler: ./jobs.ts#digestJob

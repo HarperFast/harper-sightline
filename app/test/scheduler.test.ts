@@ -111,6 +111,14 @@ test('the processing time budget is shorter than the interval it runs on', () =>
 	);
 });
 
+// A never-run job re-anchors to now + interval on every restart, so an hourly digest
+// can be postponed indefinitely by restarts under an hour apart. shouldBuild gates the
+// cadence, so a short interval costs one cheap scan.
+test('the digest sweep runs every 15 minutes', () => {
+	assert.equal(declaredJobs().find((j) => j.name === 'sightline-digest')?.schedule, '15m');
+	assert.match(jobsSource, /^const digestTicker = ticker\('digest', 45 \* 60_000\);$/m, 'stall budget is 3x the interval');
+});
+
 test('config.yaml declares the secrets the component cannot run without', () => {
 	// With the dev fallbacks deleted, an undeclared secret surfaces as a
 	// MissingSecretError on the first request that needs it. Declaring it makes the
