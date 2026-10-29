@@ -178,7 +178,7 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 	for await (const s of deps.shops.search({ conditions: [{ attribute: 'status', value: 'active' }], select: ['shopId'] })) {
 		shopIds.push((s as { shopId: string }).shopId);
 	}
-	for (const shopId of shopIds) {
+	const enrichShop = async (shopId: string): Promise<void> => {
 		let token: string | null;
 		try {
 			token = await deps.getToken(shopId, now);
@@ -186,9 +186,9 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 			// A transient failure for one shop must not starve the shops after it.
 			metrics.inc(M.enrichError);
 			log('error', 'enrich.shop.error', { shop: shopId, message: (e as Error).message });
-			continue;
+			return;
 		}
-		if (!token) continue;
+		if (!token) return;
 
 		// Refreshed when none is cached.
 		let cachedLocations = 0;
@@ -226,7 +226,7 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 			ENRICH_READ_LIMIT,
 		);
 		// Nothing in the window: nothing to advance past.
-		if (inventoryEvents.length === 0) continue;
+		if (inventoryEvents.length === 0) return;
 
 		const resolved = new Set<string>();
 		const skuById = new Map<string, string>();
@@ -281,6 +281,16 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 			queuedFloor,
 		);
 		await deps.checkpoints.put({ id: checkpointId(shopId), cursor: String(next), updatedAt: now });
+	};
+	for (const shopId of shopIds) {
+		// A write that fails for one shop (e.g. a key over Harper's size limit) must not skip the shops
+		// after it. Its checkpoint is not advanced, so the shop retries next tick.
+		try {
+			await enrichShop(shopId);
+		} catch (e: unknown) {
+			metrics.inc(M.enrichError);
+			log('error', 'enrich.shop.error', { shop: shopId, message: (e as Error).message });
+		}
 	}
 	return { items, locations, indexed };
 }

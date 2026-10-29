@@ -15,7 +15,7 @@ import {
 } from '../src/ingest/inventoryEnrich.ts';
 import type { OperationalEvent } from '../src/domain/model.ts';
 import { FakeTable } from './fakeTable.ts';
-import { setLogSink } from '../src/observability/observe.ts';
+import { setLogSink, metrics, M } from '../src/observability/observe.ts';
 import { PermanentAdminApiError } from '../src/shopify/adminApi.ts';
 
 const NOW = 1_775_000_000_000;
@@ -472,4 +472,40 @@ test('a slow shop cannot expire the shop read snapshot and starve the shops afte
 
 	assert.deepEqual(tokenFor, ['s1', 's2', 's3']);
 	assert.equal(result.indexed, 3);
+});
+
+test('one shop whose write fails does not stop the shops after it, and the failure is counted and logged', async () => {
+	const raw = harness();
+	await raw.shops.put({ shopId: 's2', status: 'active' });
+	await raw.shops.put({ shopId: 's3', status: 'active' });
+	for (const shopId of ['s1', 's2', 's3']) {
+		await raw.events.put(inventoryEvent({ eventId: `${shopId}:e1`, shopId, resourceId: 'i1' }));
+	}
+	const deps = buildDeps(raw, {
+		getToken: async () => 'tok',
+		fetchItems: (async (_shop: string, _token: string, ids: string[]) =>
+			ids.map((id) => ({ inventoryItemId: id, sku: `SKU-${id}` }))) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+	const put = raw.eventSkus.put.bind(raw.eventSkus);
+	raw.eventSkus.put = async (row: Record<string, unknown>) => {
+		if (row.shopId === 's1') throw new Error('Primary key size is too large: 3037');
+		return put(row);
+	};
+
+	metrics.reset();
+	const lines: string[] = [];
+	setLogSink((_level, line) => lines.push(line));
+	let result;
+	try {
+		result = await runInventoryEnrichment(NOW, deps);
+	} finally {
+		setLogSink(null);
+	}
+
+	assert.equal(result.indexed, 2, 's2 and s3 are still indexed');
+	assert.ok(raw.checkpoints.rows.has('enrich:s3'), 'the last shop reached its checkpoint');
+	assert.equal(raw.checkpoints.rows.has('enrich:s1'), false, 'the failed shop holds its frontier for retry');
+	assert.equal(metrics.snapshot().counters[M.enrichError], 1);
+	assert.equal(lines.filter((l) => l.includes('enrich.shop.error') && l.includes('"shop":"s1"')).length, 1);
 });
