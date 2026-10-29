@@ -11,9 +11,9 @@ export interface WritableTable<T> {
 	put(record: T): Promise<void>;
 }
 
-// `skus` is a transport field on the normalizer's output, not a column.
+// `skus` and `skusDropped` are transport fields on the normalizer's output, not columns.
 export function stripSkus(event: NormalizedEvent): OperationalEvent {
-	const { skus: _skus, ...stored } = event;
+	const { skus: _skus, skusDropped: _skusDropped, ...stored } = event;
 	return stored;
 }
 
@@ -35,11 +35,13 @@ export function eventSkuRows(event: NormalizedEvent): EventSku[] {
 
 // The event is written first: an index row pointing at a missing event would render
 // as a phantom result, while an event briefly missing from the index is repaired by
-// the next reprocess or reconciliation pass.
+// the next reprocess or reconciliation pass. The index rows are written concurrently,
+// at most MAX_EVENT_SKUS of them: one after another, a 100-SKU order drained at
+// 159-170/s live, concurrently at 221-238/s.
 export async function writeEventWithSkus(
 	deps: { events: WritableTable<OperationalEvent>; eventSkus: WritableTable<EventSku> },
 	event: NormalizedEvent,
 ): Promise<void> {
 	await deps.events.put(stripSkus(event));
-	for (const row of eventSkuRows(event)) await deps.eventSkus.put(row);
+	await Promise.all(eventSkuRows(event).map((row) => deps.eventSkus.put(row)));
 }

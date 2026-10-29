@@ -45,10 +45,21 @@ test('an event with no SKUs produces no index rows', () => {
 	assert.deepEqual(eventSkuRows(event({ skus: [] })), []);
 });
 
-test('stripSkus removes the transport-only field so it is never stored', () => {
-	const stored = stripSkus(event());
+test('stripSkus removes the transport-only fields so they are never stored', () => {
+	const stored = stripSkus(event({ skusDropped: 3 }));
 	assert.equal('skus' in stored, false);
+	assert.equal('skusDropped' in stored, false);
 	assert.equal(stored.eventId, 's1:w1');
+});
+
+test('a many-SKU event writes one index row per SKU', async () => {
+	const events = new FakeTable('eventId');
+	const eventSkus = new FakeTable('id');
+	const deps = { events: events as unknown as WritableTable<OperationalEvent>, eventSkus: eventSkus as unknown as WritableTable<EventSku> };
+	const skus = Array.from({ length: 100 }, (_u, i) => `SKU-${i}`);
+	await writeEventWithSkus(deps, event({ skus }));
+	assert.equal(eventSkus.rows.size, 100);
+	assert.deepEqual([...eventSkus.rows.keys()].sort(), skus.map((sku) => `s1:w1:${sku}`).sort());
 });
 
 test('writing the same event twice is idempotent — deterministic keys upsert', async () => {

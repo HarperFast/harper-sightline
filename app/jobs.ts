@@ -168,6 +168,15 @@ const deps: ProcessDeps = {
 		}
 		const meta = { shopId: row.shopId, topic: row.topic, webhookId: row.webhookId, receivedAt: row.receivedAt };
 		for (const event of normalizeDelivery(meta, payload)) {
+			if (event.skusDropped) {
+				metrics.inc(M.processSkusDropped, event.skusDropped);
+				log('warn', 'process.skus_dropped', {
+					shop: event.shopId,
+					eventId: event.eventId,
+					kept: event.skus?.length,
+					dropped: event.skusDropped,
+				});
+			}
 			await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
 			await indexCachedInventoryEvent(inventoryIndexTables, event);
 			if (isOrderLinked(event)) await refreshOrder(orderTables, event.shopId, event.resourceId as string, Date.now());

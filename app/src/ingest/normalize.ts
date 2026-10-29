@@ -89,12 +89,13 @@ function fulfillableUnits(lineItems: unknown): number | undefined {
 	return total;
 }
 
-// Cap on SKUs per event: a many-line order would fan out into EventSku index rows
-// against a 7-day window.
-export const MAX_EVENT_SKUS = 20;
+// Safety cap on SKUs per event, each an EventSku index row. It sits at a Shopify
+// cart's 500-line limit, so a real order keeps every SKU in the filter; past it the
+// event carries `skusDropped` and the worker counts and logs the drop.
+export const MAX_EVENT_SKUS = 500;
 
-// Distinct SKUs in first-seen order, capped. `nested` is for refund_line_items,
-// where the SKU is on an inner `line_item`.
+// Distinct SKUs in first-seen order. `nested` is for refund_line_items, where the
+// SKU is on an inner `line_item`.
 export function skusFromLineItems(lineItems: unknown, skuPath: 'direct' | 'nested' = 'direct'): string[] {
 	if (!Array.isArray(lineItems)) return [];
 	const out: string[] = [];
@@ -107,7 +108,6 @@ export function skusFromLineItems(lineItems: unknown, skuPath: 'direct' | 'neste
 		if (!sku || seen.has(sku)) continue;
 		seen.add(sku);
 		out.push(sku);
-		if (out.length >= MAX_EVENT_SKUS) break;
 	}
 	return out;
 }
@@ -120,8 +120,8 @@ function hasAnyTracking(payload: Payload): boolean {
 }
 
 // `skus` is not an OperationalEvent column; the writer fans it out into EventSku
-// rows (src/ingest/eventSkus.ts).
-export type NormalizedEvent = OperationalEvent & { skus?: string[] };
+// rows (src/ingest/eventSkus.ts). `skusDropped` counts SKUs past MAX_EVENT_SKUS.
+export type NormalizedEvent = OperationalEvent & { skus?: string[]; skusDropped?: number };
 
 // One event per delivery, keyed by (shop, webhookId) so reprocessing upserts the
 // same row (ADR-002). Only approved, non-PII fields are carried.
@@ -147,7 +147,8 @@ function toEvent(meta: DeliveryMeta, fields: EventFields): NormalizedEvent {
 		hasTracking: fields.hasTracking,
 		trackingCompany: fields.trackingCompany,
 		shipmentStatus: fields.shipmentStatus,
-		skus: fields.skus,
+		skus: fields.skus?.slice(0, MAX_EVENT_SKUS),
+		skusDropped: (fields.skus?.length ?? 0) > MAX_EVENT_SKUS ? fields.skus!.length - MAX_EVENT_SKUS : undefined,
 	};
 }
 

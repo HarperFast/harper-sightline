@@ -156,6 +156,9 @@ export const M = {
 	processFailed: 'process.failed',
 	processDeadLettered: 'process.dead_lettered',
 	processError: 'process.error',
+	// SKUs past MAX_EVENT_SKUS (src/ingest/normalize.ts), left out of the SKU filter.
+	// Should stay zero: the cap sits at a Shopify cart's line limit.
+	processSkusDropped: 'process.skus_dropped',
 	// An order rebuild read fewer events than the stored projection was built from and
 	// was not written (src/ingest/orderRefresh.ts). Occasional counts are concurrent
 	// writers racing; a steady climb means the guard is starving writes. The guard

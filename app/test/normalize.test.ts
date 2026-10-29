@@ -223,17 +223,30 @@ test('order name falls back to order_number when name is absent', () => {
 	assert.equal(event.orderName, '#1042');
 });
 
-test('order events carry every distinct line-item SKU, capped', () => {
+test('order events carry every distinct line-item SKU', () => {
 	const [event] = normalizeDelivery(meta('orders/paid'), fixture('orders_paid'));
 	// orders_paid.json line items: TSHIRT-BLK-M (id 111), STICKER-PK (id 112).
 	assert.deepEqual(event.skus, ['TSHIRT-BLK-M', 'STICKER-PK']);
+	assert.equal(event.skusDropped, undefined);
 
-	const many = {
+	const withLines = (n: number) => ({
 		...(fixture('orders_paid') as Record<string, unknown>),
-		line_items: Array.from({ length: 30 }, (_u, i) => ({ sku: `SKU-${i}`, quantity: 1 })),
+		line_items: Array.from({ length: n }, (_u, i) => ({ sku: `SKU-${i}`, quantity: 1 })),
+	});
+	const [big] = normalizeDelivery(meta('orders/paid'), withLines(100));
+	assert.equal(big.skus?.length, 100, 'a 100-line order keeps every SKU in the filter');
+	assert.equal(big.skusDropped, undefined);
+});
+
+test('past the safety cap, SKUs are dropped and the drop is reported, not silent', () => {
+	assert.ok(MAX_EVENT_SKUS >= 500, "the cap sits at or above a Shopify cart's line limit");
+	const payload = {
+		...(fixture('orders_paid') as Record<string, unknown>),
+		line_items: Array.from({ length: MAX_EVENT_SKUS + 7 }, (_u, i) => ({ sku: `SKU-${i}`, quantity: 1 })),
 	};
-	const [big] = normalizeDelivery(meta('orders/paid'), many);
-	assert.equal(big.skus?.length, MAX_EVENT_SKUS);
+	const [event] = normalizeDelivery(meta('orders/paid'), payload);
+	assert.equal(event.skus?.length, MAX_EVENT_SKUS);
+	assert.equal(event.skusDropped, 7);
 });
 
 test('duplicate SKUs across line items collapse to one entry', () => {
