@@ -103,16 +103,25 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
 - **Scheduling.** All eight sweeps are Harper scheduler jobs (`config.yaml`
   `scheduler:`, `*Job` exports in `jobs.ts`); each occurrence runs on the elected
   leader, once. Delivery processing is `sightline-process`, every 10s: `drainAccepted`
-  reads 50 `accepted` rows per batch until the backlog is empty, 8s
-  (`PROCESS_BUDGET_MS`) are spent, or a batch's worth of rows has failed, so an
-  outage cannot burn `MAX_ATTEMPTS` on the whole backlog in one occurrence.
-  Partitioning (`partitionOf`, the `partition` option) is **not wired** and stays at
-  one slot: the scheduler gives one executor per occurrence, and two leaders in a
-  partition have no way to learn distinct slots, so idempotency covers that window.
-  More slots would also amplify reads, not scale: the filter runs in the application
-  and each batch re-reads every foreign-slot row (simulated, not measured live:
-  about 397 rows read per row processed at 2 slots and 1,197 at 4, with a 40,000-row
-  backlog).
+  works until the backlog is empty, 8s (`PROCESS_BUDGET_MS`) are spent, or 50 rows
+  have failed, so an outage cannot burn `MAX_ATTEMPTS` on the whole backlog in one
+  occurrence.
+- **Drain order.** Round-robin across shops, oldest first within a shop; there is no
+  global FIFO, and none is needed (ADR-002: processing is order-independent). The
+  drain reads the computed `WebhookDelivery.pendingKey` index (shop, receivedAt, id),
+  which holds only `accepted` rows. A lap walks it once: each shop starts at most
+  `SHOP_SLICE` (250) of its oldest rows, then the cursor seeks past that shop, so a
+  big shop's backlog cannot hold back a small one. The cursor carries across
+  occurrences on the leader, so a lap longer than one budget resumes at the next
+  shop. A read never asks for more than the current shop's remaining turn. A read
+  from the start of a lap still steps over the deleted index entries of rows
+  processed since the last compaction (1.7 ms at 30,000, live), which is why a turn
+  is 250 rows: at 25 a lone big shop lost about 25% of its drain rate.
+- **Partitioning** (`partitionOf`, the `partition` option) is by shop and **not
+  wired**: it stays at one slot. The scheduler gives one executor per occurrence,
+  and two leaders in a partition have no way to learn distinct slots, so idempotency
+  covers that window. A foreign-slot shop costs one seek per lap, not a re-read, but
+  nothing assigns slots yet.
 - **Failover tradeoff.** The scheduler lease has no compare-and-set. A leader loss
   pauses every job for roughly 4-6.25 minutes per Harper v5.3.3 source (heartbeat
   every 60s, lease stale after 5 min, follower checks every 75s, further nodes in

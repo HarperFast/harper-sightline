@@ -37,7 +37,7 @@ test('every non-key schema field is in the derived list, so a new column cannot 
 	for (const [, table, database, body] of bodies) {
 		for (const line of body.split('\n')) {
 			const m = /^\t(\w+):/.exec(line);
-			if (!m || line.includes('@primaryKey')) continue;
+			if (!m || line.includes('@primaryKey') || line.includes('@computed')) continue;
 			assert.ok(derived.has(`${database}.${table}.${m[1]}`), `${database}.${table}.${m[1]} missing from the derived list`);
 		}
 	}
@@ -58,5 +58,22 @@ type Foo @table(database: "db_a") @sealed {
 }
 `),
 		[['db_a', 'Foo', 'count']],
+	);
+});
+
+test('leaves @computed fields out of the columns to heal, but keeps an indexed one in the index check', () => {
+	const sdl = `
+type Foo @table(database: "db_a") @sealed {
+	id: ID! @primaryKey
+	status: String
+	key: String @computed(from: "status === 'a' ? String(id) : undefined") @indexed
+}
+`;
+	assert.deepEqual(expectedColumns(sdl), [['db_a', 'Foo', 'status']], 'create_attribute would make a stored column, not a computed one');
+	assert.deepEqual(indexedColumns(sdl), [['db_a', 'Foo', 'key']]);
+	assert.ok(
+		indexedColumns(readFileSync(fileURLToPath(new URL('../schema.graphql', import.meta.url)), 'utf8'))
+			.map(key)
+			.includes('sightline_ledger.WebhookDelivery.pendingKey'),
 	);
 });

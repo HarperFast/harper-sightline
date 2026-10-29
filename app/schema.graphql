@@ -104,6 +104,11 @@ type WebhookDelivery @table(database: "sightline_ledger") @sealed {
 	attempts: Int
 	hmacVerified: Boolean
 	payload: String # PII-stripped JSON body, kept until the worker normalizes it (7-day purge)
+	# The drain's queue order, for accepted rows only, so the index holds just the backlog:
+	# shop, then receivedAt (13-digit epoch ms, so it sorts as text), then id so no two keys
+	# tie. Harper computes it on every write and back-fills it when added; it is never
+	# stored or written. src/ingest/processor.ts pendingKey mirrors it.
+	pendingKey: String @computed(from: "status === 'accepted' ? shopId + ' ' + receivedAt + ' ' + id : undefined") @indexed
 }
 
 type OperationalEvent @table(database: "sightline_ledger") @sealed {

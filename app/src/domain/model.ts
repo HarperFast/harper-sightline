@@ -90,6 +90,7 @@ export interface WebhookDelivery {
 	attempts?: number;
 	hmacVerified?: boolean;
 	payload?: string; // PII-stripped JSON body, for the worker to normalize
+	pendingKey?: string; // computed by Harper while accepted (processor.ts pendingKey); never written
 }
 
 export interface OperationalEvent {

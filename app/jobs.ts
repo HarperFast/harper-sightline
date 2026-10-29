@@ -18,8 +18,9 @@ import {
 	emptyDrainResult,
 	runProcessCycle,
 	type DrainResult,
+	type DrainCursor,
 	type ProcessDeps,
-	type DeliveryRow,
+	type PendingRow,
 } from './src/ingest/processor.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
@@ -116,9 +117,15 @@ const inventoryIndexTables = {
 };
 
 const deps: ProcessDeps = {
-	async listAccepted(limit) {
-		const rows: DeliveryRow[] = [];
-		for await (const r of Deliveries.search({ conditions: [{ attribute: 'status', value: 'accepted' }], limit })) {
+	// A range read of the computed pendingKey index, which keys accepted rows by shop,
+	// so the cursor can resume inside a shop or seek past one.
+	async listPending(after, limit) {
+		const rows: PendingRow[] = [];
+		for await (const r of Deliveries.search({
+			conditions: [{ attribute: 'pendingKey', comparator: 'greater_than', value: after }],
+			sort: { attribute: 'pendingKey' },
+			limit,
+		})) {
 			rows.push({
 				id: r.id,
 				shopId: r.shopId,
@@ -128,6 +135,7 @@ const deps: ProcessDeps = {
 				webhookId: r.webhookId,
 				receivedAt: r.receivedAt,
 				payload: r.payload,
+				pendingKey: r.pendingKey as string,
 			});
 		}
 		return rows;
@@ -170,9 +178,11 @@ const deps: ProcessDeps = {
 // Leaves headroom under the 10s `sightline-process` interval.
 const PROCESS_BUDGET_MS = 8_000;
 const processTicker = ticker('process', 5 * 60_000);
+// The round-robin position, kept across occurrences on this leader; a new leader starts at the first shop.
+const drainCursor: DrainCursor = { after: '' };
 
 export function processDeliveries(into: DrainResult = emptyDrainResult()): Promise<DrainResult> {
-	return drainAccepted(deps, { budgetMs: PROCESS_BUDGET_MS }, into);
+	return drainAccepted(deps, { budgetMs: PROCESS_BUDGET_MS, cursor: drainCursor }, into);
 }
 
 export const processDeliveriesJob = job('process', processTicker, async () => {

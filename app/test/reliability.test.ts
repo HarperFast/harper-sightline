@@ -5,6 +5,7 @@ import { purgeExpired, cutoffMs, DAY_MS, type RetentionTarget } from '../src/ret
 import { FakeTable } from './fakeTable.ts';
 import { listEvents, getSummary } from '../src/api/queries.ts';
 import { MAX_LIMIT } from '../src/api/apiContract.ts';
+import { listPendingIn } from './pendingRows.ts';
 
 // Reliability and capacity tests. They prove the correctness invariants at volume
 // locally; the production-like gates (10-min 100 rps burst, encrypted backup/restore)
@@ -29,8 +30,8 @@ function durableWorld(n: number) {
 	const failOnceMarks = new Set<string>();
 
 	const deps: ProcessDeps = {
-		async listAccepted(limit) {
-			return [...inbox.values()].filter((r) => r.status === 'accepted').slice(0, limit);
+		async listPending(after, limit) {
+			return listPendingIn(inbox.values(), after, limit);
 		},
 		async markProcessed(id) {
 			// Simulate a crash *between* handle and the durable status write: the

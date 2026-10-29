@@ -152,10 +152,11 @@ console.log('schema columns verified');
 
 // An @indexed added to an existing column is applied (and back-filled) by the
 // deploy; no operation can create it afterwards, so a missing one is reported.
-// describe_table marks an indexed attribute with an `indexed` property.
+// describe_table marks an indexed attribute with an `indexed` property, and lists
+// @computed attributes only with include_computed.
 const notIndexed = [];
 for (const [database, table, attribute] of indexedColumns(readFileSync(new URL('../schema.graphql', import.meta.url), 'utf8'))) {
-	const desc = await op({ operation: 'describe_table', database, table });
+	const desc = await op({ operation: 'describe_table', database, table, include_computed: true });
 	const attr = Array.isArray(desc?.attributes) ? desc.attributes.find((a) => a.attribute === attribute) : undefined;
 	if (!attr?.indexed) notIndexed.push(`${table}.${attribute}`);
 }
