@@ -1720,3 +1720,53 @@ test('listOrders pages a tie group in the ascending direction too', async () => 
 		'all 120 rows, each once, ascending by id',
 	);
 });
+
+function recordSearches(table: FakeTable): Array<Parameters<FakeTable['search']>[0]> {
+	const seen: Array<Parameters<FakeTable['search']>[0]> = [];
+	const search = table.search.bind(table);
+	table.search = (query) => {
+		seen.push(query);
+		return search(query);
+	};
+	return seen;
+}
+const hasShopCondition = (query: { conditions: unknown[] }) =>
+	query.conditions.some((c) => (c as { attribute?: string }).attribute === 'shopId');
+
+test('a resourceId lookup never walks the shopId index, and still never leaks another shop', async () => {
+	const { events } = fixtures();
+	await events.put({ eventId: 's2:o1', shopId: 's2', resourceId: 'o1', domain: 'order', occurredAt: NOW - 1000, receivedAt: NOW - 1000 });
+	const seen = recordSearches(events);
+
+	const page = await listEvents(events, 's1', NOW, { resourceId: 'o1' });
+
+	assert.ok(!page.items.some((i) => String(i.eventId).startsWith('s2')), 'no cross-tenant leak');
+	assert.deepEqual(page.items.map((i) => i.eventId).sort(), ['s1:e1', 's1:e2']);
+	assert.ok(seen.length > 0 && seen.every((q) => !hasShopCondition(q)), 'shopId is filtered in the app, not queried');
+});
+
+test('an event detail relates events by resourceId alone, scoped to the shop in the app', async () => {
+	const { events, projections, findings } = fixtures();
+	await events.put({ eventId: 's2:o1', shopId: 's2', resourceId: 'o1', domain: 'order', occurredAt: NOW - 1000, receivedAt: NOW - 1000 });
+	const seen = recordSearches(events);
+
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:e1');
+
+	assert.ok(detail);
+	assert.ok(!(detail.relatedEventIds as string[]).includes('s2:o1'), 'no cross-tenant relation');
+	assert.ok(seen.length > 0 && seen.every((q) => !hasShopCondition(q)));
+});
+
+test('an order detail reads its events by resourceId alone, scoped to the shop in the app', async () => {
+	const { events, projections, findings } = fixtures();
+	await events.put({ eventId: 's2:o1', shopId: 's2', resourceId: 'o1', domain: 'order', occurredAt: NOW - 1000, receivedAt: NOW - 1000 });
+	const seen = recordSearches(events);
+	const row = await projections.get('s1:o1');
+	assert.ok(row, 'fixture has an s1 projection for o1');
+
+	const detail = await getOrderDetail(projections, events, findings, 's1', NOW, 'o1');
+
+	const ids = (detail as { events: Array<{ eventId: string }> }).events.map((e) => e.eventId);
+	assert.ok(ids.length > 0 && ids.every((id) => id.startsWith('s1')), 'only this shop events');
+	assert.ok(seen.every((q) => !hasShopCondition(q)));
+});

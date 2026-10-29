@@ -201,3 +201,23 @@ test('a skipped rebuild evaluates the detector against the stored row', async ()
 	const expectation = (await t.expectations.get(detectorKey('s', 'o1'))) as { state: string };
 	assert.equal(expectation.state, 'resolved');
 });
+
+// Harper's `and` walks the low-cardinality shopId index first, which costs ~14 ms at 160k events
+// against 0.4 ms for resourceId alone. The tenant is enforced on the returned rows instead.
+test('the order events query keys on resourceId alone and keeps only this shop rows', async () => {
+	const t = tables();
+	const seen: SearchQuery[] = [];
+	const events = t.events;
+	const search = events.search.bind(events);
+	events.search = (query: SearchQuery) => {
+		seen.push(query);
+		return search(query);
+	};
+	await seed(events, [paid('e1', NOW - 5 * HOUR), ev('x1', NOW - 4 * HOUR, { shopId: 'other', topic: 'orders/updated' })]);
+
+	const rebuilt = await updateOrderProjection(t.deps, 's', 'o1', NOW);
+
+	assert.deepEqual(seen[0].conditions, [{ attribute: 'resourceId', value: 'o1' }]);
+	assert.equal(rebuilt?.projection.eventCount, 1, 'the other shop event is not counted');
+	assert.deepEqual(rebuilt?.evidenceEventIds, ['e1']);
+});

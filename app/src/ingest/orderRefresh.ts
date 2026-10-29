@@ -25,15 +25,23 @@ export interface RebuiltOrder {
 // day before the cutoff, which also absorbs clock skew between nodes.
 const REBUILD_GUARD_WINDOW_MS = (RETENTION_DAYS - 1) * DAY_MS;
 
-function orderQuery(shopId: string, orderId: string, select?: string[]): SearchQuery {
-	return {
-		conditions: [
-			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'resourceId', value: orderId },
-		],
+// Keys on resourceId alone: Harper's `and` walks the low-cardinality shopId index, which grows with
+// the shop's whole ledger (14 ms against 0.4 ms at 160k events). The tenant is enforced on the rows.
+async function orderEvents(
+	tables: OrderTables,
+	shopId: string,
+	orderId: string,
+	select?: string[],
+): Promise<Array<Record<string, unknown>>> {
+	const rows: Array<Record<string, unknown>> = [];
+	for await (const row of tables.events.search({
+		conditions: [{ attribute: 'resourceId', value: orderId }],
 		operator: 'and',
-		...(select ? { select } : {}),
-	};
+		...(select ? { select: [...select, 'shopId'] } : {}),
+	})) {
+		if (row.shopId === shopId) rows.push(row);
+	}
+	return rows;
 }
 
 function evidenceIds(rows: Array<Record<string, unknown>>): string[] {
@@ -59,8 +67,7 @@ export async function updateOrderProjection(
 	orderId: string,
 	now: number,
 ): Promise<RebuiltOrder | undefined> {
-	const rows: Array<Record<string, unknown>> = [];
-	for await (const row of tables.events.search(orderQuery(shopId, orderId))) rows.push(row);
+	const rows = await orderEvents(tables, shopId, orderId);
 	const projection = rebuildProjection(rows as unknown as OperationalEvent[]);
 	if (!projection) return undefined;
 
@@ -93,9 +100,7 @@ export async function runDetectorForOrder(
 	if (!projection || !evidenceEventIds) {
 		projection = (await tables.projections.get(`${shopId}:${orderId}`)) as OrderProjection | undefined;
 		if (!projection) return;
-		const rows: Array<Record<string, unknown>> = [];
-		for await (const row of tables.events.search(orderQuery(shopId, orderId, ['eventId']))) rows.push(row);
-		evidenceEventIds = evidenceIds(rows);
+		evidenceEventIds = evidenceIds(await orderEvents(tables, shopId, orderId, ['eventId']));
 	}
 
 	const confirmationId = detectorKey(shopId, orderId);

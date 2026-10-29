@@ -58,6 +58,7 @@ async function keysetPage(
 	cursorRaw: string | undefined,
 	limitRaw: unknown,
 	descending = true,
+	keep?: (row: Record<string, unknown>) => boolean,
 ): Promise<Page> {
 	const limit = clampLimit(limitRaw);
 	const cursor = decodeCursor(cursorRaw);
@@ -88,7 +89,8 @@ async function keysetPage(
 	})) {
 		page.push(row);
 	}
-	const items = page.map((r) => pick(r, fields));
+	// `keep` filters after the fetch (a page can come back short); the cursor still follows the fetched rows.
+	const items = (keep ? page.filter(keep) : page).map((r) => pick(r, fields));
 	let nextCursor: string | undefined;
 	if (page.length === limit && page.length > 0) {
 		const last = page[page.length - 1];
@@ -160,10 +162,11 @@ export async function listEvents(
 	eventSkus?: QueryTable,
 ): Promise<Page> {
 	const windowStart = Math.max(params.since ?? 0, now - WINDOW_MS);
-	const conditions: QuerySpec['conditions'] = [
-		{ attribute: 'shopId', value: shopId },
-		{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
-	];
+	// A resourceId filter is highly selective, but Harper's `and` would still walk the low-cardinality
+	// shopId index (12 ms at 160k events), so that query drops shopId and filters the rows instead.
+	const conditions: QuerySpec['conditions'] = [{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' }];
+	if (!params.resourceId) conditions.unshift({ attribute: 'shopId', value: shopId });
+	const keep = params.resourceId ? (row: Record<string, unknown>) => row.shopId === shopId : undefined;
 	if (params.until !== undefined) conditions.push({ attribute: 'occurredAt', value: params.until, comparator: 'less_than_equal' });
 	// Conditions every EventSku row also carries; `state` is not one of them.
 	for (const [attr, val] of [
@@ -185,6 +188,8 @@ export async function listEvents(
 			['eventId'],
 			params.cursor,
 			params.limit,
+			true,
+			keep,
 		);
 		// Gets are issued together; awaiting inside the loop serialized up to MAX_EXPORT_ROWS round trips.
 		const fetched = await Promise.all(indexPage.items.map((row) => events.get(String(row.eventId))));
@@ -205,7 +210,7 @@ export async function listEvents(
 	// which is only set for a single-SKU event.
 	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
 
-	const page = await keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	const page = await keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit, true, keep);
 	return { items: eventSkus ? await hydrateSkus(eventSkus, shopId, page.items) : page.items, nextCursor: page.nextCursor };
 }
 
@@ -226,16 +231,15 @@ export async function getEventDetail(
 	const relatedEventIds: string[] = [];
 	if (row.resourceId) {
 		for await (const r of events.search({
-			conditions: [
-				{ attribute: 'shopId', value: shopId },
-				{ attribute: 'resourceId', value: row.resourceId },
-			],
+			conditions: [{ attribute: 'resourceId', value: row.resourceId }],
 			operator: 'and',
-			select: ['eventId'],
-			limit: 50,
+			select: ['eventId', 'shopId'],
 		})) {
+			// shopId is filtered here, not queried (see listEvents); the cap is applied to this shop's rows.
+			if ((r as { shopId?: unknown }).shopId !== shopId) continue;
 			const id = (r as { eventId?: unknown }).eventId;
 			if (typeof id === 'string' && id !== eventId) relatedEventIds.push(id);
+			if (relatedEventIds.length >= 50) break;
 		}
 	}
 	const orderId = row.resourceId;
@@ -402,17 +406,18 @@ export async function getOrderDetail(
 	const windowStart = now - WINDOW_MS;
 	const eventRows: Array<Record<string, unknown>> = [];
 	for await (const row of events.search({
+		// resourceId alone, shopId filtered below (see listEvents); an order's events are few.
 		conditions: [
-			{ attribute: 'shopId', value: shopId },
 			{ attribute: 'resourceId', value: orderId },
 			// Same window bound as every other ledger view; purge lag can leave older rows queryable.
 			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
 		sort: { attribute: 'occurredAt', descending: true },
-		limit: MAX_LIMIT,
 	})) {
+		if (row.shopId !== shopId) continue;
 		eventRows.push(pick(row, EVENT_FIELDS));
+		if (eventRows.length >= MAX_LIMIT) break;
 	}
 
 	const findingRows: Array<Record<string, unknown>> = [];
