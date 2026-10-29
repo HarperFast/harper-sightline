@@ -49,6 +49,7 @@ Backup/restore is a Fabric-managed operation; this records the procedure and the
 
 1. **Backup:** trigger the Fabric/Harper backup of the `sightline_core` + `sightline_ledger` databases. Confirm the backup artifact is **encrypted at rest** (deployment secret management) — inherits the at-rest guarantees in the [security review §4](./security-review.md).
 2. **Restore drill:** restore into a clean production-like instance. Verify:
+   - **File-copy restore (local or self-hosted):** `harper stop`, copy the whole Harper root to the new location, then rewrite the absolute paths in `harper-config.yaml` (`rootPath` and the key paths) to the new root **before the first start**. Without this, Harper refuses to start with `Harper config file validation error: Specified path …/database does not exist`. Checked on a local 5.3.3 copy; a Fabric-managed restore was not verifiable locally.
    - `/api/v1/health` returns `{ok:true}` and `scripts/smoke.mjs` passes.
    - A known shop's `OrderProjection` / `GapFinding` rows are present and match pre-backup counts.
    - **No token plaintext** is present — `ShopCredential` rows remain encrypted envelopes; the restored instance needs the same `SIGHTLINE_TOKEN_KEY` to decrypt (a restore to a new key intentionally cannot read old tokens → shops re-bootstrap).
