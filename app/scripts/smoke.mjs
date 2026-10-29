@@ -10,6 +10,7 @@
 // signed webhook round-trip (writes a synthetic delivery — staging only), and
 // SMOKE_RATE_LIMIT=1 opts in to the 429-is-not-401 check on a throttled export.
 import { createHmac } from 'node:crypto';
+import { installedFromSetup } from './smokeSetup.mjs';
 
 const base = process.env.SIGHTLINE_BASE ?? 'https://ayoo.josh-test.harperfabric.com';
 const secret = process.env.SHOPIFY_API_SECRET;
@@ -158,13 +159,7 @@ if (secret) {
 		check('uninstall: session bootstraps the throwaway shop = 200', bootstrapped.status === 200, String(bootstrapped.status));
 
 		const before = await req('/api/v1/setup', { headers: uninstallAuth });
-		let installedBefore = false;
-		try {
-			installedBefore = JSON.parse(before.bodyFull ?? before.body).installed === true;
-		} catch {
-			// fall through — reported by the check below
-		}
-		check('uninstall: shop reads as installed before the webhook', installedBefore, before.body.slice(0, 120));
+		check('uninstall: shop reads as installed before the webhook', installedFromSetup(before.bodyFull) === true, before.body.slice(0, 120));
 
 		const ubody = JSON.stringify({ myshopify_domain: uninstallShopDomain, smoke: true });
 		const uhmac = createHmac('sha256', secret).update(Buffer.from(ubody, 'utf8')).digest('base64');
@@ -193,13 +188,11 @@ if (secret) {
 		let lastBody = '';
 		while (Date.now() < deadline) {
 			await new Promise((r) => setTimeout(r, 5000));
-			const after = await req('/api/v1/setup', { headers: uninstallAuth });
+			// A fresh token per poll: the 60 s session token would expire inside the window.
+			const after = await req('/api/v1/setup', { headers: { 'X-Shopify-Session-Token': mintSessionToken(uninstallShopDomain) } });
 			lastBody = after.body;
-			try {
-				installedAfter = JSON.parse(after.bodyFull ?? after.body).installed !== false;
-			} catch {
-				installedAfter = true;
-			}
+			// Only a readable "not installed" ends the wait; an error or a 401 keeps polling.
+			installedAfter = installedFromSetup(after.bodyFull) !== false;
 			if (!installedAfter) break;
 		}
 		check('uninstall: shop is no longer installed once the delivery is processed', !installedAfter, lastBody.slice(0, 160));
