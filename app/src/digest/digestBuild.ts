@@ -70,7 +70,11 @@ export async function runDigestBuild(now: number, deps: DigestBuildDeps): Promis
 	let skippedNotDue = 0;
 	let skippedQuiet = 0;
 	let failed = 0;
-	for await (const row of deps.subscriptions.search({ conditions: [{ attribute: 'status', value: 'active' }] })) {
+	// Read out before any build: a live iterator holds a Harper read snapshot that expires after
+	// maxTransactionOpenTime (30 s), and the next advance would then throw and skip the rest.
+	const rows: Array<Record<string, unknown>> = [];
+	for await (const row of deps.subscriptions.search({ conditions: [{ attribute: 'status', value: 'active' }] })) rows.push(row);
+	for (const row of rows) {
 		const subscription = row as unknown as DigestSubscription;
 		const cadence: DigestCadence = subscription.cadence ?? 'daily';
 		const periodStart = periodStartFor(cadence, now);

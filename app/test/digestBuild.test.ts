@@ -284,3 +284,31 @@ test('scrubEmailShaped leaves a module path with an @scope segment unchanged, bu
 	// exemption that also misses genuine addresses.
 	assert.equal(scrubEmailShaped('Cannot find module for ops@merchant.example'), 'Cannot find module for [address]');
 });
+
+// A live subscription iterator holds a Harper read snapshot that expires after
+// maxTransactionOpenTime (30 s); the rows are read out before any shop is built.
+test('a slow build cannot expire the subscription read snapshot and starve the subscriptions after it', async () => {
+	const outboxRows = new Map<string, DigestOutbox>();
+	const { deps, subscriptions } = buildDeps({
+		subscriptions: new FakeTable('shopId', [
+			{ shopId: 's1', email: 'a@b.example', status: 'active' },
+			{ shopId: 's2', email: 'c@b.example', status: 'active' },
+		]),
+		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1'), unconfirmedFinding('s2', 'o2')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1'), awaitingOrder('s2', 'o2')]),
+	});
+	deps.outboxes = {
+		async put(row: DigestOutbox) {
+			outboxRows.set(row.id, row);
+			if (row.shopId === 's1') subscriptions.expireSnapshots(); // the first build took long enough
+		},
+		async get(id: string) {
+			return outboxRows.get(id) ?? null;
+		},
+	} as unknown as DigestBuildDeps['outboxes'];
+
+	const result = await runDigestBuild(NOW, deps);
+
+	assert.equal(result.built, 2);
+	assert.equal(result.failed, 0);
+});

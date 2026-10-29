@@ -233,12 +233,12 @@ const reconcileTicker = ticker('reconcile', 30 * 60_000);
 // A 401 mid-sweep means the token stopped being accepted after the pre-flight
 // expiry check, so rotate once and retry. Synthesized event ids are deterministic
 // and the sweep persists its cursor, so a restarted shop replays cleanly.
-export async function reconcileShop(shopId: string, now = Date.now()): Promise<{ orders: number } | null> {
+export async function reconcileShop(shopId: string, now = Date.now(), deadlineMs?: number): Promise<{ orders: number } | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const token = await getUsableAccessToken(tokenDeps, shopId, now);
 		if (!token) return null;
 		try {
-			return await reconcileShopWithToken(shopId, token, now);
+			return await reconcileShopWithToken(shopId, token, now, deadlineMs);
 		} catch (err) {
 			if (attempt === 0 && isAuthError(err)) {
 				metrics.inc(M.reconcileError);
@@ -251,7 +251,7 @@ export async function reconcileShop(shopId: string, now = Date.now()): Promise<{
 	return null;
 }
 
-async function reconcileShopWithToken(shopId: string, token: string, now: number): Promise<{ orders: number } | null> {
+async function reconcileShopWithToken(shopId: string, token: string, now: number, deadlineMs?: number): Promise<{ orders: number } | null> {
 	// Display-only: a failure is retried next sweep and must not fail reconciliation.
 	const shopRow = await Shops.get(shopId);
 	let ianaTimezone: string | undefined;
@@ -284,8 +284,15 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 				}),
 		},
 		sinceMs,
+		{ deadlineMs },
 	);
 	const orders = sweep.orders;
+	if (!sweep.complete) {
+		// Out of budget with pages left: the checkpoint resumes next sweep, and the shop is not yet reconciled.
+		log('info', 'reconcile.shop.budget', { shop: shopId, orders });
+		if (ianaTimezone) await Shops.patch(shopId, { ianaTimezone });
+		return { orders };
+	}
 	await Shops.patch(shopId, {
 		lastReconciledAt: now,
 		reconciliationState: 'ready',
@@ -307,7 +314,10 @@ function recordShopFailure(shopId: string, err: unknown): void {
 
 export function runReconcileSweep(now = Date.now()): Promise<ReconcileShopsResult> {
 	const active = Shops.search({ conditions: [{ attribute: 'status', value: 'active' }] }) as AsyncIterable<{ shopId: string }>;
-	return reconcileShops(active, { reconcile: (shopId) => reconcileShop(shopId, now), onFailure: recordShopFailure });
+	return reconcileShops(active, {
+		reconcile: (shopId, deadlineMs) => reconcileShop(shopId, now, deadlineMs),
+		onFailure: recordShopFailure,
+	});
 }
 
 export const reconcileJob = job('reconcile', reconcileTicker, async () => {

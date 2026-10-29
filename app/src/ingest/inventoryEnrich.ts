@@ -172,8 +172,13 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 	let items = 0;
 	let locations = 0;
 	let indexed = 0;
-	for await (const s of deps.shops.search({ conditions: [{ attribute: 'status', value: 'active' }] })) {
-		const shopId = (s as { shopId: string }).shopId;
+	// Read out before any network work: a live iterator holds a Harper read snapshot that expires
+	// after maxTransactionOpenTime (30 s), and one slow shop made the next advance throw and skip the rest.
+	const shopIds: string[] = [];
+	for await (const s of deps.shops.search({ conditions: [{ attribute: 'status', value: 'active' }], select: ['shopId'] })) {
+		shopIds.push((s as { shopId: string }).shopId);
+	}
+	for (const shopId of shopIds) {
 		let token: string | null;
 		try {
 			token = await deps.getToken(shopId, now);

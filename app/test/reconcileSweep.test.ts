@@ -162,3 +162,72 @@ test('orders with no updatedAt cannot drag the cursor backwards', async () => {
 
 	assert.deepEqual(checkpoints, [5000], 'the timestamp-less order does not reset progress to sinceMs');
 });
+
+// Harper expires a read snapshot after maxTransactionOpenTime (30 s): a shop iterator still open
+// while one shop's network work runs throws ReadSnapshotExpiredError mid-loop, which aborted the
+// sweep with every later shop unattempted. This iterator behaves the same: once a shop has been
+// reconciled, advancing it again throws.
+function expiringShops(...ids: string[]) {
+	const state = { reconciledAny: false };
+	async function* rows() {
+		for (const shopId of ids) {
+			if (state.reconciledAny) throw new Error('ReadSnapshotExpiredError: read snapshot expired');
+			yield { shopId };
+		}
+	}
+	return { state, rows: rows() };
+}
+
+test('a slow shop cannot expire the shop read snapshot and abort the sweep', async () => {
+	const { state, rows } = expiringShops('a', 'b', 'c');
+	const attempted: string[] = [];
+	const result = await reconcileShops(rows, {
+		reconcile: async (shopId) => {
+			attempted.push(shopId);
+			state.reconciledAny = true;
+			return { orders: 1 };
+		},
+		onFailure: () => assert.fail('no shop should fail'),
+	});
+
+	assert.deepEqual(attempted, ['a', 'b', 'c']);
+	assert.deepEqual(result, { shops: 3, orders: 3, failed: 0 });
+});
+
+test('each shop is handed its own deadline, a fresh budget from when it starts', async () => {
+	let clock = 1_000;
+	const deadlines: Array<number | undefined> = [];
+	await reconcileShops(shops('a', 'b'), {
+		reconcile: async (_shopId, deadlineMs) => {
+			deadlines.push(deadlineMs);
+			clock += 500_000; // a slow shop must not eat the next shop's budget
+			return { orders: 0 };
+		},
+		onFailure: () => {},
+		shopBudgetMs: 60_000,
+		now: () => clock,
+	});
+
+	assert.deepEqual(deadlines, [61_000, 561_000]);
+});
+
+test('a sweep past its deadline keeps its progress, checkpoints it as partial and stops', async () => {
+	const { deps, applied, saved } = memDeps([[order('1', 1000), order('2', 2000)], [order('3', 3000)]]);
+	let now = 0;
+
+	const result = await sweepOrdersSince(
+		{
+			...deps,
+			async applyOrder(o) {
+				await deps.applyOrder(o);
+				now += 10; // the second order lands past the deadline
+			},
+		},
+		500,
+		{ deadlineMs: 15, now: () => now },
+	);
+
+	assert.deepEqual(applied, ['1', '2'], 'stops before the next page');
+	assert.equal(result.complete, false);
+	assert.deepEqual(saved, [{ cursorMs: 2000, complete: false }], 'the cursor keeps the progress without refreshing the completion stamp');
+});

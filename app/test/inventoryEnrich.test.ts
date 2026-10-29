@@ -445,3 +445,31 @@ test('a backlog larger than the read limit converges over several ticks without 
 	assert.ok(ticks > 1, 'each tick reads a bounded batch');
 	assert.equal((await runInventoryEnrichment(NOW + total, deps)).indexed, 0, 'converged');
 });
+
+// Harper expires a read snapshot after maxTransactionOpenTime (30 s). Walking the live shop
+// iterator across one slow shop's Admin calls made the next advance throw and skipped every
+// shop after it, so the shop ids must be read out before any network work.
+test('a slow shop cannot expire the shop read snapshot and starve the shops after it', async () => {
+	const raw = harness();
+	await raw.shops.put({ shopId: 's2', status: 'active' });
+	await raw.shops.put({ shopId: 's3', status: 'active' });
+	for (const shopId of ['s1', 's2', 's3']) {
+		await raw.events.put(inventoryEvent({ eventId: `${shopId}:e1`, shopId, resourceId: 'i1' }));
+	}
+	const tokenFor: string[] = [];
+	const deps = buildDeps(raw, {
+		getToken: async (shopId: string) => {
+			tokenFor.push(shopId);
+			if (shopId === 's1') raw.shops.expireSnapshots(); // s1 is the slow one
+			return 'tok';
+		},
+		fetchItems: (async (_shop: string, _token: string, ids: string[]) =>
+			ids.map((id) => ({ inventoryItemId: id, sku: `SKU-${id}` }))) as EnrichDeps['fetchItems'],
+		fetchLocations: (async () => []) as EnrichDeps['fetchLocations'],
+	});
+
+	const result = await runInventoryEnrichment(NOW, deps);
+
+	assert.deepEqual(tokenFor, ['s1', 's2', 's3']);
+	assert.equal(result.indexed, 3);
+});

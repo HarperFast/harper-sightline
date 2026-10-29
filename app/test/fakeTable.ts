@@ -78,8 +78,16 @@ export class FakeTable implements PurgeableTable {
 		return Number(a) - Number(b);
 	}
 
+	// Harper's read snapshot expires after maxTransactionOpenTime (30 s), and an iterator opened before
+	// that throws when next advanced. expireSnapshots() stands in for the clock passing that limit.
+	private snapshotEpoch = 0;
+	expireSnapshots(): void {
+		this.snapshotEpoch++;
+	}
+
 	async *search(query: FakeQuery & { sort?: FakeSort; offset?: number }): AsyncIterable<Record<string, unknown>> {
 		FakeTable.validate(query);
+		const openedAt = this.snapshotEpoch;
 		let matched = [...this.rows.values()].filter((row) => FakeTable.matches(row, query));
 		const sort = query.sort;
 		if (sort) {
@@ -95,6 +103,7 @@ export class FakeTable implements PurgeableTable {
 		const limit = query.limit ?? Number.POSITIVE_INFINITY;
 		let yielded = 0;
 		for (const row of matched) {
+			if (this.snapshotEpoch !== openedAt) throw new Error('ReadSnapshotExpiredError: the read snapshot exceeded maxTransactionOpenTime');
 			if (yielded >= limit) break;
 			yielded++;
 			yield row;
