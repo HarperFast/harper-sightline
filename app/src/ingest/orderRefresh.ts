@@ -5,7 +5,7 @@ import { DAY_MS, RETENTION_DAYS, type SearchQuery } from '../retention/retention
 import { log, metrics, M } from '../observability/observe.ts';
 
 interface ReadTable {
-	get(id: string): Promise<Record<string, unknown> | undefined>;
+	get(id: string): Promise<Record<string, unknown> | null>;
 }
 
 export interface OrderTables {
@@ -71,7 +71,7 @@ export async function updateOrderProjection(
 	const projection = rebuildProjection(rows as unknown as OperationalEvent[]);
 	if (!projection) return undefined;
 
-	const stored = (await tables.projections.get(projection.id)) as OrderProjection | undefined;
+	const stored = ((await tables.projections.get(projection.id)) ?? undefined) as OrderProjection | undefined;
 	if (isStaleRebuild(stored, projection, now)) {
 		metrics.inc(M.projectionStaleSkipped);
 		log('debug', 'projection.stale_skipped', {
@@ -98,7 +98,7 @@ export async function runDetectorForOrder(
 	let projection = rebuilt?.projection;
 	let evidenceEventIds = rebuilt?.evidenceEventIds;
 	if (!projection || !evidenceEventIds) {
-		projection = (await tables.projections.get(`${shopId}:${orderId}`)) as OrderProjection | undefined;
+		projection = ((await tables.projections.get(`${shopId}:${orderId}`)) ?? undefined) as OrderProjection | undefined;
 		if (!projection) return;
 		evidenceEventIds = evidenceIds(await orderEvents(tables, shopId, orderId, ['eventId']));
 	}
@@ -109,13 +109,16 @@ export async function runDetectorForOrder(
 		projection,
 		now,
 		evidenceEventIds,
-		prior: { expectation: expectation as Expectation | undefined, finding: finding as GapFinding | undefined },
+		prior: {
+			expectation: (expectation ?? undefined) as Expectation | undefined,
+			finding: (finding ?? undefined) as GapFinding | undefined,
+		},
 	});
 	if (result.expectation) await tables.expectations.put(result.expectation);
 	if (result.finding) await tables.findings.put(result.finding);
 
 	const failedId = detectorKey(shopId, orderId, FAILED_RULE);
-	const priorFailed = (await tables.findings.get(failedId)) as GapFinding | undefined;
+	const priorFailed = ((await tables.findings.get(failedId)) ?? undefined) as GapFinding | undefined;
 	const failed = evaluateFailedFulfillment({ projection, now, evidenceEventIds, prior: { finding: priorFailed } });
 	if (failed.finding) await tables.findings.put(failed.finding);
 }

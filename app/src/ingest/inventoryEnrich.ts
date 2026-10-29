@@ -72,7 +72,8 @@ export async function indexCachedInventoryEvent(
 	event: OperationalEvent,
 ): Promise<number> {
 	if (event.domain !== 'inventory' || !event.resourceId) return 0;
-	const item = (await deps.inventoryItems.get(inventoryItemKey(event.shopId, event.resourceId))) as InventoryItem | undefined;
+	const item = ((await deps.inventoryItems.get(inventoryItemKey(event.shopId, event.resourceId))) ?? undefined) as
+		InventoryItem | undefined;
 	if (!item?.sku) return 0;
 	const rows = skuRowsForInventoryEvent(event, item.sku);
 	for (const row of rows) await deps.eventSkus.put(row);
@@ -135,7 +136,7 @@ export interface EnrichQuerySpec {
 }
 export interface EnrichReadTable {
 	search(spec: EnrichQuerySpec): AsyncIterable<Record<string, unknown>>;
-	get(id: string): Promise<Record<string, unknown> | undefined>;
+	get(id: string): Promise<Record<string, unknown> | null>;
 }
 
 // Injected side effects: real tables, Admin API and token resolution (jobs.ts), or fakes in tests.

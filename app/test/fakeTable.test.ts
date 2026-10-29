@@ -20,7 +20,7 @@ test('patch shallow-merges an existing row and ignores a missing one', async () 
 	assert.deepEqual(await table.get('a'), { id: 'a', n: 5, keep: true });
 
 	await table.patch('missing', { n: 1 });
-	assert.equal(await table.get('missing'), undefined);
+	assert.equal(await table.get('missing'), null);
 });
 
 // The fake stands in for Harper in every read-layer test, so it must refuse the

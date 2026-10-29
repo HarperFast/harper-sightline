@@ -18,7 +18,7 @@ class CountingTable extends FakeTable {
 		this.searches++;
 		return super.search(query);
 	}
-	override get(id: string): Promise<Record<string, unknown> | undefined> {
+	override get(id: string): Promise<Record<string, unknown> | null> {
 		this.gets++;
 		return super.get(id);
 	}
@@ -167,7 +167,7 @@ test('the detector on its own reads the stored projection and the evidence', asy
 	const t = tables();
 	await seed(t.events, [paid('e2', NOW - 100 * HOUR), paid('e1', NOW - 99 * HOUR)]);
 	await refreshOrder(t.deps, 's', 'o1', NOW - 99 * HOUR);
-	assert.equal(await t.findings.get(detectorKey('s', 'o1')), undefined);
+	assert.equal(await t.findings.get(detectorKey('s', 'o1')), null);
 	t.events.searches = 0;
 	t.projections.gets = 0;
 
@@ -197,7 +197,7 @@ test('a skipped rebuild evaluates the detector against the stored row', async ()
 	await refreshOrder(t.deps, 's', 'o1', NOW);
 
 	const finding = await t.findings.get(detectorKey('s', 'o1'));
-	assert.equal(finding, undefined, 'the stored row is fulfilled, so no unconfirmed finding');
+	assert.equal(finding, null, 'the stored row is fulfilled, so no unconfirmed finding');
 	const expectation = (await t.expectations.get(detectorKey('s', 'o1'))) as { state: string };
 	assert.equal(expectation.state, 'resolved');
 });

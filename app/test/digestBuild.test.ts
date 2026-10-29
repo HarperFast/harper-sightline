@@ -95,7 +95,7 @@ test('a subscription already built for this period is not rebuilt', async () => 
 	assert.equal(result.built, 0);
 	assert.equal(result.skippedNotDue, 1);
 	assert.equal(result.skippedQuiet, 0);
-	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), undefined);
+	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), null);
 	// Untouched — the loop never re-gathered this period, so there is nothing new
 	// to stamp.
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, PERIOD_START);
@@ -113,7 +113,7 @@ test('a quiet, healthy period writes no outbox row but still advances lastBuiltA
 	assert.equal(result.built, 0);
 	assert.equal(result.skippedNotDue, 0);
 	assert.equal(result.skippedQuiet, 1);
-	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), undefined);
+	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), null);
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, PERIOD_START);
 });
 
@@ -128,7 +128,7 @@ test('a subscription with no address never builds', async () => {
 	const result = await runDigestBuild(NOW, deps);
 	assert.equal(result.built, 0);
 	assert.equal(result.skippedNotDue, 1);
-	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), undefined);
+	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), null);
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, undefined);
 });
 
@@ -189,7 +189,7 @@ test('a failure building one subscription does not starve subscriptions after it
 			outboxRows.set(row.id, row);
 		},
 		async get(id: string) {
-			return outboxRows.get(id);
+			return outboxRows.get(id) ?? null;
 		},
 	};
 	const { deps, subscriptions } = buildDeps({

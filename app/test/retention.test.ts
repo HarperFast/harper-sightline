@@ -99,9 +99,9 @@ test('digest outbox rows are purged after thirty days, not seven', async () => {
 	]);
 	const result = await purgeExpired([{ name: 'DigestOutbox', keyField: 'id', tsField: 'createdAt', table: outbox }], NOW, 30);
 	assert.equal(result.deleted, 1);
-	assert.equal(await outbox.get('s1:old'), undefined);
+	assert.equal(await outbox.get('s1:old'), null);
 	// Ten days old survives a 30-day retention but would NOT survive the ledger's 7.
-	assert.notEqual(await outbox.get('s1:recent'), undefined);
+	assert.notEqual(await outbox.get('s1:recent'), null);
 });
 
 test('EventSku rows are purged with their events', async () => {
@@ -112,6 +112,6 @@ test('EventSku rows are purged with their events', async () => {
 	const result = await purgeExpired([{ name: 'EventSku', keyField: 'id', tsField: 'receivedAt', table: eventSkus }], NOW);
 	assert.equal(result.deleted, 1);
 	assert.equal(result.residue, 0);
-	assert.equal(await eventSkus.get('old:A'), undefined);
-	assert.notEqual(await eventSkus.get('new:A'), undefined);
+	assert.equal(await eventSkus.get('old:A'), null);
+	assert.notEqual(await eventSkus.get('new:A'), null);
 });

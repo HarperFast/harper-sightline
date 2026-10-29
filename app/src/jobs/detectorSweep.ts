@@ -12,7 +12,7 @@ export interface DetectorSweepQuery {
 export interface DetectorSweepDeps {
 	expectations: {
 		search(query: DetectorSweepQuery): AsyncIterable<Record<string, unknown>>;
-		get(id: string): Promise<Record<string, unknown> | undefined>;
+		get(id: string): Promise<Record<string, unknown> | null>;
 	};
 	evaluate(shopId: string, orderId: string): Promise<void>;
 }

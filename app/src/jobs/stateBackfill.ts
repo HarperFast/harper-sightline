@@ -31,7 +31,7 @@ export interface BackfillQuerySpec {
 }
 export interface BackfillReadTable {
 	search(spec: BackfillQuerySpec): AsyncIterable<Record<string, unknown>>;
-	get(id: string): Promise<Record<string, unknown> | undefined>;
+	get(id: string): Promise<Record<string, unknown> | null>;
 }
 
 // Injected side effects. `patch` writes only the derived column, so a concurrent event write cannot lose another field.
@@ -80,7 +80,7 @@ export async function runStateBackfill(now: number, deps: BackfillDeps): Promise
 		const id = String(row.id);
 		// Re-read and derive from the fresh row: patching from a stale snapshot would
 		// overwrite an event-driven rebuild's correct `state`.
-		const fresh = (await deps.projections.get(id)) as OrderProjection | undefined;
+		const fresh = ((await deps.projections.get(id)) ?? undefined) as OrderProjection | undefined;
 		if (!fresh || (fresh.state !== undefined && fresh.state !== null)) continue;
 		await deps.projections.patch(id, { state: deriveOrderLane(fresh) });
 		fixed++;

@@ -101,11 +101,12 @@ export class FakeTable implements PurgeableTable {
 		}
 	}
 
-	async get(id: string): Promise<Record<string, unknown> | undefined> {
+	async get(id: string): Promise<Record<string, unknown> | null> {
 		const row = this.rows.get(id);
-		return row ? { ...row } : undefined;
+		return row ? { ...row } : null;
 	}
 
+	// A miss is `null`, as in Harper (a `=== undefined` check never sees it).
 	// Upsert by the configured key field. Stores a copy so a caller mutating its
 	// input afterwards cannot change persisted state (Harper serializes on write).
 	async put(record: Record<string, unknown>): Promise<void> {

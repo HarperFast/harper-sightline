@@ -38,7 +38,7 @@ export interface QuerySort {
 }
 export interface QueryTable {
 	search(spec: QuerySpec): AsyncIterable<Record<string, unknown>>;
-	get(id: string): Promise<Record<string, unknown> | undefined>;
+	get(id: string): Promise<Record<string, unknown> | null>;
 }
 
 export interface Page {
@@ -225,7 +225,7 @@ export async function getEventDetail(
 	locations?: QueryTable,
 	eventSkus?: QueryTable,
 ): Promise<Record<string, unknown> | null> {
-	const row = (await events.get(eventId)) as OperationalEvent | undefined;
+	const row = ((await events.get(eventId)) ?? undefined) as OperationalEvent | undefined;
 	if (!row || row.shopId !== shopId) return null;
 
 	const relatedEventIds: string[] = [];
@@ -323,10 +323,10 @@ export async function getFindingDetail(
 	shopId: string,
 	id: string,
 ): Promise<Record<string, unknown> | null> {
-	const finding = (await findings.get(id)) as GapFinding | undefined;
+	const finding = ((await findings.get(id)) ?? undefined) as GapFinding | undefined;
 	if (!finding || finding.shopId !== shopId) return null;
-	const expectation = (await expectations.get(id)) as Expectation | undefined;
-	const projection = (await projections.get(`${shopId}:${finding.orderId}`)) as OrderProjection | undefined;
+	const expectation = ((await expectations.get(id)) ?? undefined) as Expectation | undefined;
+	const projection = ((await projections.get(`${shopId}:${finding.orderId}`)) ?? undefined) as OrderProjection | undefined;
 	return {
 		...pick(finding as unknown as Record<string, unknown>, FINDING_FIELDS),
 		description: describeFinding(finding),
@@ -564,7 +564,7 @@ export async function getSummary(
 		{ attribute: 'shopId', value: shopId },
 		{ attribute: 'status', value: 'dead_letter' },
 	]);
-	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 
 	let ordersTracked = 0;
 	let paid = 0;
@@ -672,7 +672,7 @@ export async function getPrivacy(
 		orders: await countWhere(tables.projections, [{ attribute: 'shopId', value: shopId }]),
 		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
 	};
-	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 
 	// Stated, never echoed: the address is shown on the Notifications screen only.
 	const subscription = tables.digestSubscriptions ? await tables.digestSubscriptions.get(shopId) : undefined;
@@ -752,7 +752,7 @@ export async function getSetup(
 	shopId: string,
 	now: number,
 ): Promise<Record<string, unknown>> {
-	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 	const credential = (await tables.credentials.get(shopId)) as { status?: string } | undefined;
 	const reconciliation = reconciliationView(shop, now);
 
@@ -765,7 +765,7 @@ export async function getSetup(
 	const reauthNeeded = credential?.status === 'reauthorization_required' || shop?.status === 'reauthorization_required';
 	// "Connected" is the credential, not a delivery: deliveries are purged after a week
 	// and would flip a quiet store back to "not set up". `eventsObserved` is separate.
-	const connected = credential !== undefined && !reauthNeeded;
+	const connected = credential != null && !reauthNeeded;
 	const initialCheckDone = reconciliation.state === 'ready' && reconciliation.lastReconciledAt !== undefined;
 
 	const steps = [
