@@ -106,9 +106,13 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
   reads 50 `accepted` rows per batch until the backlog is empty, 8s
   (`PROCESS_BUDGET_MS`) are spent, or a batch's worth of rows has failed, so an
   outage cannot burn `MAX_ATTEMPTS` on the whole backlog in one occurrence.
-  Partitioning (`partitionOf`, the `partition` option) exists but defaults to one
-  slot: the scheduler gives one executor per occurrence, and two leaders in a
+  Partitioning (`partitionOf`, the `partition` option) is **not wired** and stays at
+  one slot: the scheduler gives one executor per occurrence, and two leaders in a
   partition have no way to learn distinct slots, so idempotency covers that window.
+  More slots would also amplify reads, not scale: the filter runs in the application
+  and each batch re-reads every foreign-slot row (simulated, not measured live:
+  about 397 rows read per row processed at 2 slots and 1,197 at 4, with a 40,000-row
+  backlog).
 - **Failover tradeoff.** The scheduler lease has no compare-and-set. A leader loss
   pauses every job for roughly 5-6.5 minutes per Harper v5.3.3 source (lease stale after 5 min, follower
   checks every 75s, further nodes in line wait 150s more). Ingest still acks and
