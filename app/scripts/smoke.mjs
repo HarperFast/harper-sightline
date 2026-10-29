@@ -182,7 +182,7 @@ if (secret) {
 
 		// Uninstall is applied by the scheduled process job, not at ack time (ADR-002), so
 		// poll. The job is leader-coordinated: a deploy restart can move leadership and a
-		// failover takes ~5-6.5 minutes, so raise SMOKE_UNINSTALL_TIMEOUT_MS right after a deploy.
+		// failover takes 4-6.25 minutes, so raise SMOKE_UNINSTALL_TIMEOUT_MS right after a deploy.
 		const deadline = Date.now() + Number(process.env.SMOKE_UNINSTALL_TIMEOUT_MS ?? 90_000);
 		let installedAfter = true;
 		let lastBody = '';

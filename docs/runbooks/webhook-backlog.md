@@ -33,7 +33,7 @@ and detector fall behind, so the merchant UI goes stale.
    `process.tick` lines should appear whenever there is work, and the
    `system.hdb_scheduler_state` row `job:<component>:sightline-process` carries
    its `lastRunAt` / `lastStatus`. No `ops.snapshot` lines either = no scheduler
-   leader; failover takes ~6.5 minutes, after which the backlog drains.
+   leader; failover takes 4-6.25 minutes (heartbeat 60 s, stale after 5 min, watcher 75 s), after which the backlog drains.
 3. Confirm the deliveries are genuinely `accepted` (not `dead_letter`) — a
    backlog of `accepted` rows retries; see [dead-letters](./dead-letters.md) if
    they are dead-lettering instead.

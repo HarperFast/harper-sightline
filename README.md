@@ -132,7 +132,7 @@ All eight run as **Harper scheduler jobs**, declared in [`app/config.yaml`](app/
 | hourly | Retention purge — physical deletes, verified by re-query (plus one pass 30s after boot) | `sightline-purge` |
 | 15m | Build each subscriber's digest for the last complete period | `sightline-digest` |
 
-**Ingest pauses across a leader failover.** Failover completes in ~6.5 minutes, during which no delivery is processed; the backlog is durable, and the first occurrence on the new leader drains it. Because that is longer than the 5-minute `BACKLOG_STALE_MS`, `ops.snapshot` reports the stale backlog until it drains.
+**Ingest pauses across a leader failover.** Failover completes in 4-6.25 minutes, during which no delivery is processed; the backlog is durable, and the first occurrence on the new leader drains it. Because that can exceed the 5-minute `BACKLOG_STALE_MS`, `ops.snapshot` reports the stale backlog until it drains.
 
 Handlers stay wrapped in the stall-guarded ticker (`app/src/jobs/tick.ts`). The scheduler serialises occurrences per job and arms the next one only when the handler settles, with no stall timeout, so a hung handler would stop that job cluster-wide; the handler stops waiting after the ticker's stall budget, and the next occurrence starts a fresh pass.
 

@@ -114,10 +114,11 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
   about 397 rows read per row processed at 2 slots and 1,197 at 4, with a 40,000-row
   backlog).
 - **Failover tradeoff.** The scheduler lease has no compare-and-set. A leader loss
-  pauses every job for roughly 5-6.5 minutes per Harper v5.3.3 source (lease stale after 5 min, follower
-  checks every 75s, further nodes in line wait 150s more). Ingest still acks and
-  stores durably; the backlog drains on the new leader. That gap exceeds
-  `BACKLOG_STALE_MS` (5 min), so `ops.snapshot` reports a stale backlog until it
+  pauses every job for roughly 4-6.25 minutes per Harper v5.3.3 source (heartbeat
+  every 60s, lease stale after 5 min, follower checks every 75s, further nodes in
+  line wait 150s more). Ingest still acks and
+  stores durably; the backlog drains on the new leader. That gap can exceed
+  `BACKLOG_STALE_MS` (5 min), so `ops.snapshot` then reports a stale backlog until it
   drains. That is deliberate, not a bug: the oldest delivery really is that old.
 - **Projection guard.** A rebuild re-derives an order's projection from all of its
   events, so two concurrent rebuilds can write an older view over a newer one.
