@@ -105,6 +105,48 @@ test('empty system is healthy with null ages', async () => {
 	assert.equal(health.reconciliation.stalestAgeMs, null);
 });
 
+// computeOpsHealth collected every accepted delivery whole, payload included, into
+// one array: 60k rows of ~5 KB in the live check. Every search selects only the
+// fields it reads.
+test('ops health selects only the fields it reads, never a delivery payload', async () => {
+	const specs: Array<{ table: string; select?: string[] }> = [];
+	const spy = (name: string, table: FakeTable): QueryTable => ({
+		search(spec) {
+			specs.push({ table: name, select: spec.select });
+			return table.search(spec as never);
+		},
+		get: (id) => table.get(id),
+	});
+	const health = await computeOpsHealth(
+		{
+			deliveries: spy(
+				'deliveries',
+				new FakeTable('id', [
+					{ id: 's:1', status: 'accepted', receivedAt: NOW - 2000, payload: 'x'.repeat(5000) },
+					{ id: 's:2', status: 'accepted', receivedAt: NOW - 1000, payload: 'x'.repeat(5000) },
+					{ id: 's:3', status: 'dead_letter', receivedAt: NOW - 1000, payload: 'x'.repeat(5000) },
+				]),
+			),
+			checkpoints: spy('checkpoints', new FakeTable('id', [{ id: 'reconcile:s', cursor: '1', updatedAt: NOW - MIN }])),
+			credentials: spy(
+				'credentials',
+				new FakeTable('shopId', [{ shopId: 's', status: 'reauthorization_required', accessTokenEnc: 'enc' }]),
+			),
+		},
+		NOW,
+	);
+	assert.equal(health.backlog.accepted, 2);
+	assert.equal(health.backlog.oldestAgeMs, 2000);
+	assert.equal(health.deadLetter.count, 1);
+	assert.equal(health.reconciliation.staleShops, 0);
+	assert.equal(health.reauthorization.shops, 1);
+	assert.ok(specs.length >= 4);
+	for (const s of specs) {
+		assert.ok(s.select?.length, `a ${s.table} search loads whole rows`);
+		assert.ok(!s.select.includes('payload') && !s.select.includes('accessTokenEnc'), `a ${s.table} search selects ${s.select.join(',')}`);
+	}
+});
+
 // /ops and the minute heartbeat filter on these; unindexed, ShopCredential.status
 // took 158 ms at 10k credential rows.
 test('every attribute ops health filters on is @indexed', () => {

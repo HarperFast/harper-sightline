@@ -24,40 +24,49 @@ export interface OpsHealthDeps {
 	credentials: QueryTable; // ShopCredential
 }
 
-// Iterates a search fully; the queried states have small cardinality.
-async function collect(
+// Streams a search, selecting only the fields read, and returns the match count. Rows
+// are not collected: a backlog can be tens of thousands of rows of ~5 KB payload.
+async function scan(
 	table: QueryTable,
 	conditions: Parameters<QueryTable['search']>[0]['conditions'],
-): Promise<Record<string, unknown>[]> {
-	const rows: Record<string, unknown>[] = [];
-	for await (const row of table.search({ conditions, operator: 'and' })) rows.push(row);
-	return rows;
+	select: string[],
+	each?: (row: Record<string, unknown>) => void,
+): Promise<number> {
+	let n = 0;
+	for await (const row of table.search({ conditions, operator: 'and', select })) {
+		n++;
+		each?.(row);
+	}
+	return n;
 }
 
 export async function computeOpsHealth(deps: OpsHealthDeps, now: number): Promise<OpsHealth> {
-	const accepted = await collect(deps.deliveries, [{ attribute: 'status', value: 'accepted' }]);
 	let oldestReceivedAt: number | null = null;
-	for (const row of accepted) {
+	const accepted = await scan(deps.deliveries, [{ attribute: 'status', value: 'accepted' }], ['receivedAt'], (row) => {
 		const receivedAt = typeof row.receivedAt === 'number' ? row.receivedAt : null;
 		if (receivedAt !== null && (oldestReceivedAt === null || receivedAt < oldestReceivedAt)) oldestReceivedAt = receivedAt;
-	}
+	});
 	const oldestAgeMs = oldestReceivedAt === null ? null : Math.max(0, now - oldestReceivedAt);
 
-	const deadLetter = (await collect(deps.deliveries, [{ attribute: 'status', value: 'dead_letter' }])).length;
+	const deadLetter = await scan(deps.deliveries, [{ attribute: 'status', value: 'dead_letter' }], ['id']);
 
 	// Reconcile checkpoints carry the last completed pass in `updatedAt`.
-	const checkpoints = await collect(deps.checkpoints, [{ attribute: 'id', comparator: 'starts_with', value: 'reconcile:' }]);
 	let staleShops = 0;
 	let stalestAgeMs: number | null = null;
-	for (const row of checkpoints) {
-		const updatedAt = typeof row.updatedAt === 'number' ? row.updatedAt : null;
-		const ageMs = updatedAt === null ? null : Math.max(0, now - updatedAt);
-		if (ageMs === null || ageMs > RECONCILE_STALE_MS) staleShops += 1;
-		if (ageMs !== null && (stalestAgeMs === null || ageMs > stalestAgeMs)) stalestAgeMs = ageMs;
-	}
+	const shopsTracked = await scan(
+		deps.checkpoints,
+		[{ attribute: 'id', comparator: 'starts_with', value: 'reconcile:' }],
+		['id', 'updatedAt'],
+		(row) => {
+			const updatedAt = typeof row.updatedAt === 'number' ? row.updatedAt : null;
+			const ageMs = updatedAt === null ? null : Math.max(0, now - updatedAt);
+			if (ageMs === null || ageMs > RECONCILE_STALE_MS) staleShops += 1;
+			if (ageMs !== null && (stalestAgeMs === null || ageMs > stalestAgeMs)) stalestAgeMs = ageMs;
+		},
+	);
 
 	// Needs merchant re-consent: surfaced but not "unhealthy".
-	const reauthShops = (await collect(deps.credentials, [{ attribute: 'status', value: 'reauthorization_required' }])).length;
+	const reauthShops = await scan(deps.credentials, [{ attribute: 'status', value: 'reauthorization_required' }], ['shopId']);
 
 	const backlogStale = oldestAgeMs !== null && oldestAgeMs > BACKLOG_STALE_MS;
 	const reconcileStale = staleShops > 0;
@@ -65,9 +74,9 @@ export async function computeOpsHealth(deps: OpsHealthDeps, now: number): Promis
 
 	return {
 		now,
-		backlog: { accepted: accepted.length, oldestAgeMs },
+		backlog: { accepted, oldestAgeMs },
 		deadLetter: { count: deadLetter },
-		reconciliation: { shopsTracked: checkpoints.length, staleShops, stalestAgeMs },
+		reconciliation: { shopsTracked, staleShops, stalestAgeMs },
 		reauthorization: { shops: reauthShops },
 		healthy,
 	};
