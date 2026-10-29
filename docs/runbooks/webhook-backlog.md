@@ -61,7 +61,11 @@ on the next `ops.snapshot`.
 ## HMAC rejection spike {#hmac-rejection-spike}
 
 ### Alert
-`webhook.hmac_fail` counter spiking (elevated 401s on `/webhooks/shopify/events`).
+`webhook.signature_fail` counter spiking (elevated 401s on `/webhooks/shopify/events`).
+Counters are per worker thread and `ops.snapshot` shows the leader thread only, so a
+spike may be larger than the snapshot shows; the 401 rate in access logs is the
+instance-wide signal. (Renamed from `webhook.hmac_fail`, which the log redactor
+printed as `[redacted]`.)
 
 ### Why it matters
 Every delivery is HMAC-verified over the raw body before parsing; a failure 401s
@@ -81,7 +85,7 @@ Shopify traffic → silent capture loss) or someone is probing the endpoint.
 ### Remediate
 - Secret mismatch: restore/rotate the correct Shopify secret and confirm custody
   is initialized (see the secrets-custody runbook context). Once fixed,
-  `webhook.hmac_fail` returns to baseline and `webhook.accepted` resumes.
+  `webhook.signature_fail` returns to baseline and `webhook.accepted` resumes.
 - Missed deliveries during the mismatch window are recovered by reconciliation
   (the Admin API sweep backfills order state independently of webhooks) — confirm
   reconciliation is healthy ([stale-reconciliation](./stale-reconciliation.md)).

@@ -145,7 +145,7 @@ export const metrics = {
 export const M = {
 	// Webhook ingress.
 	webhookReceived: 'webhook.received',
-	webhookHmacFail: 'webhook.hmac_fail',
+	webhookSignatureFail: 'webhook.signature_fail',
 	webhookBadRequest: 'webhook.bad_request',
 	webhookUnknownShop: 'webhook.unknown_shop',
 	webhookAccepted: 'webhook.accepted',

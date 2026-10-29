@@ -32,7 +32,7 @@ export class ShopifyWebhook extends Resource {
 
 		const secret = await readShopifySecret();
 		if (!verifyWebhookHmac(rawBody, ctx.headers.get('x-shopify-hmac-sha256'), secret)) {
-			metrics.inc(M.webhookHmacFail);
+			metrics.inc(M.webhookSignatureFail);
 			throw httpError('invalid webhook hmac', 401);
 		}
 

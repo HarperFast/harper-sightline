@@ -1,6 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { redactFields, REDACTED, log, setLogSink, correlationId, metrics, M, type LogLevel } from '../src/observability/observe.ts';
+import {
+	redactFields,
+	isSensitiveKey,
+	REDACTED,
+	log,
+	setLogSink,
+	correlationId,
+	metrics,
+	M,
+	type LogLevel,
+} from '../src/observability/observe.ts';
 
 test('redactFields masks sensitive keys (case-insensitive)', () => {
 	const out = redactFields({
@@ -133,4 +143,11 @@ test('metrics.reset clears everything', () => {
 	const snap = metrics.snapshot();
 	assert.deepEqual(snap.counters, {});
 	assert.deepEqual(snap.latencies, {});
+});
+
+// ops.snapshot logs counters as fields, so a metric name the redactor matches prints as
+// "[redacted]" and the counter cannot be read.
+test('no metric name is redacted when printed as a snapshot key', () => {
+	const redacted = Object.values(M).filter((name) => isSensitiveKey(name));
+	assert.deepEqual(redacted, []);
 });

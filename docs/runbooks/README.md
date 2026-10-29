@@ -18,6 +18,11 @@ Sightline has no external metrics backend in the MVP. Instead:
   metrics tally as one structured line. When health is degraded the line is
   emitted at `warn`, so a log-based alert can key off
   `event="ops.snapshot"` with `level="warn"`.
+- **Counters are per worker thread.** The heartbeat runs on the leader thread
+  only, so the counters in `ops.snapshot` are that thread's tally, not the whole
+  instance's: a flat counter there does not prove the other threads saw nothing.
+  Metric names must not match the log redactor (a name containing `hmac`, `token`,
+  `secret` and the like prints as `[redacted]`); `observe.test.ts` enforces this.
 - **Logs** are single structured lines: `[sightline] {"level","event",...}`.
   Every field is passed through a redaction guard (`redactFields`) that masks
   tokens, HMACs, secrets, raw payloads, and customer PII before the line is
@@ -36,7 +41,7 @@ below is paged.
 | --- | --- | --- |
 | `ops.snapshot.health.deadLetter.count > 0`, or `process.dead_lettered` rising | [dead-letters](./dead-letters.md) | Sightline on-call → data/normalizer owner |
 | `ops.snapshot.health.backlog.oldestAgeMs > 5m` (`BACKLOG_STALE_MS`), or `process.error` rising, or backlog count climbing | [webhook-backlog](./webhook-backlog.md) | Sightline on-call → Harper Fabric on-call |
-| `webhook.hmac_fail` spiking, or elevated non-2xx on `/webhooks/shopify/events` | [webhook-backlog](./webhook-backlog.md#hmac-rejection-spike) | Sightline on-call → security owner |
+| `webhook.signature_fail` spiking, or elevated non-2xx on `/webhooks/shopify/events` | [webhook-backlog](./webhook-backlog.md#hmac-rejection-spike) | Sightline on-call → security owner |
 | `ops.snapshot.health.reconciliation.staleShops > 0` (`RECONCILE_STALE_MS` 30m), or `reconcile.error` rising | [stale-reconciliation](./stale-reconciliation.md) | Sightline on-call → Harper Fabric on-call |
 | `ops.snapshot.health.reauthorization.shops > 0`, or repeated `reconcile.error` for one shop | [token-refresh-failure](./token-refresh-failure.md) | Sightline on-call |
 | `purge.residue` or `purge.outbox.residue` warn line, `purge.failure`/`purge.error`/`purge.outbox.error` rising, or expired rows still present | [purge-failure](./purge-failure.md) | Sightline on-call → data/privacy owner |
