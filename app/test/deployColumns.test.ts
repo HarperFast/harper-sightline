@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { expectedColumns } from '../scripts/schemaColumns.mjs';
+import { expectedColumns, indexedColumns } from '../scripts/schemaColumns.mjs';
 
 const sdl = readFileSync(fileURLToPath(new URL('../schema.graphql', import.meta.url)), 'utf8');
 const key = ([database, table, attribute]: string[]) => `${database}.${table}.${attribute}`;
@@ -45,4 +45,18 @@ test('every non-key schema field is in the derived list, so a new column cannot 
 		assert.ok(derived.has(`sightline_ledger.OrderProjection.${col}`), col);
 	}
 	assert.ok(derived.has('sightline_core.Shop.ianaTimezone'));
+});
+
+test('derives the @indexed non-key attributes, so deploy can check each index exists', () => {
+	assert.deepEqual(
+		indexedColumns(`
+type Foo @table(database: "db_a") @sealed {
+	id: ID! @primaryKey
+	# old: Float @indexed
+	name: String # not @indexed
+	count: Int @indexed
+}
+`),
+		[['db_a', 'Foo', 'count']],
+	);
 });

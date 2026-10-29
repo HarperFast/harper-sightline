@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
 import { computeOpsHealth, BACKLOG_STALE_MS, RECONCILE_STALE_MS, type OpsHealthDeps } from '../src/observability/opsHealth.ts';
 import type { QueryTable } from '../src/api/queries.ts';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { indexedColumns } from '../scripts/schemaColumns.mjs';
 
 const NOW = 10_000_000_000;
 const MIN = 60_000;
@@ -100,4 +103,12 @@ test('empty system is healthy with null ages', async () => {
 	assert.equal(health.healthy, true);
 	assert.equal(health.backlog.oldestAgeMs, null);
 	assert.equal(health.reconciliation.stalestAgeMs, null);
+});
+
+// /ops and the minute heartbeat filter on these; unindexed, ShopCredential.status
+// took 158 ms at 10k credential rows.
+test('every attribute ops health filters on is @indexed', () => {
+	const sdl = readFileSync(fileURLToPath(new URL('../schema.graphql', import.meta.url)), 'utf8');
+	const indexed = new Set(indexedColumns(sdl).map(([, table, attribute]) => `${table}.${attribute}`));
+	for (const column of ['WebhookDelivery.status', 'ShopCredential.status']) assert.ok(indexed.has(column), `${column} is not @indexed`);
 });

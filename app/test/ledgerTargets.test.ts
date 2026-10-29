@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { REDACT_TARGETS, RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from '../src/retention/ledgerTargets.ts';
 import { OUTBOX_RETENTION_DAYS } from '../src/retention/retention.ts';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { indexedColumns } from '../scripts/schemaColumns.mjs';
 
 // ledgerTargets.ts wires DigestSubscription/DigestOutbox into REDACT_TARGETS,
 // RETENTION_TARGETS, and OUTBOX_RETENTION_TARGETS by hand. Their correctness is
@@ -40,4 +43,14 @@ test('DigestOutbox has its own 30-day entry in OUTBOX_RETENTION_TARGETS', () => 
 	const outboxEntry = findEntry(OUTBOX_RETENTION_TARGETS, 'DigestOutbox');
 	assert.equal(outboxEntry.tsField, 'createdAt');
 	assert.equal(OUTBOX_RETENTION_DAYS, 30);
+});
+
+// The purge's `ts < cutoff` search and its residue check run every pass. On an
+// unindexed key both walk the whole table: 9.7 s each at 600k rows on Harper 5.3.3.
+test('every retention key is @indexed', () => {
+	const sdl = readFileSync(fileURLToPath(new URL('../schema.graphql', import.meta.url)), 'utf8');
+	const indexed = new Set(indexedColumns(sdl).map(([, table, attribute]) => `${table}.${attribute}`));
+	for (const t of [...RETENTION_TARGETS, ...OUTBOX_RETENTION_TARGETS]) {
+		assert.ok(indexed.has(`${t.name}.${t.tsField}`), `${t.name}.${t.tsField} is a retention key without @indexed`);
+	}
 });

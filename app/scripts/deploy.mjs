@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expectedColumns } from './schemaColumns.mjs';
+import { expectedColumns, indexedColumns } from './schemaColumns.mjs';
 
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = process.env;
 if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
@@ -149,3 +149,19 @@ for (const [database, table, attribute] of EXPECTED_COLUMNS) {
 	}
 }
 console.log('schema columns verified');
+
+// An @indexed added to an existing column is applied (and back-filled) by the
+// deploy; no operation can create it afterwards, so a missing one is reported.
+// describe_table marks an indexed attribute with an `indexed` property.
+const notIndexed = [];
+for (const [database, table, attribute] of indexedColumns(readFileSync(new URL('../schema.graphql', import.meta.url), 'utf8'))) {
+	const desc = await op({ operation: 'describe_table', database, table });
+	const attr = Array.isArray(desc?.attributes) ? desc.attributes.find((a) => a.attribute === attribute) : undefined;
+	if (!attr?.indexed) notIndexed.push(`${table}.${attribute}`);
+}
+if (notIndexed.length) {
+	console.error(`\nINDEX MISSING after deploy: ${notIndexed.join(', ')}`);
+	console.error('Queries on these fall back to full table scans. Redeploy and re-check with describe_table.');
+	process.exit(1);
+}
+console.log('schema indexes verified');

@@ -2,15 +2,26 @@
 // the SDL. Primary keys are excluded: a table cannot exist without its key.
 // Comments are stripped first: they may contain braces (`${shopId}`).
 export function expectedColumns(sdl) {
-	const columns = [];
+	return fields(sdl).map(({ database, table, attribute }) => [database, table, attribute]);
+}
+
+// The subset of expectedColumns marked @indexed.
+export function indexedColumns(sdl) {
+	return fields(sdl)
+		.filter((f) => f.indexed)
+		.map(({ database, table, attribute }) => [database, table, attribute]);
+}
+
+function fields(sdl) {
+	const out = [];
 	const code = sdl.replace(/#.*$/gm, '');
 	const tableRe = /^type\s+(\w+)\s+@table\(database:\s*"(\w+)"\)[^{]*\{([^}]*)\}/gm;
 	for (const [, table, database, body] of code.matchAll(tableRe)) {
 		for (const line of body.split('\n')) {
 			const m = /^\s*(\w+)\s*:/.exec(line);
 			if (!m || line.includes('@primaryKey')) continue;
-			columns.push([database, table, m[1]]);
+			out.push({ database, table, attribute: m[1], indexed: /@indexed\b/.test(line) });
 		}
 	}
-	return columns;
+	return out;
 }

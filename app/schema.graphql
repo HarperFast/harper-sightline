@@ -30,7 +30,7 @@ type ShopCredential @table(database: "sightline_core") @sealed {
 	expiresAt: Float
 	refreshTokenExpiresAt: Float
 	version: Int
-	status: String # active | reauthorization_required
+	status: String @indexed # active | reauthorization_required (ops health counts reauthorization_required)
 }
 
 type AppAuditEvent @table(database: "sightline_core") @sealed {
@@ -134,7 +134,7 @@ type OperationalEvent @table(database: "sightline_ledger") @sealed {
 	state: String
 	source: String! # webhook | reconciliation
 	occurredAt: Float! @indexed
-	receivedAt: Float!
+	receivedAt: Float! @indexed # retention key
 }
 
 type OrderProjection @table(database: "sightline_ledger") @sealed {
@@ -181,7 +181,7 @@ type Expectation @table(database: "sightline_ledger") @sealed {
 	ruleVersion: Int
 	state: String! @indexed # pending | resolved | suppressed | expired
 	deadline: Float @indexed
-	createdAt: Float
+	createdAt: Float @indexed # retention key
 	resolvedAt: Float
 }
 
