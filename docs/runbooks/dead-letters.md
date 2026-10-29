@@ -16,7 +16,8 @@ visible in a dead-letter state" holds. But that order's evidence never reached
 the ledger/detector, so a real gap could go unrecorded.
 
 ### Signals
-- `ops.snapshot` `deadLetter.count` (aggregate) marks health unhealthy.
+- `ops.snapshot` `deadLetter.count` (aggregate) marks health unhealthy. It is
+  counted up to 10,000; `deadLetter.capped: true` means the count is a floor.
 - `getSummary` (merchant API) exposes `recorder.deadLetteredDeliveries` per shop —
   an unhealthy recorder must never render as "no gaps" (screen spec).
 - `process.error` lines around the same time hint at the cause.

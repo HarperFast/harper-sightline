@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
 import {
 	computeOpsHealth,
+	BACKLOG_COUNT_LIMIT,
 	BACKLOG_STALE_MS,
 	RECONCILE_STALE_MS,
 	RETENTION_OVERDUE_MS,
@@ -191,10 +192,47 @@ test('ops health selects only the fields it reads, never a delivery payload', as
 	}
 });
 
+// Reading every row of a 57k backlog cost ~0.5 s per /ops call whatever the select.
+// Past BACKLOG_COUNT_LIMIT the scans stop and say so.
+function backlog(fresh: number, extra: Record<string, unknown>[] = []): Record<string, unknown>[] {
+	return [...Array.from({ length: fresh }, (_, i) => ({ id: `s:f${i}`, status: 'accepted', receivedAt: NOW - 1000 })), ...extra];
+}
+
+test('an uncapped backlog is counted exactly', async () => {
+	const health = await computeOpsHealth(deps({ deliveries: backlog(BACKLOG_COUNT_LIMIT - 1) }), NOW);
+	assert.deepEqual(health.backlog, { accepted: BACKLOG_COUNT_LIMIT - 1, oldestAgeMs: 1000, capped: false });
+});
+
+test('a backlog past the limit reports a capped floor count', async () => {
+	const health = await computeOpsHealth(deps({ deliveries: backlog(BACKLOG_COUNT_LIMIT + 5) }), NOW);
+	assert.equal(health.backlog.accepted, BACKLOG_COUNT_LIMIT);
+	assert.equal(health.backlog.capped, true);
+	assert.equal(health.healthy, true, 'a large fresh backlog is not stale');
+});
+
+test('a capped backlog still finds a stale delivery the scan did not reach', async () => {
+	const staleAt = NOW - BACKLOG_STALE_MS - MIN;
+	const health = await computeOpsHealth(
+		deps({ deliveries: backlog(BACKLOG_COUNT_LIMIT, [{ id: 's:stale', status: 'accepted', receivedAt: staleAt }]) }),
+		NOW,
+	);
+	assert.equal(health.backlog.capped, true);
+	assert.equal(health.backlog.oldestAgeMs, NOW - staleAt, 'the stale row it found sets the age, so the > 5m alert still fires');
+	assert.equal(health.healthy, false);
+});
+
+test('dead letters past the limit report a capped floor count', async () => {
+	const dead = Array.from({ length: BACKLOG_COUNT_LIMIT + 1 }, (_, i) => ({ id: `s:d${i}`, status: 'dead_letter', receivedAt: NOW }));
+	const health = await computeOpsHealth(deps({ deliveries: dead }), NOW);
+	assert.deepEqual(health.deadLetter, { count: BACKLOG_COUNT_LIMIT, capped: true });
+	assert.equal(health.healthy, false);
+});
+
 // /ops and the minute heartbeat filter on these; unindexed, ShopCredential.status
 // took 158 ms at 10k credential rows.
 test('every attribute ops health filters on is @indexed', () => {
 	const sdl = readFileSync(fileURLToPath(new URL('../schema.graphql', import.meta.url)), 'utf8');
 	const indexed = new Set(indexedColumns(sdl).map(([, table, attribute]) => `${table}.${attribute}`));
-	for (const column of ['WebhookDelivery.status', 'ShopCredential.status']) assert.ok(indexed.has(column), `${column} is not @indexed`);
+	for (const column of ['WebhookDelivery.status', 'WebhookDelivery.receivedAt', 'ShopCredential.status'])
+		assert.ok(indexed.has(column), `${column} is not @indexed`);
 });

@@ -25,6 +25,12 @@ and detector fall behind, so the merchant UI goes stale.
 - `event="process.error"` lines (worker exceptions), with `message`.
 - `process.processed` flat while `webhook.accepted` keeps rising.
 - `ops.snapshot` `backlog.accepted` / `backlog.oldestAgeMs` trend.
+- **Counts are floors when capped.** The backlog scan stops at 10,000 rows
+  (`BACKLOG_COUNT_LIMIT`) and sets `backlog.capped: true`. `backlog.accepted` then
+  reads 10,000 however large the backlog is, so "climbing" stops being visible above
+  it: watch `backlog.oldestAgeMs` and `process.processed` instead. The stale check
+  stays exact when capped (a direct query for an accepted row older than 5 min), and
+  `oldestAgeMs` is then the age of a stale row it found, a floor on the true oldest.
 
 ### Diagnose
 1. Read recent `process.error` lines — a repeating `message` points at the failing

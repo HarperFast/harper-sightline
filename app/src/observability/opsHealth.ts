@@ -14,11 +14,17 @@ export const RECONCILE_STALE_MS = 30 * 60 * 1000; // no successful reconcile che
 export const RETENTION_OVERDUE_MS = 30 * 60 * 1000;
 // Overdue rows are counted up to this many per table: an index read, bounded when far behind.
 export const OVERDUE_COUNT_LIMIT = 1_000;
+// The backlog and dead-letter scans stop at this many rows and report `capped`: the
+// count is then a floor, and oldestAgeMs the oldest row read (or the stale row the
+// staleness query found). Reading every row cost ~0.5 s per call at a 57k backlog,
+// whatever the select. Health never turns on a count above 0: dead letters > 0 and
+// the backlog's age decide it, and the age check stays exact when capped.
+export const BACKLOG_COUNT_LIMIT = 10_000;
 
 export interface OpsHealth {
 	now: number;
-	backlog: { accepted: number; oldestAgeMs: number | null };
-	deadLetter: { count: number };
+	backlog: { accepted: number; oldestAgeMs: number | null; capped: boolean };
+	deadLetter: { count: number; capped: boolean };
 	reconciliation: { shopsTracked: number; staleShops: number; stalestAgeMs: number | null };
 	reauthorization: { shops: number };
 	// overdueRows is a floor once a table reaches OVERDUE_COUNT_LIMIT.
@@ -49,9 +55,10 @@ async function scan(
 	conditions: Parameters<QueryTable['search']>[0]['conditions'],
 	select: string[],
 	each?: (row: Record<string, unknown>) => void,
+	limit?: number,
 ): Promise<number> {
 	let n = 0;
-	for await (const row of table.search({ conditions, operator: 'and', select })) {
+	for await (const row of table.search({ conditions, operator: 'and', select, limit })) {
 		n++;
 		each?.(row);
 	}
@@ -60,13 +67,32 @@ async function scan(
 
 export async function computeOpsHealth(deps: OpsHealthDeps, now: number): Promise<OpsHealth> {
 	let oldestReceivedAt: number | null = null;
-	const accepted = await scan(deps.deliveries, [{ attribute: 'status', value: 'accepted' }], ['receivedAt'], (row) => {
+	const oldest = (row: Record<string, unknown>) => {
 		const receivedAt = typeof row.receivedAt === 'number' ? row.receivedAt : null;
 		if (receivedAt !== null && (oldestReceivedAt === null || receivedAt < oldestReceivedAt)) oldestReceivedAt = receivedAt;
-	});
+	};
+	const accepted = await scan(deps.deliveries, [{ attribute: 'status', value: 'accepted' }], ['receivedAt'], oldest, BACKLOG_COUNT_LIMIT);
+	const acceptedCapped = accepted >= BACKLOG_COUNT_LIMIT;
+	// Capped, the rows read may all be fresh while a later one is stale, so ask for a
+	// stale one directly. On Harper 5.3.3 this walks the status index and checks
+	// receivedAt per row: it returns at the first stale row (5 ms at a 60k stale
+	// backlog) but reads the whole backlog when none is stale (~1 s at 60k fresh).
+	if (acceptedCapped && (oldestReceivedAt === null || now - oldestReceivedAt <= BACKLOG_STALE_MS)) {
+		const staleBefore = now - BACKLOG_STALE_MS;
+		await scan(
+			deps.deliveries,
+			[
+				{ attribute: 'status', value: 'accepted' },
+				{ attribute: 'receivedAt', comparator: 'less_than', value: staleBefore },
+			],
+			['receivedAt'],
+			oldest,
+			1,
+		);
+	}
 	const oldestAgeMs = oldestReceivedAt === null ? null : Math.max(0, now - oldestReceivedAt);
 
-	const deadLetter = await scan(deps.deliveries, [{ attribute: 'status', value: 'dead_letter' }], ['id']);
+	const deadLetter = await scan(deps.deliveries, [{ attribute: 'status', value: 'dead_letter' }], ['id'], undefined, BACKLOG_COUNT_LIMIT);
 
 	// Reconcile checkpoints carry the last completed pass in `updatedAt`.
 	let staleShops = 0;
@@ -94,8 +120,8 @@ export async function computeOpsHealth(deps: OpsHealthDeps, now: number): Promis
 
 	return {
 		now,
-		backlog: { accepted, oldestAgeMs },
-		deadLetter: { count: deadLetter },
+		backlog: { accepted, oldestAgeMs, capped: acceptedCapped },
+		deadLetter: { count: deadLetter, capped: deadLetter >= BACKLOG_COUNT_LIMIT },
 		reconciliation: { shopsTracked, staleShops, stalestAgeMs },
 		reauthorization: { shops: reauthShops },
 		retention,

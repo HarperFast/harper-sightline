@@ -15,6 +15,7 @@
 // the backlog returns to its pre-burst level, no new dead letters, and the
 // observed drain rate keeps up with the offered rate.
 import { createHmac } from 'node:crypto';
+import { drainProgress } from './loadtestDrain.mjs';
 
 const base = process.env.SIGHTLINE_BASE ?? 'https://ayoo.josh-test.harperfabric.com';
 const secret = process.env.SHOPIFY_API_SECRET;
@@ -48,7 +49,14 @@ async function readOps() {
 	}
 	if (!r.ok) throw new Error(`/api/v1/ops returned ${r.status}`);
 	const health = await r.json();
-	return { accepted: health.backlog.accepted, deadLetter: health.deadLetter.count, oldestAgeMs: health.backlog.oldestAgeMs };
+	return {
+		accepted: health.backlog.accepted,
+		// /ops stops counting at BACKLOG_COUNT_LIMIT: a capped count is a floor.
+		capped: health.backlog.capped === true,
+		deadLetter: health.deadLetter.count,
+		deadLetterCapped: health.deadLetter.capped === true,
+		oldestAgeMs: health.backlog.oldestAgeMs,
+	};
 }
 
 function sign(body) {
@@ -89,14 +97,14 @@ async function waitForDrain(baselineAccepted) {
 	while ((performance.now() - startedAt) / 1000 < drainTimeoutSec) {
 		const ops = await readOps();
 		samples.push({ atSec: (performance.now() - startedAt) / 1000, ...ops });
-		if (ops.accepted <= baselineAccepted) {
+		if (!ops.capped && ops.accepted <= baselineAccepted) {
 			drained = true;
 			break;
 		}
 		const shown = samples.length;
 		if (shown === 1 || shown % 6 === 0) {
 			console.log(
-				`  draining: backlog=${ops.accepted} (baseline ${baselineAccepted}) oldest=${ops.oldestAgeMs ?? 0}ms deadLetter=${ops.deadLetter}`,
+				`  draining: backlog=${ops.accepted}${ops.capped ? '+ (capped)' : ''} (baseline ${baselineAccepted}) oldest=${ops.oldestAgeMs ?? 0}ms deadLetter=${ops.deadLetter}`,
 			);
 		}
 		await new Promise((r) => setTimeout(r, drainPollMs));
@@ -104,33 +112,24 @@ async function waitForDrain(baselineAccepted) {
 	return { drained, samples };
 }
 
-// Deliveries cleared per second between the first and last samples. `reason` matters:
-// an unmeasurable rate because nothing was queued is a pass; one because the backlog
-// never moved is the worst result and must not read as "kept up".
-function drainProgress(samples, baselineAccepted) {
-	if (samples.length === 0) return { rate: null, reason: 'no-samples' };
-	const first = samples[0];
-	if (first.accepted <= baselineAccepted) return { rate: null, reason: 'nothing-queued' };
-	if (samples.length < 2) return { rate: null, reason: 'too-few-samples' };
-	const last = samples[samples.length - 1];
-	const cleared = first.accepted - last.accepted;
-	const seconds = last.atSec - first.atSec;
-	if (seconds <= 0) return { rate: null, reason: 'too-few-samples' };
-	if (cleared <= 0) return { rate: 0, reason: 'no-progress' };
-	return { rate: cleared / seconds, reason: 'measured' };
-}
-
-function describeDrainRate({ rate, reason }) {
+function describeDrainRate({ rate, reason, cappedSamples }) {
 	if (reason === 'nothing-queued') return 'n/a — processing kept up with ingest in real time, nothing queued';
 	if (reason === 'no-progress') return `0/s vs ${rps}/s offered — the backlog did not move at all`;
+	if (reason === 'capped') return 'n/a — /ops reported a capped (floor) backlog count at every sample, so no rate can be read from it';
 	if (rate === null) return 'n/a — too few samples to measure';
-	return `${rate.toFixed(1)}/s vs ${rps}/s offered`;
+	const tail = cappedSamples ? ` (from the last uncapped samples only; ${cappedSamples} capped samples left out)` : '';
+	return `${rate.toFixed(1)}/s vs ${rps}/s offered${tail}`;
 }
 
 async function main() {
 	console.log(`Load: ${rps} rps for ${durationSec}s against ${base} (topic ${topic})`);
 	const baseline = await readOps();
 	console.log(`pre-burst: backlog=${baseline.accepted} deadLetter=${baseline.deadLetter}`);
+	if (baseline.capped || baseline.deadLetterCapped) {
+		console.log(
+			'WARNING: /ops reports a capped (floor) count before the burst. The drain gate then waits for the backlog to fall below that floor, and the dead-letter delta is not exact.',
+		);
+	}
 	const latencies = [];
 	let sent = 0;
 	let lost = 0;
