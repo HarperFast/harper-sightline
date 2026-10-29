@@ -8,16 +8,17 @@
 
 ### Why it matters
 Sightline promises a **7-day retention** window with physical deletion (ADR-003);
-the plan explicitly warns not to equate cache staleness with legal deletion. An
-hourly purge job (the `sightline-purge` Harper scheduler job in
+the plan explicitly warns not to equate cache staleness with legal deletion. A
+5-minute purge job (the `sightline-purge` Harper scheduler job in
 `app/config.yaml`, handled by `purgeJob` in `app/jobs.ts` and backed by
 `app/src/retention/retention.ts`) deletes rows older than the window across the
 ledger tables. It is **leader-coordinated**: one node runs each occurrence, so an
 absence of `purge.tick` lines cluster-wide can mean the scheduler has no leader
 rather than that the purge failed — check for `job.catchup` lines and the
-`ops.snapshot` heartbeat before assuming a purge fault. `startPurgeBootPass` also
-runs one pass 30s after boot on each thread, because the scheduler does not fire a
-newly declared job on deploy. Residue (expired rows still present after a run) or repeated failures mean
+`ops.snapshot` heartbeat before assuming a purge fault. There is no boot pass: the
+scheduler does not fire a newly declared job on deploy, so the first pass after a
+deploy comes up to 5 minutes later (longer if restarts keep re-anchoring it).
+Residue (expired rows still present after a run, counted up to 10,000 per table) or repeated failures mean
 the deletion guarantee — a compliance commitment — is not being met.
 
 ### Signals
@@ -43,18 +44,18 @@ log event name for that.
 1. Read the `purge.failures` line — `failures` names which table(s) failed and
    why (e.g. a delete rejected, an index issue, a schema flake after a deploy).
 2. Distinguish **residue** (purge ran but some rows survived — usually a
-   transient delete failure that the next hourly run clears) from **hard failure**
+   transient delete failure that the next run clears) from **hard failure**
    (`purge.error` — the job could not run at all).
 3. Correlate with recent deploys: a `harper-fabric-sealed-column-add-flaky` schema
    flake can disrupt a table's operations; verify with `describe_table`.
 
 ### Remediate
-- **Transient residue**: the purge is idempotent and runs hourly; confirm the next
-  run clears residue to 0. If it does, log and close.
+- **Transient residue**: the purge is idempotent and runs every 5 minutes; confirm
+  a later run clears residue to 0. If it does, log and close.
 - **Persistent residue / hard failure**: fix the underlying table/schema issue,
-  then trigger a purge without waiting an hour — redeploy (the loop runs a purge
-  ~30 s after boot) or invoke `runPurge()` via an operations action. Because purge
-  is idempotent, a manual run is safe alongside the scheduled one.
+  then let the next 5-minute occurrence run, or invoke `runPurge()` via an
+  operations action. A redeploy does not run one sooner: there is no boot pass.
+  Because purge is idempotent, a manual run is safe alongside the scheduled one.
 - If a **specific compliance deletion** (shop/customer redaction) is what failed —
   not the time-based purge — see the compliance flow: redaction is idempotent and
   keyed, so re-running the `shop/redact` / `customers/redact` path is safe.

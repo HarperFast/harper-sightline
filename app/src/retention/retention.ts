@@ -14,6 +14,10 @@ export const OUTBOX_RETENTION_DAYS = 30;
 // residue is cleared by the next run.
 export const MAX_DELETES_PER_RUN = 10_000;
 
+// Residue (expired rows left after a run) is counted up to this many per table, so
+// a table far behind costs one bounded index read, not a walk of all its residue.
+export const RESIDUE_COUNT_LIMIT = 10_000;
+
 export interface SearchQuery {
 	conditions: Array<{ attribute: string; value: unknown; comparator?: string }>;
 	operator?: 'and' | 'or';
@@ -36,7 +40,7 @@ export interface RetentionTarget {
 
 export interface PurgeTableResult {
 	deleted: number;
-	residue: number; // expired rows still present after the purge (should be 0 unless capped)
+	residue: number; // expired rows still present after the purge, up to RESIDUE_COUNT_LIMIT (0 unless capped)
 	capped: boolean; // hit MAX_DELETES_PER_RUN — more remain for the next run
 }
 
@@ -95,7 +99,7 @@ async function purgeTarget(target: RetentionTarget, cutoff: number): Promise<Pur
 	const deleted = await deleteMatchingKeys(target.table, target.keyField, condition);
 	const capped = deleted >= MAX_DELETES_PER_RUN;
 	// Verifies physical deletion (ADR-003 §4): re-query for remaining expired rows.
-	const residue = await countMatching(target.table, condition, undefined, target.keyField, 1);
+	const residue = await countMatching(target.table, condition, undefined, target.keyField, RESIDUE_COUNT_LIMIT);
 	return { deleted, residue, capped };
 }
 

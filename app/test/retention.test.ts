@@ -84,6 +84,28 @@ test('a failing table is captured, others still purge', async () => {
 	assert.match(result.failures[0], /Bad: table offline/);
 });
 
+// Residue was a limit-1 re-query, so it read 1 per table whatever remained and the
+// summed `purge.residue` counted tables. It counts the expired rows left.
+test('residue counts the expired rows left behind, not the tables with any', async () => {
+	const events = new FakeTable(
+		'eventId',
+		Array.from({ length: 5 }, (_, i) => ({ eventId: `e${i}`, shopId: 's', receivedAt: OLD })),
+	);
+	const stuck = new Set(['e0', 'e1', 'e2']);
+	const table = {
+		search: (q: Parameters<FakeTable['search']>[0]) => events.search(q),
+		async delete(id: string) {
+			if (stuck.has(id)) throw new Error('delete rejected');
+			await events.delete(id);
+		},
+	};
+	const result = await purgeExpired([{ name: 'OperationalEvent', keyField: 'eventId', tsField: 'receivedAt', table }], NOW);
+	assert.equal(result.deleted, 2);
+	assert.equal(result.byTable.OperationalEvent.residue, 3);
+	assert.equal(result.residue, 3);
+	assert.match(result.failures[0], /OperationalEvent: 3 expired rows remain/);
+});
+
 test('cutoffMs default window is seven days', () => {
 	assert.equal(cutoffMs(NOW), NOW - RETENTION_DAYS * DAY_MS);
 });

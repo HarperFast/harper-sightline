@@ -179,7 +179,6 @@ export const processDeliveriesJob = job('process', processTicker, async () => {
 	await runProcessCycle({ drain: processDeliveries, log, metrics });
 });
 
-const PURGE_INITIAL_DELAY_MS = 30_000;
 const purgeTicker = ticker('purge', 30 * 60_000);
 
 export function runPurge(now = Date.now()): Promise<PurgeResult> {
@@ -191,17 +190,12 @@ export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
 	return purgeExpired(OUTBOX_RETENTION_TARGETS, now, OUTBOX_RETENTION_DAYS);
 }
 
+// Leader-only, like every job here: there is no boot pass, because one started at
+// module load runs on every thread of every node. The 5-minute interval bounds how
+// long a deploy waits for the first pass.
 export const purgeJob = job('purge', purgeTicker, async () => {
 	await runPurgeCycle({ purge: runPurge, outboxPurge: runOutboxPurge, log, metrics }, Date.now());
 });
-
-// A new job does not fire on deploy; it waits for its first occurrence. This one
-// bounded pass per thread boot clears downtime backlog and lets scripts/smoke.mjs
-// verify retention. The purge is idempotent and capped at MAX_DELETES_PER_RUN per
-// table, and the ticker keeps it from overlapping the scheduled occurrence.
-export function startPurgeBootPass(): void {
-	setTimeout(() => void purgeJob(), PURGE_INITIAL_DELAY_MS);
-}
 
 const detectorTicker = ticker('detect', 15 * 60_000);
 
@@ -460,5 +454,3 @@ export const opsSnapshotJob = job('ops.snapshot', snapshotTicker, async () => {
 		log('error', 'ops.snapshot.error', { message: (e as Error).message });
 	}
 });
-
-startPurgeBootPass();

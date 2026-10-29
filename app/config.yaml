@@ -51,9 +51,11 @@ scheduler:
     - name: sightline-inventory-enrich
       interval: 15m
       handler: ./jobs.ts#inventoryEnrichJob
-    # Seven-day ledger purge + the outbox's own thirty-day purge (ADR-003).
+    # Seven-day ledger purge + the outbox's own thirty-day purge (ADR-003). No
+    # boot pass, so a short interval: a never-run job re-anchors to now + interval
+    # on every restart.
     - name: sightline-purge
-      interval: 1h
+      interval: 5m
       handler: ./jobs.ts#purgeJob
     # Builds each subscriber's digest for the last complete period; shouldBuild()
     # does the cadence gating, so the short interval is cheap and a restart cannot

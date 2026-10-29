@@ -93,11 +93,16 @@ test('delivery processing runs on the scheduler every 10s, and nothing starts a 
 	// in addition to the leader's occurrence.
 	assert.doesNotMatch(jobsSource, /setInterval\(/, 'jobs.ts must not start interval timers; declare a scheduler job instead');
 	assert.doesNotMatch(jobsSource, /startProcessingLoop/);
-	assert.match(
-		jobsSource,
-		/^startPurgeBootPass\(\);$/m,
-		'the purge keeps one post-deploy pass; the scheduler does not fire a new job on deploy',
-	);
+});
+
+// A boot pass started from module load ran on every worker thread: on 2 threads both
+// passes deleted the same keys and each reported 40k for 10k rows per table, and on
+// Fabric that is threads x nodes overlapping purges per restart.
+test('the purge runs only as the leader-coordinated scheduler job, every 5 minutes', () => {
+	assert.doesNotMatch(jobsSource, /startPurgeBootPass|setTimeout\(/, 'jobs.ts must not start a purge (or any timer) on every thread');
+	// Short enough that a never-run job, which re-anchors to now + interval on each
+	// restart, is not postponed for long by restarts.
+	assert.equal(declaredJobs().find((j) => j.name === 'sightline-purge')?.schedule, '5m');
 });
 
 test('the processing time budget is shorter than the interval it runs on', () => {
