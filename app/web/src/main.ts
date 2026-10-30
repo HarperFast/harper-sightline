@@ -60,6 +60,17 @@ function loading(): void {
 	render(spinnerView());
 }
 
+// Every screen awaits the network and then paints. route() takes a new token on
+// each navigation and hands it to the screen, which drops its paint when the token
+// is no longer current — otherwise a slow answer for a screen the merchant already
+// left lands after the one they moved to and paints over it. The check belongs
+// after the LAST await before each render: anything earlier still leaves a gap.
+let currentNav = 0;
+
+function stale(nav: number): boolean {
+	return nav !== currentNav;
+}
+
 function bindRetry(): void {
 	for (const button of document.querySelectorAll<HTMLElement>('[data-retry]')) {
 		button.addEventListener('click', () => {
@@ -214,13 +225,15 @@ async function strip(): Promise<string> {
 }
 
 // ── screens ──────────────────────────────────────────────────────────────────
-async function setupScreen(): Promise<void> {
+async function setupScreen(nav: number): Promise<void> {
 	loading();
-	render(setupView(await apiSetup()));
+	const setup = await apiSetup();
+	if (stale(nav)) return;
+	render(setupView(setup));
 	bindRetry();
 }
 
-async function overview(): Promise<void> {
+async function overview(nav: number): Promise<void> {
 	loading();
 	const [summaryResult, flowsResult, unconfirmedResult, setupResult] = await Promise.allSettled([
 		loadSummary(),
@@ -228,6 +241,7 @@ async function overview(): Promise<void> {
 		apiFindings({ status: 'unconfirmed' }),
 		apiSetup(),
 	]);
+	if (stale(nav)) return;
 	// The summary is this screen's spine — without it there is nothing honest to
 	// render, so its failure is a screen-level error (or auth-expired) upstream.
 	if (summaryResult.status === 'rejected') throw summaryResult.reason;
@@ -250,55 +264,82 @@ let eventCursor: string | undefined;
 // forward between pages and could skip a boundary row.
 let eventQueryActive: Record<string, string> = {};
 
-async function eventsList(params: Record<string, string>): Promise<void> {
+// "Load more" asks for one page at a time: the button is disabled while its
+// request is out and a click on a disabled button is ignored, so a double click
+// cannot fetch the same cursor twice and append that page twice. The page is
+// dropped if the merchant navigated while it was in flight.
+function bindLoadMore<T>(nav: number, fetchNext: () => Promise<T>, append: (page: T) => void): void {
+	const button = document.getElementById('loadMore');
+	button?.addEventListener('click', async () => {
+		if (button.hasAttribute('disabled')) return;
+		button.setAttribute('disabled', '');
+		try {
+			const page = await fetchNext();
+			if (!stale(nav)) append(page);
+		} finally {
+			// A successful append repaints with a fresh button; this re-enables the
+			// old one after a failure so the merchant can try again.
+			button.removeAttribute('disabled');
+		}
+	});
+}
+
+async function eventsList(nav: number, params: Record<string, string>): Promise<void> {
 	loading();
 	eventItems = [];
 	eventCursor = undefined;
 	eventQueryActive = eventQuery(params, Date.now());
 	const contextHtml = await strip();
 	const first = await apiEvents(eventQueryActive);
+	if (stale(nav)) return;
 	eventItems = first.items;
 	eventCursor = first.nextCursor;
-	paintEvents(params, contextHtml);
+	paintEvents(nav, params, contextHtml);
 }
 
-function paintEvents(params: Record<string, string>, contextHtml: string): void {
+function paintEvents(nav: number, params: Record<string, string>, contextHtml: string): void {
 	render(eventsView(params, eventItems, Boolean(eventCursor), contextHtml));
 	bindFilters('eventFilters', () => submitFilters('/events', EVENT_FILTER_KEYS));
 	bindTimeControls();
 	bindChips();
-	document.getElementById('loadMore')?.addEventListener('click', async () => {
-		const next = await apiEvents({ ...eventQueryActive, cursor: eventCursor });
-		eventItems.push(...next.items);
-		eventCursor = next.nextCursor;
-		paintEvents(params, contextHtml);
-	});
+	bindLoadMore(
+		nav,
+		() => apiEvents({ ...eventQueryActive, cursor: eventCursor }),
+		(next) => {
+			eventItems.push(...next.items);
+			eventCursor = next.nextCursor;
+			paintEvents(nav, params, contextHtml);
+		},
+	);
 	bindExport(eventQueryActive);
 }
 
-async function eventDetail(id: string): Promise<void> {
+async function eventDetail(nav: number, id: string): Promise<void> {
 	loading();
 	const contextHtml = await strip();
-	render(eventDetailView(await apiEvent(id), contextHtml));
+	const event = await apiEvent(id);
+	if (stale(nav)) return;
+	render(eventDetailView(event, contextHtml));
 }
 
 let orderItems: OrderItem[] = [];
 let orderCursor: string | undefined;
 let orderQueryActive: Record<string, string> = {};
 
-async function ordersList(params: Record<string, string>): Promise<void> {
+async function ordersList(nav: number, params: Record<string, string>): Promise<void> {
 	loading();
 	orderItems = [];
 	orderCursor = undefined;
 	orderQueryActive = orderQuery(params);
 	const contextHtml = await strip();
 	const first = await apiOrders(orderQueryActive);
+	if (stale(nav)) return;
 	orderItems = first.items;
 	orderCursor = first.nextCursor;
-	paintOrders(params, contextHtml);
+	paintOrders(nav, params, contextHtml);
 }
 
-function paintOrders(params: Record<string, string>, contextHtml: string): void {
+function paintOrders(nav: number, params: Record<string, string>, contextHtml: string): void {
 	render(ordersView(params, orderItems, Boolean(orderCursor), contextHtml));
 	// `maxAgeHours` has no control of its own — it arrives from an aging-bucket link
 	// — so reading the controls deliberately drops it: changing the Age select must
@@ -311,32 +352,38 @@ function paintOrders(params: Record<string, string>, contextHtml: string): void 
 		),
 	);
 	bindChips();
-	document.getElementById('loadMore')?.addEventListener('click', async () => {
-		const next = await apiOrders({ ...orderQueryActive, cursor: orderCursor });
-		orderItems.push(...next.items);
-		orderCursor = next.nextCursor;
-		paintOrders(params, contextHtml);
-	});
+	bindLoadMore(
+		nav,
+		() => apiOrders({ ...orderQueryActive, cursor: orderCursor }),
+		(next) => {
+			orderItems.push(...next.items);
+			orderCursor = next.nextCursor;
+			paintOrders(nav, params, contextHtml);
+		},
+	);
 	bindExport(orderQueryActive);
 }
 
-async function orderDetail(orderId: string): Promise<void> {
+async function orderDetail(nav: number, orderId: string): Promise<void> {
 	loading();
 	const contextHtml = await strip();
-	render(orderDetailView(await apiOrder(orderId), contextHtml));
+	const order = await apiOrder(orderId);
+	if (stale(nav)) return;
+	render(orderDetailView(order, contextHtml));
 }
 
-async function findingsList(params: Record<string, string>): Promise<void> {
+async function findingsList(nav: number, params: Record<string, string>): Promise<void> {
 	loading();
 	const contextHtml = await strip();
 	const listPage = await apiFindings(params);
+	if (stale(nav)) return;
 	render(findingsListView(params, listPage.items, Date.now(), contextHtml));
 	bindFilters('findingFilters', () => submitFilters('/findings', FINDING_FILTER_KEYS));
 	bindChips();
 	bindExport(params);
 }
 
-async function findingDetail(id: string): Promise<void> {
+async function findingDetail(nav: number, id: string): Promise<void> {
 	loading();
 	const contextHtml = await strip();
 	const finding = await apiFinding(id);
@@ -348,32 +395,40 @@ async function findingDetail(id: string): Promise<void> {
 	} catch {
 		lastReconciledAt = undefined;
 	}
+	if (stale(nav)) return;
 	render(findingDetailView(finding, lastReconciledAt, contextHtml));
 }
 
-async function privacy(): Promise<void> {
+async function privacy(nav: number): Promise<void> {
 	loading();
 	const contextHtml = await strip();
-	render(privacyView(await apiPrivacy(), Date.now(), contextHtml));
+	const report = await apiPrivacy();
+	if (stale(nav)) return;
+	render(privacyView(report, Date.now(), contextHtml));
 }
 
-async function notifications(message?: { tone: string; text: string }): Promise<void> {
+async function notifications(nav: number, message?: { tone: string; text: string }): Promise<void> {
 	loading();
 	const contextHtml = await strip();
 	const settings = await apiDigest();
+	if (stale(nav)) return;
 	render(notificationsView(settings, Date.now(), contextHtml, message));
 	document.querySelector('[data-save-digest]')?.addEventListener('click', () => {
 		void (async () => {
 			try {
 				await apiSaveDigest({ email: fieldValue('f-email'), cadence: fieldValue('f-cadence') });
-				await notifications({ tone: 'success', text: 'Saved.' });
+				// Checked before notifications() rather than left to it: its spinner
+				// paints synchronously, before any check of its own could run.
+				if (stale(nav)) return;
+				await notifications(nav, { tone: 'success', text: 'Saved.' });
 			} catch (err) {
+				if (stale(nav)) return;
 				const action = saveErrorAction(String((err as Error).message));
 				// A click handler never goes through route(), so it doesn't get that
 				// function's 401 → authExpiredView() handling for free — ask for the same
 				// decision explicitly rather than showing the merchant a bare "401".
 				if (action.kind === 'reauthorize') render(authExpiredView());
-				else await notifications({ tone: 'critical', text: action.text });
+				else await notifications(nav, { tone: 'critical', text: action.text });
 			}
 		})();
 	});
@@ -381,24 +436,27 @@ async function notifications(message?: { tone: string; text: string }): Promise<
 
 // ── router ───────────────────────────────────────────────────────────────────
 async function route(): Promise<void> {
+	const nav = ++currentNav;
 	const { path, params } = parseRoute(location);
 	setActiveNav(path);
 	try {
 		const eventId = path.match(/^\/events\/(.+)$/);
 		const findingId = path.match(/^\/findings\/(.+)$/);
 		const orderId = path.match(/^\/orders\/(.+)$/);
-		if (path === '/' || path === '') await overview();
-		else if (path === '/setup') await setupScreen();
-		else if (eventId) await eventDetail(decodeURIComponent(eventId[1]));
-		else if (orderId) await orderDetail(decodeURIComponent(orderId[1]));
-		else if (path === '/orders') await ordersList(params);
-		else if (path === '/events') await eventsList(params);
-		else if (findingId) await findingDetail(decodeURIComponent(findingId[1]));
-		else if (path === '/findings') await findingsList(params);
-		else if (path === '/privacy') await privacy();
-		else if (path === '/notifications') await notifications();
+		if (path === '/' || path === '') await overview(nav);
+		else if (path === '/setup') await setupScreen(nav);
+		else if (eventId) await eventDetail(nav, decodeURIComponent(eventId[1]));
+		else if (orderId) await orderDetail(nav, decodeURIComponent(orderId[1]));
+		else if (path === '/orders') await ordersList(nav, params);
+		else if (path === '/events') await eventsList(nav, params);
+		else if (findingId) await findingDetail(nav, decodeURIComponent(findingId[1]));
+		else if (path === '/findings') await findingsList(nav, params);
+		else if (path === '/privacy') await privacy(nav);
+		else if (path === '/notifications') await notifications(nav);
 		else render(notFoundView());
 	} catch (err) {
+		// A failure for a screen the merchant already left is not theirs to see.
+		if (stale(nav)) return;
 		// api.ts prefixes the thrown message with the HTTP status; a 401 means the
 		// short-lived session token expired → show the reauthorization state.
 		if (String((err as Error).message).startsWith('401')) render(authExpiredView());
@@ -444,12 +502,17 @@ async function boot(): Promise<void> {
 	// "Explicit" now includes a real path: a sidebar link to /orders must not be
 	// hijacked to the setup screen.
 	if (parseRoute(location).path === '/') {
+		const nav = currentNav;
 		let setup: Setup | null = null;
 		try {
 			setup = await apiSetup();
 		} catch {
 			setup = null;
 		}
+		// The listeners above are live while the check runs: if the merchant already
+		// navigated, route() has rendered where they went, and redirecting them to
+		// setup now would undo that.
+		if (stale(nav)) return;
 		// replaceState (not location.hash =) so this does NOT fire hashchange and
 		// double-render — route() below does the single render.
 		if (setup && !setup.complete) history.replaceState(null, '', '#/setup');
