@@ -57,6 +57,11 @@ export const FAILED_RULE: DetectorRule = {
 	deadlineMs: 0,
 };
 
+// Every rule that writes findings. Order detail reads an order's findings by these
+// keys (GapFinding.orderId is not indexed), so a new rule or version must be listed
+// here or its findings will not show there.
+export const DETECTOR_RULES: readonly DetectorRule[] = [DEFAULT_RULE, FAILED_RULE];
+
 export interface FailedEvaluateInput {
 	projection: OrderProjection;
 	now: number;

@@ -15,7 +15,7 @@ import {
 	TENANT_SCAN_LIMIT,
 } from '../src/api/queries.ts';
 import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/api/apiContract.ts';
-import { detectorKey } from '../src/domain/detector.ts';
+import { detectorKey, DETECTOR, DETECTOR_FAILED, FAILED_RULE } from '../src/domain/detector.ts';
 import { runStateBackfill, type BackfillDeps } from '../src/jobs/stateBackfill.ts';
 
 const NOW = 1_000_000_000_000;
@@ -1762,6 +1762,67 @@ test('an event detail relates events by resourceId alone, scoped to the shop in 
 	assert.ok(detail);
 	assert.ok(!(detail.relatedEventIds as string[]).includes('s2:o1'), 'no cross-tenant relation');
 	assert.ok(seen.length > 0 && seen.every((q) => !hasShopCondition(q)));
+});
+
+test("an order detail reads its findings by their deterministic keys, never by a search, and only this shop's", async () => {
+	const { events, projections } = fixtures();
+	const findings = new FakeTable('id', [
+		{
+			id: detectorKey('s1', 'o1'),
+			shopId: 's1',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW - 10,
+		},
+		{
+			id: detectorKey('s1', 'o1', FAILED_RULE),
+			shopId: 's1',
+			orderId: 'o1',
+			detector: DETECTOR_FAILED,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW - 5,
+		},
+		{
+			id: detectorKey('s2', 'o1'),
+			shopId: 's2',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW - 1,
+		},
+		// A row stored under this shop's key but holding another shop: the tenant check still applies.
+		{
+			id: detectorKey('s1', 'o1', { ...FAILED_RULE, ruleVersion: 1 }) + ':x',
+			shopId: 's2',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW,
+		},
+	]);
+	const searched = recordSearches(findings);
+	const detail = (await getOrderDetail(projections, events, findings, 's1', NOW, 'o1')) as { findings: Array<{ id: string }> };
+	assert.deepEqual(detail.findings.map((f) => f.id).sort(), [detectorKey('s1', 'o1'), detectorKey('s1', 'o1', FAILED_RULE)].sort());
+	assert.equal(searched.length, 0, 'GapFinding.orderId is not indexed, so a search would scan');
+
+	const foreign = new FakeTable('id', [
+		{
+			id: detectorKey('s1', 'o1'),
+			shopId: 's2',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW,
+		},
+	]);
+	const guarded = (await getOrderDetail(projections, events, foreign, 's1', NOW, 'o1')) as { findings: unknown[] };
+	assert.deepEqual(guarded.findings, [], 'a row holding another shop is never returned, whatever its key');
 });
 
 test('an order detail reads its events by resourceId alone, scoped to the shop in the app', async () => {

@@ -16,7 +16,7 @@ import {
 	ORDER_FIELDS,
 	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
-import { describeFinding, detectorKey, DETECTOR_FAILED } from '../domain/detector.ts';
+import { describeFinding, detectorKey, DETECTOR_FAILED, DETECTOR_RULES } from '../domain/detector.ts';
 import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from '../domain/orders.ts';
 import { OUTBOX_RETENTION_DAYS } from '../retention/retention.ts';
 import { RECONCILE_STALE_MS } from '../observability/opsHealth.ts';
@@ -426,14 +426,12 @@ export async function getOrderDetail(
 		if (eventRows.length >= MAX_LIMIT) break;
 	}
 
+	// By key, not by a search: GapFinding.orderId is not indexed, and the shopId index
+	// walks every finding the shop has.
+	const found = await Promise.all(DETECTOR_RULES.map((rule) => findings.get(detectorKey(shopId, orderId, rule))));
 	const findingRows: Array<Record<string, unknown>> = [];
-	for await (const row of findings.search({
-		conditions: [
-			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'orderId', value: orderId },
-		],
-		operator: 'and',
-	})) {
+	for (const row of found) {
+		if (!row || row.shopId !== shopId) continue;
 		findingRows.push({ ...pick(row, FINDING_FIELDS), description: describeFinding(row as unknown as GapFinding) });
 	}
 

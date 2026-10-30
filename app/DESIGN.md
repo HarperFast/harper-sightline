@@ -191,7 +191,9 @@ them. A big shop is 160k events (and as many deliveries) in the window.
   deliveries; its exact count alone costs the same (2.6 s by an id-prefix range), and
   splitting it into indexed counts plus a newest-first read was about 1.1 s.
 - **Lookups by resourceId** (`queries.ts`, `orderRefresh.ts`): with `shopId` in the
-  `and`, 12-14 ms at 160k events, against 0.4 ms on resourceId alone.
+  `and`, 12-14 ms at 160k events, against 0.4 ms on resourceId alone. Order detail
+  reads its findings by key (`DETECTOR_RULES`) rather than by `shopId`+`orderId`:
+  p50 0.3 ms, p95 0.4 ms over 40 orders, against 10.4-10.5 ms / 12.5-13.1 ms before.
 - **EventSku writes** (`eventSkus.ts`): a 100-SKU order drained at 159-170/s with its
   index rows written one after another, 221-238/s concurrently. Writing the event and
   its rows in one transaction, two runs each against concurrent puts without one:
