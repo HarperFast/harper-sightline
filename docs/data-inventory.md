@@ -24,7 +24,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 | `Shop` | No | — | none | — (not customer-linked) | delete by `shopId` |
 | `ShopCredential` | No (encrypted app token) | — | none | — | delete by `shopId` |
 | `AppAuditEvent` | No | — | none | — | delete by `shopId` |
-| `WebhookDelivery` | No (allowlisted body, 7-day) | body's order id (not a column) | none | clear `payload` of deliveries about `orders_to_redact` (see Redaction tombstones) | delete by `shopId` |
+| `WebhookDelivery` | No (allowlisted body, kept only while queued or dead-lettered; cleared once processed; row 7-day) | body's order id (not a column) | none | clear `payload` of deliveries about `orders_to_redact` (see Redaction tombstones) | delete by `shopId` |
 | `OperationalEvent` | No | `resourceId` (=orderId) | none | delete where `resourceId ∈ orders_to_redact` | delete by `shopId` |
 | `EventSku` | No | `resourceId` (=orderId) | none | delete where `resourceId ∈ orders_to_redact` | delete by `shopId` |
 | `OrderProjection` | No | `orderId` | none | delete where `orderId ∈ orders_to_redact` | delete by `shopId` |
@@ -70,10 +70,10 @@ A redaction deletes what is stored when the request arrives. Before this, a deli
 - **What is stored.** On `customers/redact`, one `RedactionTombstone` row per id in `orders_to_redact`: `{shopId, orderId, redactedAt}`. On `shop/redact`, one row `{shopId, redactedAt}`. Nothing else: the request's customer id, email and phone are not stored.
 - **Retention.** 7 days by `redactedAt`, purged by the ledger job like every ledger table. A retried request rewrites the same row and restarts its 7 days. `shop/redact` deletes the shop's order tombstones with the rest of the shop.
 - **Why 7 days.** It matches the ledger: every delivery received before the request is purged within 7 days, and the reconcile sweep reads back at most 7 days.
-- **Silent drop.** While a tombstone exists, the worker does not write events, SKU rows, projections or findings for a matching delivery. It clears the delivery's stored body, marks it processed (no retry, no dead letter), and increments `process.redacted_dropped`. No log line and no audit row per delivery. The reconcile sweep skips a tombstoned order the same way (`reconcile.redacted_skipped`).
+- **Silent drop.** While a tombstone exists, the worker does not write events, SKU rows, projections or findings for a matching delivery. It marks the delivery processed, which clears its stored body (no retry, no dead letter), and increments `process.redacted_dropped`. A delivery of a shop under a `shop/redact` tombstone is deleted once marked, so the drain cannot write back a row the erase removed. No log line and no audit row per delivery. The reconcile sweep skips a tombstoned order the same way (`reconcile.redacted_skipped`).
 - **Order tombstones** match every delivery about the order for 7 days, including ones received after the request.
 - **Shop tombstones** match only deliveries received before the request (plus 5 minutes of clock skew between nodes), so a shop that reinstalls within the 7 days records normally.
-- **Delivery bodies.** `customers/redact` also clears the stored body of the shop's deliveries about the redacted orders: processed ones found through the order's events, queued ones read from the shop's queue up to 10,000 rows. Rows past that limit are cleared when the worker drops them. Dead-lettered deliveries keep their body until the 7-day purge; a replay of one is dropped by the tombstone.
+- **Delivery bodies.** A processed delivery keeps no body: the worker clears it when it marks the delivery processed. `customers/redact` also clears the stored body of the shop's deliveries about the redacted orders: queued ones read from the shop's queue up to 10,000 rows, and processed ones found through the order's events (only those processed before bodies were cleared at processing hold one). Rows past that limit are cleared when the worker drops them. Dead-lettered deliveries keep their body until the 7-day purge; a replay of one is dropped by the tombstone.
 - **Not covered.** Redaction and processing on different nodes: the tombstone replicates asynchronously, so a delivery processed on another node before the tombstone arrives there can still be written. The 7-day purge removes it.
 
 Questions for review:

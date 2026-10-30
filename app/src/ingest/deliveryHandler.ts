@@ -41,7 +41,8 @@ export function deliveryMarks(
 		if (await isRedacted(tombstones, row.shopId, undefined, row.receivedAt ?? 0)) await table.delete(row.id);
 	};
 	return {
-		markProcessed: (row) => mark(row, { status: 'processed' }),
+		// A processed body is not needed again; a dead letter keeps its body for the operator until the purge.
+		markProcessed: (row) => mark(row, { status: 'processed', payload: null }),
 		markFailed: (row, attempts, dead) => mark(row, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
 	};
 }
@@ -55,7 +56,6 @@ export interface DeliveryHandlerDeps {
 	inventoryItems: Pick<EnrichReadTable, 'get'>;
 	orders: OrderTables;
 	tombstones: Pick<TombstoneTable, 'get'>;
-	deliveries: DeliveryPatchTable;
 	uninstall(shopId: string): Promise<void>;
 	// Given an order id or an inventory item id.
 	eraseResource(shopId: string, resourceId: string): Promise<unknown>;
@@ -64,12 +64,9 @@ export interface DeliveryHandlerDeps {
 
 export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: DeliveryRow) => Promise<void> {
 	const { now = Date.now } = deps;
-	// A redacted delivery is dropped silently: a counter, no log line (it would name
-	// the order), and its stored body cleared. The drain then marks it processed.
-	const drop = async (row: DeliveryRow) => {
-		metrics.inc(M.processRedactedDropped);
-		await patchDelivery(deps.deliveries, row, { payload: null });
-	};
+	// A redacted delivery is dropped silently: a counter and no log line (it would name
+	// the order). The drain then marks it processed, which clears its body.
+	const drop = () => metrics.inc(M.processRedactedDropped);
 	return async (row) => {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
 			// For a redacted shop this is a row a mark wrote back over a deleted one: the mark
@@ -97,7 +94,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 		for (const event of normalizeDelivery(meta, payload)) {
 			const orderId = isOrderLinked(event) ? event.resourceId : undefined;
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
-				await drop(row);
+				drop();
 				continue;
 			}
 			if (event.skusDropped) {
@@ -117,7 +114,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 			// the tombstone and the ledger replicate asynchronously.
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
 				if (event.resourceId) await deps.eraseResource(row.shopId, event.resourceId);
-				await drop(row);
+				drop();
 			}
 		}
 	};

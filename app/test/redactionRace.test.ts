@@ -75,7 +75,6 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 		inventoryItems,
 		orders,
 		tombstones,
-		deliveries,
 		uninstall: async () => {},
 		eraseResource: (shopId, resourceId) => redactOrders(targets, shopId, [resourceId]),
 		now: () => clock,
@@ -163,7 +162,29 @@ test('a customers/redact that lands before the drain leaves nothing for the reda
 	// Scrubbed at redact time: body cleared and out of the queue, so the drain never read it.
 	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.payload, null);
 	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'processed');
-	assert.equal(typeof w.deliveries.rows.get(`${A}:p-704`)?.payload, 'string');
+	assert.equal(w.deliveries.rows.get(`${A}:p-704`)?.status, 'processed');
+});
+
+test('a processed delivery keeps no body, and a dead-lettered one keeps it until the purge', async () => {
+	const w = world();
+	await w.accept(A, 'p-704', 'orders/paid', paid(704));
+	await w.deliveries.put({
+		id: `${A}:bad`,
+		shopId: A,
+		webhookId: 'bad',
+		topic: 'orders/paid',
+		receivedAt: NOW,
+		status: 'accepted',
+		attempts: 0,
+		payload: '{not json',
+	});
+	await w.drain();
+	const processed = w.deliveries.rows.get(`${A}:p-704`);
+	assert.equal(processed?.status, 'processed');
+	assert.equal(processed?.payload, null);
+	const dead = w.deliveries.rows.get(`${A}:bad`);
+	assert.equal(dead?.status, 'dead_letter');
+	assert.equal(dead?.payload, '{not json');
 });
 
 test('a delivery the drain already holds when the redaction lands is dropped, not written', async () => {
@@ -264,15 +285,18 @@ test("a tombstone for one shop's order does not touch another shop's order with 
 	await w.drain();
 	assert.deepEqual(w.ledger(A, '703'), NONE);
 	assert.equal(w.ledger(B, '703').projections, 1);
-	assert.equal(typeof w.deliveries.rows.get(`${B}:p-703`)?.payload, 'string');
+	assert.equal(w.deliveries.rows.get(`${B}:p-703`)?.status, 'processed');
 });
 
-test('customers/redact clears the bodies of already-processed deliveries for the order', async () => {
+test('customers/redact clears the bodies a processed delivery kept from before processing cleared them', async () => {
 	const w = world();
 	await w.accept(A, 'p-701', 'orders/paid', paid(701));
 	await w.accept(A, 'f-701', 'fulfillments/create', { id: 1, order_id: 701, status: 'failure' });
 	await w.accept(A, 'p-702', 'orders/paid', paid(702));
 	await w.drain();
+	await w.deliveries.patch(`${A}:p-701`, { payload: JSON.stringify(paid(701)) });
+	await w.deliveries.patch(`${A}:f-701`, { payload: JSON.stringify({ id: 1, order_id: 701, status: 'failure' }) });
+	await w.deliveries.patch(`${A}:p-702`, { payload: JSON.stringify(paid(702)) });
 	const r = await w.redactCustomer(A, [701]);
 	assert.equal(r.scrubbed, 2);
 	assert.equal(w.deliveries.rows.get(`${A}:p-701`)?.payload, null);

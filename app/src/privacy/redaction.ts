@@ -113,7 +113,7 @@ function deliveryOrderId(row: Row): string | undefined {
 // Clears the stored body of the shop's deliveries about the given orders, so they do
 // not wait out the seven-day purge. Processed ones are found through the order's
 // webhook events (an event's id is its delivery's id), so this must run before the
-// events are deleted. Queued ones are read from the shop's span of the pendingKey
+// events are deleted; only one processed before the drain cleared bodies holds one. Queued ones are read from the shop's span of the pendingKey
 // index and marked processed so the drain skips them; past SCRUB_SCAN_LIMIT the
 // tombstone drops the rest when the drain reaches them. Dead-lettered deliveries are
 // not reached: the purge removes them, and the tombstone drops a replay.

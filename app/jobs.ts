@@ -23,7 +23,7 @@ import {
 	type ProcessDeps,
 	type PendingRow,
 } from './src/ingest/processor.ts';
-import { createDeliveryHandler, deliveryMarks, type DeliveryMarkTable, type DeliveryPatchTable } from './src/ingest/deliveryHandler.ts';
+import { createDeliveryHandler, deliveryMarks, type DeliveryMarkTable } from './src/ingest/deliveryHandler.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
@@ -137,7 +137,6 @@ const deps: ProcessDeps = {
 		inventoryItems: InventoryItems as unknown as EnrichReadTable,
 		orders: orderTables,
 		tombstones: RedactionTombstones,
-		deliveries: Deliveries as unknown as DeliveryPatchTable,
 		uninstall: uninstallShop,
 		eraseResource: (shopId, resourceId) => redactOrders(REDACT_TARGETS, shopId, [resourceId]),
 	}),

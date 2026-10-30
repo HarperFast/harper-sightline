@@ -194,7 +194,8 @@ them. A big shop is 160k events (and as many deliveries) in the window.
   about 1 µs per key read (2-2.75 µs for an order's two), against about 350 µs to
   drain a 1-SKU delivery. A 60k 1-SKU backlog drained at 2,756-2,846/s with the checks
   and the patches that carry `id`/`shopId`/`receivedAt`, against 2,687-2,857/s before
-  either (98970ef), three runs each.
+  either (98970ef), three runs each. Clearing the body when a delivery is marked
+  processed did not move it either: 2,706-2,848/s against 2,604-2,819/s, two runs each.
 - **Ops health** (`opsHealth.ts`): reading every row of a 57k backlog cost about
   0.5 s per call. The capped stale-row query returns in 5 ms at a 60k stale backlog
   and takes about 1 s when none of 60k is stale.
