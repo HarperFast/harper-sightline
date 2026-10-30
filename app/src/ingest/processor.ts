@@ -136,6 +136,19 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 			continue;
 		}
 		for (const row of rows) {
+			// A row with no shop (a patch that recreated a deleted delivery) has no turn or
+			// slot and cannot be handled; dead-letter it so it leaves the pending keys.
+			if (typeof row.shopId !== 'string' || row.shopId === '') {
+				cursor.after = row.pendingKey;
+				await deps.markFailed(row.id, (row.attempts ?? 0) + 1, true);
+				result.failed += 1;
+				result.deadLettered += 1;
+				if (result.failed >= batch) {
+					result.stoppedBy = 'failures';
+					return result;
+				}
+				continue;
+			}
 			let turn = cursor.turn;
 			if (turn?.shop !== row.shopId) {
 				if (partitionOf(row.shopId, partition.slots) !== partition.slot) {

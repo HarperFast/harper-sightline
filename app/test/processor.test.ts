@@ -205,6 +205,20 @@ test('a budget stop keeps what is left of the shop turn, so the next occurrence 
 	assert.deepEqual(handled, ['a0', 'a1', 'a2', 'b0']);
 });
 
+test('a pending row with no shop is dead-lettered, and the shops around it keep draining', async () => {
+	const orphan = { id: 'orphan', status: 'accepted', attempts: 1 } as unknown as DeliveryRow;
+	const { deps, state, handled } = memDeps([...accepted(2, 'p', 'p.myshopify.com'), orphan]);
+	const cursor: DrainCursor = { after: '' };
+	const first = await drainAccepted(deps, { budgetMs: BUDGET, cursor });
+	await drainAccepted(deps, { budgetMs: BUDGET, cursor });
+	assert.equal(state.get('orphan')!.status, 'dead_letter');
+	assert.equal(first.deadLettered, 1);
+	assert.deepEqual(handled, ['p0', 'p1']);
+	state.set('q0', { id: 'q0', shopId: 'q.myshopify.com', status: 'accepted', receivedAt: 2_000 });
+	await drainAccepted(deps, { budgetMs: BUDGET, cursor });
+	assert.equal(state.get('q0')!.status, 'processed');
+});
+
 test('a lap in which every row has already failed ends the drain', async () => {
 	const rows = [...accepted(30, 'x', 'x.myshopify.com'), ...accepted(30, 'y', 'y.myshopify.com')];
 	const { deps, handled } = memDeps(rows, new Set(rows.map((r) => r.id)));
