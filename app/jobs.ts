@@ -22,9 +22,8 @@ import {
 	type ProcessDeps,
 	type PendingRow,
 } from './src/ingest/processor.ts';
-import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './src/ingest/normalize.ts';
+import { createDeliveryHandler } from './src/ingest/deliveryHandler.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
-import { isOrderLinked } from './src/ingest/projection.ts';
 import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
 import { uninstallShop } from './src/shopify/lifecycle.ts';
@@ -42,12 +41,7 @@ import {
 } from './src/shopify/adminApi.ts';
 import { synthesizeEvents } from './src/shopify/reconcile.ts';
 import { sweepOrdersSince, reconcileShops, type ReconcileShopsResult } from './src/shopify/reconcileSweep.ts';
-import {
-	indexCachedInventoryEvent,
-	runInventoryEnrichment as runEnrichmentSweep,
-	type EnrichDeps,
-	type EnrichReadTable,
-} from './src/ingest/inventoryEnrich.ts';
+import { runInventoryEnrichment as runEnrichmentSweep, type EnrichDeps, type EnrichReadTable } from './src/ingest/inventoryEnrich.ts';
 import { runStateBackfill, type BackfillDeps, type BackfillResult } from './src/jobs/stateBackfill.ts';
 import {
 	runDigestBuild as runDigestBuildSweep,
@@ -111,11 +105,6 @@ const orderTables: OrderTables = {
 	findings: Findings as unknown as OrderTables['findings'],
 };
 
-const inventoryIndexTables = {
-	inventoryItems: InventoryItems as unknown as EnrichReadTable,
-	eventSkus: EventSkus,
-};
-
 const deps: ProcessDeps = {
 	// A range read of the computed pendingKey index, which keys accepted rows by shop,
 	// so the cursor can resume inside a shop or seek past one.
@@ -146,42 +135,13 @@ const deps: ProcessDeps = {
 	async markFailed(id, attempts, dead) {
 		await Deliveries.patch(id, { attempts, status: dead ? 'dead_letter' : 'accepted' });
 	},
-	async handle(row) {
-		if (!row.topic || !row.webhookId || row.receivedAt == null) {
-			throw new PermanentNormalizeError(`delivery ${row.id} missing normalization metadata`);
-		}
-		// Non-operational topics are handled elsewhere (compliance) or invalidate the shop.
-		if (!isOperationalTopic(row.topic)) {
-			if (row.topic === 'app/uninstalled') await uninstallShop(row.shopId);
-			return;
-		}
-		// Transient, not permanent: a payload column missing after a redeploy heals,
-		// and a truly body-less delivery dead-letters at MAX_ATTEMPTS.
-		if (row.payload === undefined) {
-			throw new Error(`delivery ${row.id} has no stored payload yet`);
-		}
-		let payload: unknown;
-		try {
-			payload = JSON.parse(row.payload);
-		} catch {
-			throw new PermanentNormalizeError(`delivery ${row.id} payload is not valid JSON`);
-		}
-		const meta = { shopId: row.shopId, topic: row.topic, webhookId: row.webhookId, receivedAt: row.receivedAt };
-		for (const event of normalizeDelivery(meta, payload)) {
-			if (event.skusDropped) {
-				metrics.inc(M.processSkusDropped, event.skusDropped);
-				log('warn', 'process.skus_dropped', {
-					shop: event.shopId,
-					eventId: event.eventId,
-					kept: event.skus?.length,
-					dropped: event.skusDropped,
-				});
-			}
-			await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
-			await indexCachedInventoryEvent(inventoryIndexTables, event);
-			if (isOrderLinked(event)) await refreshOrder(orderTables, event.shopId, event.resourceId as string, Date.now());
-		}
-	},
+	handle: createDeliveryHandler({
+		events: Events,
+		eventSkus: EventSkus,
+		inventoryItems: InventoryItems as unknown as EnrichReadTable,
+		orders: orderTables,
+		uninstall: uninstallShop,
+	}),
 };
 
 // Leaves headroom under the 10s `sightline-process` interval.
