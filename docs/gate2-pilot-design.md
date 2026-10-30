@@ -11,7 +11,7 @@ Gate 2 is a **commercial-validation instrument, not a feature.** It answers one 
 
 > Do real stores throw operational gaps often enough, in large enough clumps, to build a paid recovery tier on?
 
-It is deliberately **not** the paid tier. Longer retention and write capabilities (`long_retention`, `replay`, `reannounce`, `repair` in `src/capabilities.ts`) stay hard-`false`; nothing here grants a capability or writes to Shopify.
+It is deliberately **not** the paid tier. Longer retention and write capabilities (`long_retention`, `replay`, `reannounce`, `repair` in `src/auth/capabilities.ts`) stay hard-`false`; nothing here grants a capability or writes to Shopify.
 
 **It is also not Gate 1.** The two gates answer different questions and neither substitutes for the other:
 

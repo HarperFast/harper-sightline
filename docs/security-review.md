@@ -9,11 +9,11 @@
 
 | # | Severity | Finding | Disposition |
 |---|---|---|---|
-| F1 | **P0** | Committed dev Shopify app secret (`shpss_…`) in `src/readSecret.ts` — present in git history. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (rotate the burned value). See §1.1. |
+| F1 | **P0** | Committed dev Shopify app secret (`shpss_…`) in `src/secrets/readSecret.ts` — present in git history. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (rotate the burned value). See §1.1. |
 | F2 | **P0** | Token "encryption at rest" falls back to a deterministic, publicly-derivable key (`sha256('sightline-dev-token-key')`) when `SIGHTLINE_TOKEN_KEY` is unset. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (provision the key). See §1.1. |
 | F3 | **P1** | `detectorKey` was not shop-namespaced → two tenants sharing an order id collide on one finding/expectation row. | **Fixed** — key is now `${detector}:${shopId}:${orderId}:${ruleVersion}`; regression test in `crossTenant.test.ts`. |
 | F4 | Info | Cross-tenant read isolation depends entirely on `shopId` coming from the verified principal on every endpoint. | **Verified** — automated suite attacks every endpoint (§2). No leak. |
-| F5 | **P0** | Percent-encoded path traversal in `AppHome`'s static-asset branch → **unauthenticated arbitrary file read**, including `src/readSecret.ts` and therefore the app secret (F1). | **Fixed** — containment moved into `src/assetPath.ts`; regression tests in `test/assetPath.test.ts`. See §1.2. |
+| F5 | **P0** | Percent-encoded path traversal in `AppHome`'s static-asset branch → **unauthenticated arbitrary file read**, including `src/secrets/readSecret.ts` and therefore the app secret (F1). | **Fixed** — containment moved into `src/resources/assetPath.ts`; regression tests in `test/assetPath.test.ts`. See §1.2. |
 | F6 | P2 | `?shop=` flows unvalidated into the `frame-ancestors` CSP, and takes precedence over the verified principal's shop. | **Fixed** — the CSP is built from the verified principal; `?shop=` is a pattern-checked fallback. `src/resources/frameAncestors.ts`, regression tests in `test/frameAncestors.test.ts`. See §1.3. |
 | F7 | P3 | No rate limiting on session-token verification or on `/api/v1/export`. | **Fixed** — per-shop request and export limits at the shared auth point, plus a size cap on the token itself. `src/auth/rateLimit.ts`, tests in `test/rateLimit.test.ts`. See §1.3. |
 
@@ -57,7 +57,7 @@ session tokens, so the read defeats the tenant isolation of §2 rather than mere
 leaking source. It is the reason F1's "already in git history, owner will rotate"
 disposition was not the whole story.
 
-Fixed by `src/assetPath.ts` `resolveAssetUrl`, which refuses the traversal
+Fixed by `src/resources/assetPath.ts` `resolveAssetUrl`, which refuses the traversal
 primitives in any encoding (checked before and after one decode round, so
 `%252e%252e` is caught) **and** requires the resolved URL to sit under
 `web/dist/assets/` — the second check being the one that cannot be fooled by an

@@ -64,16 +64,16 @@ Grace behavior, trial handling, and what a failed payment does to an in-flight r
 
 This looks like changing a constant and is not.
 
-**What already generalizes.** `cutoffMs(nowMs, retentionDays = RETENTION_DAYS)` and `purgeExpired(targets, nowMs, retentionDays)` in `src/retention.ts` already take retention as a parameter, and ADR-003's mechanism (real `DELETE` + re-query verification) is retention-length agnostic. The digest outbox already proves a second, longer window can coexist (`OUTBOX_RETENTION_DAYS = 30`).
+**What already generalizes.** `cutoffMs(nowMs, retentionDays = RETENTION_DAYS)` and `purgeExpired(targets, nowMs, retentionDays)` in `src/retention/retention.ts` already take retention as a parameter, and ADR-003's mechanism (real `DELETE` + re-query verification) is retention-length agnostic. The digest outbox already proves a second, longer window can coexist (`OUTBOX_RETENTION_DAYS = 30`).
 
 **What does not.** The purge sweeps *by timestamp across a whole table*, for every shop at once. With mixed tiers in one table there is no single cutoff, and per-shop purge passes would multiply the sweep by the shop count.
 
-**Proposed model: stamp expiry on write.** Each ledger row carries an `expiresAt` set from the shop's entitlement when the row is written. Purge becomes a single sweep on `expiresAt < now` — same mechanism, same verification, no per-shop iteration, and mixed tiers cost nothing. On a tier change, a backfill sweep re-stamps the shop's existing rows; `src/stateBackfill.ts` is the working precedent for exactly that shape of one-off convergent sweep (checkpointed, idempotent, with a metric that must fall to zero).
+**Proposed model: stamp expiry on write.** Each ledger row carries an `expiresAt` set from the shop's entitlement when the row is written. Purge becomes a single sweep on `expiresAt < now` — same mechanism, same verification, no per-shop iteration, and mixed tiers cost nothing. On a tier change, a backfill sweep re-stamps the shop's existing rows; `src/jobs/stateBackfill.ts` is the working precedent for exactly that shape of one-off convergent sweep (checkpointed, idempotent, with a metric that must fall to zero).
 
 **Consequences that reach outside the retention code:**
 
-- `WINDOW_DAYS = 7` in `src/apiContract.ts` is both the retention window *and* the bounded read window, and it is baked into `contracts/sightline-api-v1.json`, which `contract.test.ts` gates against drift. A per-tier window makes `windowDays` a per-shop value in the contract — a real contract change, not a constant edit.
-- `src/privacyPolicy.ts` interpolates `WINDOW_DAYS` into the public policy, and those claims are deliberately pinned by tests to the code's own constants. Per-tier retention means the policy must state both figures and which applies, and the policy is served publicly and versioned with the app.
+- `WINDOW_DAYS = 7` in `src/api/apiContract.ts` is both the retention window *and* the bounded read window, and it is baked into `contracts/sightline-api-v1.json`, which `contract.test.ts` gates against drift. A per-tier window makes `windowDays` a per-shop value in the contract — a real contract change, not a constant edit.
+- `src/privacy/privacyPolicy.ts` interpolates `WINDOW_DAYS` into the public policy, and those claims are deliberately pinned by tests to the code's own constants. Per-tier retention means the policy must state both figures and which applies, and the policy is served publicly and versioned with the app.
 - [data-inventory.md](./data-inventory.md) maps table/field → retention behavior and is test-backed. It needs the per-tier column.
 - **Storage is ~13× at 90 days.** The reliability report §5 already flags `inventory_levels/update` as the voluminous topic and names "an ingest filter or shorter inventory retention" as the lever. At 90 days that stops being a footnote — inventory may need a shorter window than orders even inside Recover. Cost modelling is an open item.
 - **Compliance surface grows.** `shop/redact` / `customers/redact` / uninstall must still delete everything, and there is now 13× more of it. `MAX_DELETES_PER_RUN = 10_000` means redaction of a large 90-day shop spans multiple runs; the compliance path must be verified to converge, not just to start.
@@ -103,7 +103,7 @@ Mechanism: write a safe carrier field (tag or metafield) on each affected record
 
 1. **Blast radius.** A pulse re-emits to *every* subscriber on that topic, not to the one that missed the event. Re-announcing 742 orders sends 742 events to every app subscribed to `orders/updated` — including apps that processed them correctly the first time. For idempotent consumers that is wasted work; for non-idempotent ones it risks duplicate side effects (a second pick ticket, a second notification email). This is inherent to the mechanism, not an implementation detail, and it means the honest UI cannot say "re-deliver to ShipHero" — it must say "make Shopify re-emit these records to all subscribers." Gate 1 should record, per app, not only "does it re-evaluate" but "does it re-evaluate *safely* when it did not need to."
 2. **Merchant automations.** Shopify Flow and merchant-authored logic frequently key on tags. A pulse can trigger customer-visible automations. Mitigations: prefer a metafield over a tag where vendors honour it; use a reserved namespaced key; disclose plainly; and let the merchant preview the exact field change before approving.
-3. **Throttling.** Bulk re-announcement is a bulk Admin API *write* path, so it will hit Shopify's rate limits — the same surface where `ThrottledAdminApiError` and the `reconcile.throttled` metric were just added for reads (PR #80). The executor must consume that classification properly: pace itself, resume from a durable cursor, and never lose a record because the quota ran out mid-plan. The reconcile sweep's partial-progress contract in `src/reconcileSweep.ts` is the pattern to copy.
+3. **Throttling.** Bulk re-announcement is a bulk Admin API *write* path, so it will hit Shopify's rate limits — the same surface where `ThrottledAdminApiError` and the `reconcile.throttled` metric were just added for reads (PR #80). The executor must consume that classification properly: pace itself, resume from a durable cursor, and never lose a record because the quota ran out mid-plan. The reconcile sweep's partial-progress contract in `src/shopify/reconcileSweep.ts` is the pattern to copy.
 
 **Reversibility.** If the carrier is a tag, the pulse should remove it again, and the whole operation must be recorded well enough that a merchant asking "what did you change on my orders?" gets an exact answer.
 
@@ -111,15 +111,15 @@ Mechanism: write a safe carrier field (tag or metafield) on each affected record
 
 The lane the brief likes most, because it is the data-gravity path onto Harper and the most recoverable.
 
-The MVP already has most of the primitives: an append-only event ledger with **deterministic event ids** (so consumers can dedupe), opaque keyset cursors (`encodeCursor`/`decodeCursor` in `src/apiContract.ts`), and bounded pagination. A replay-safe feed is a modest extension rather than a new subsystem: a durable per-consumer cursor, at-least-once delivery, and a replay session that re-serves a bounded scoped range without disturbing the live cursor.
+The MVP already has most of the primitives: an append-only event ledger with **deterministic event ids** (so consumers can dedupe), opaque keyset cursors (`encodeCursor`/`decodeCursor` in `src/api/apiContract.ts`), and bounded pagination. A replay-safe feed is a modest extension rather than a new subsystem: a durable per-consumer cursor, at-least-once delivery, and a replay session that re-serves a bounded scoped range without disturbing the live cursor.
 
-**The genuinely new piece is authentication.** A feed consumer is a machine, not a merchant in an embedded admin, so the Shopify session-token path in `src/identity.ts` does not apply. Recover needs a second, small identity plane: per-shop API credentials, minted from inside the embedded app (which proves the merchant authorized them), revocable, and never granting cross-shop access. This is a smaller instance of the problem the Cluster tier faces at full scale — see [cluster-tier-design.md](./cluster-tier-design.md) §2.1 — and the two should share one design rather than growing two auth planes.
+**The genuinely new piece is authentication.** A feed consumer is a machine, not a merchant in an embedded admin, so the Shopify session-token path in `src/auth/identity.ts` does not apply. Recover needs a second, small identity plane: per-shop API credentials, minted from inside the embedded app (which proves the merchant authorized them), revocable, and never granting cross-shop access. This is a smaller instance of the problem the Cluster tier faces at full scale — see [cluster-tier-design.md](./cluster-tier-design.md) §2.1 — and the two should share one design rather than growing two auth planes.
 
 ### 2.6 Recovery artifacts
 
 Where a vendor has a bulk import or manual resync surface, generate the exact validated input file from ledger data.
 
-`src/csv.ts` (`collectExportRows`, `toCsv`, `MAX_EXPORT_ROWS = 5000`) is the foundation, but an artifact is not an export: it is a *vendor-specific schema* with vendor-specific validation, and it must be right or the merchant's import fails. Design as a small generator registry — vendor key → column mapping + validators + a fixture-backed test per vendor — reusing the existing bounded row collection. Add one generator per funded vendor; do not build a speculative catalog.
+`src/api/csv.ts` (`collectExportRows`, `toCsv`, `MAX_EXPORT_ROWS = 5000`) is the foundation, but an artifact is not an export: it is a *vendor-specific schema* with vendor-specific validation, and it must be right or the merchant's import fails. Design as a small generator registry — vendor key → column mapping + validators + a fixture-backed test per vendor — reusing the existing bounded row collection. Add one generator per funded vendor; do not build a speculative catalog.
 
 Note the row cap interacts with real incident sizes: the brief's own example is 742 orders, comfortably inside 5000, but an inventory-driven incident could exceed it. Artifacts need an explicit, visible truncation contract like the export already has, or a higher cap justified against memory.
 
@@ -148,7 +148,7 @@ New table: `ForeignEvent` (connector-ingested, shop-scoped, retention-bound like
 
 `AuditEvents` already exists and needs no change.
 
-Every new table is shop-scoped and must join the retention, redaction, and data-inventory maps at creation, not afterwards — `src/ledgerTargets.ts` holds `RETENTION_TARGETS` and `REDACT_TARGETS`, and a table absent from them is a compliance hole.
+Every new table is shop-scoped and must join the retention, redaction, and data-inventory maps at creation, not afterwards — `src/retention/ledgerTargets.ts` holds `RETENTION_TARGETS` and `REDACT_TARGETS`, and a table absent from them is a compliance hole.
 
 ## 4. What must not regress
 

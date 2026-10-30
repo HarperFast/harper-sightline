@@ -35,7 +35,7 @@ the ledger/detector, so a real gap could go unrecorded.
      down for the whole retry window — see [webhook-backlog](./webhook-backlog.md).
 
 ### Remediate
-- **Permanent shape bug**: fix the normalizer (`app/src/normalize.ts`) to handle
+- **Permanent shape bug**: fix the normalizer (`app/src/ingest/normalize.ts`) to handle
   the shape (add/adjust a versioned normalizer + fixture test), ship, and rely on
   reconciliation to backfill the affected orders from the Admin API — the
   authoritative order state re-enters through the same reducer, so the projection

@@ -1,84 +1,56 @@
 # Sightline app
 
-Harper v5 native, embedded Shopify Admin application (the read-only "Record" MVP).
+The Harper v5 component behind Sightline's embedded Shopify app (the read-only "Record" MVP).
 
-- [`DESIGN.md`](./DESIGN.md) — the module-by-module map of this directory
-- [`../README.md`](../README.md) — product overview, architecture, Shopify integration, deployment
-- [`/docs`](../docs) — ADRs, Shopify contract, threat model, and the reviews that constrain this code
-
-## Prerequisites
-
-- Node 24 (`nvm use 24`)
-- Access to a Harper v5.2.0 Fabric instance. There is **no local Harper and no tunnel** — the
-  instance is the runtime, and the Shopify App URL points straight at it.
-- The Shopify app secret in Harper native secrets on that instance
-  (`set_secret SHOPIFY_API_SECRET`, granted to the component named `sightline` — grant matching is
-  keyed on the `name` in `package.json`).
+- [`../README.md`](../README.md): product, architecture, API, jobs, configuration, running locally, deploying
+- [`DESIGN.md`](./DESIGN.md): the module map and the measured costs behind the limits
+- [`../docs`](../docs): ADRs, Shopify contract, security and privacy records, runbooks
 
 ## Setup
 
+Node 24 (`nvm use 24`), then:
+
 ```bash
-cp .env.example .env   # HARPER_OPS_URL / HARPER_USER / HARPER_PASS / SIGHTLINE_BASE
 npm ci
+cp .env.example .env   # HARPER_OPS_URL / HARPER_USER / HARPER_PASS / SIGHTLINE_BASE / SHOPIFY_API_KEY / SIGHTLINE_OPS_TOKEN
 ```
+
+To run the component on your machine, use Harper 5.3.3 ([root README, Running locally](../README.md#running-locally)).
 
 ## Scripts
 
-| Script                                  | What                                                                                                                                                        |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm test`                              | unit, integration, contract, and UI tests (`node --test`, no browser)                                                                                       |
-| `npm run coverage`                      | the same run with coverage                                                                                                                                  |
-| `npm run typecheck`                     | `tsc --noEmit`                                                                                                                                              |
-| `npm run lint:required`                 | oxlint                                                                                                                                                      |
-| `npm run format:write` / `format:check` | prettier                                                                                                                                                    |
-| `npm run build`                         | builds the SPA (`web/` → `web/dist/`)                                                                                                                       |
-| `npm run dev`                           | Vite dev server for the SPA. There is no proxy and no local backend, so its API calls have nothing to answer them — the real loop is deploy + open in Admin |
-| `npm run deploy`                        | build + package + `deploy_component` + per-node restart + verify (see the root README)                                                                      |
-| `npm run smoke`                         | post-deploy checks against the deployed host                                                                                                                |
-| `npm run loadtest`                      | webhook burst, proving the backlog actually drains (needs `SIGHTLINE_OPS_TOKEN`)                                                                            |
-| `npm run contract:gen`                  | regenerates `contracts/sightline-api-v1.json` after an API change                                                                                           |
+| Script                                  | What                                                                                                                                                                                                       |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm test`                              | unit, integration, contract and UI tests (`node --test --conditions=test`, no browser)                                                                                                                     |
+| `npm run coverage`                      | the same run with coverage                                                                                                                                                                                 |
+| `npm run typecheck`                     | `tsc --noEmit`                                                                                                                                                                                             |
+| `npm run lint:required`                 | oxlint                                                                                                                                                                                                     |
+| `npm run format:write` / `format:check` | prettier                                                                                                                                                                                                   |
+| `npm run build`                         | builds the SPA (`web/` to `web/dist/`)                                                                                                                                                                     |
+| `npm run dev`                           | Vite dev server for the SPA alone; nothing answers its API calls                                                                                                                                           |
+| `npm run deploy`                        | build, package, `deploy_component`, restart every node, verify bundles, columns and indexes ([root README](../README.md#deploying))                                                                        |
+| `npm run smoke`                         | checks routes and the auth boundary of a running host (`SIGHTLINE_BASE`, `SHOPIFY_API_SECRET`, `SHOPIFY_API_KEY`); `SMOKE_WEBHOOK=1`, `SMOKE_RATE_LIMIT=1`, `SMOKE_UNINSTALL=1` add checks that write data |
+| `npm run loadtest`                      | a signed webhook burst that also checks the backlog drains (`SIGHTLINE_OPS_TOKEN`; `LOAD_SHOP` must be an installed shop)                                                                                  |
+| `npm run contract:gen`                  | regenerates `contracts/sightline-api-v1.json` after an API change                                                                                                                                          |
 
-`node scripts/seed-dev-data.mjs --dry-run --shop=<store>.myshopify.com` validates a seed offline;
-without `--dry-run` it writes accepted deliveries to a dev store and lets the real pipeline derive
-every projection and finding from them.
+`node scripts/seed-dev-data.mjs --dry-run --shop=<store>.myshopify.com` validates a seed offline; without `--dry-run` it writes accepted deliveries and lets the pipeline derive everything else. `node scripts/set-secrets.mjs --check` reports what the instance's secrets store holds.
 
 ## Dev loop
 
-1. Make the change; `npm test` (and `npm run typecheck`, `npm run lint:required`, `npm run format:check`).
-2. `npm run deploy` — deploys `app/` to the Fabric instance as component `sightline`.
-3. `npm run smoke` — confirms the routes are live and the auth boundary holds. This guards the
-   failure mode that a bad top-level import silently 404s **every** route while the component still
-   reports "healthy" (ADR-001).
+1. Make the change, with tests; run `npm test`, `npm run typecheck`, `npm run lint:required`, `npm run format:check`.
+2. If the API's response shape changed, run `npm run contract:gen` and commit the artifact.
+3. Run it locally on Harper 5.3.3 and `npm run smoke` against it, or `npm run deploy` to the dev instance and smoke that. Smoke guards the failure where a bad top-level import 404s every route while the component reports healthy (ADR-001).
 4. Open the app in the dev store's Admin to exercise the embedded experience.
-
-If a contract-shaped change is involved, run `npm run contract:gen` and commit the artifact — a CI
-test fails when the checked-in contract drifts from `src/api/apiContract.ts`.
 
 ## Layout
 
-| Path             | What                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------- |
-| `config.yaml`    | Harper component config: `rest`, `graphqlSchema`, `jsResource`                     |
-| `schema.graphql` | The sealed tables, in two databases (`sightline_core`, `sightline_ledger`)         |
-| `resources.ts`   | Export layer only — one resource class per file under `src/resources/`             |
-| `jobs.ts`        | Background loop wiring; all testable logic lives in deps-injected `src/` modules   |
-| `src/`           | Backend, grouped by concern — see [`DESIGN.md`](./DESIGN.md)                       |
-| `web/`           | The embedded SPA (Vite, App Bridge, Polaris)                                       |
-| `test/`          | `*.test.ts`, run by `node --test --conditions=test`                                |
-| `scripts/`       | `deploy.mjs`, `smoke.mjs`, `loadtest.mjs`, `seed-dev-data.mjs`, `gen-contract.mjs` |
-
-## HTTP surface
-
-Public: `GET /` (the SPA and its assets), `GET /privacy-policy`, `GET /api/v1/health`.
-
-Session-token authenticated (`X-Shopify-Session-Token`), all tenant-scoped from the verified
-principal: `session`, `setup`, `summary`, `events`, `events/:id`, `flows`, `orders`,
-`orders/:orderId`, `findings`, `findings/:id`, `privacy`, `export/:kind.csv`, and `digest`
-(`GET`/`PUT` — the only write, and it writes Sightline's own settings, never Shopify data).
-
-HMAC-authenticated: `POST /webhooks/shopify/events` and `POST /webhooks/shopify/compliance/*`.
-
-Operator-only: `GET /api/v1/ops`, gated on `SIGHTLINE_OPS_TOKEN` and 404 while it is unset.
-
-The response fields of every read are allowlisted in `src/api/apiContract.ts` and pinned in
-[`contracts/sightline-api-v1.json`](../contracts/sightline-api-v1.json).
+| Path             | What                                                                                                           |
+| ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| `config.yaml`    | Component config: `rest`, `graphqlSchema`, `jsResource`, the required secrets (`env:`), and the scheduler jobs |
+| `schema.graphql` | The sealed tables in `sightline_core` and `sightline_ledger`                                                   |
+| `resources.ts`   | Export layer only: one resource class per file under `src/resources/`                                          |
+| `jobs.ts`        | Scheduler job handlers; wiring only, the logic lives in deps-injected `src/` modules                           |
+| `src/`           | Backend by concern ([`DESIGN.md`](./DESIGN.md))                                                                |
+| `web/`           | The embedded SPA (Vite, App Bridge, Polaris)                                                                   |
+| `test/`          | `*.test.ts`; `fakeTable.ts` is the in-memory table, `harperStub.ts` the runtime stub                           |
+| `scripts/`       | `deploy`, `smoke`, `loadtest`, `seed-dev-data`, `set-secrets`, `gen-contract`                                  |

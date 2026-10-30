@@ -27,10 +27,9 @@ Three logical environments; each is a GitHub **Environment** with its own secret
 | Secret source | `process.env` (no custody on the dev instance) | scoped Harper secrets | scoped Harper secrets |
 | Secrets | real, unrotated dev values | real, rotated | real, rotated |
 
-There is no longer a strict-mode flag. The app fails closed in **every**
-environment: a missing secret throws, with no fallback tier. `SIGHTLINE_REQUIRE_SECRETS`
-has been removed — it defaulted off, so the misconfiguration it guarded against was
-the default state. A missing or undecryptable secret stops the component loading.
+The app fails closed in every environment: secrets are read from Harper scoped
+secrets, then `process.env`, and a missing or undecryptable one stops the component
+loading (`app/src/secrets/secretsPolicy.ts`). There is no dev default.
 
 > The existing deployed instance is the current target — point the environment's
 > `HARPER_OPS_URL` / `SIGHTLINE_BASE` at it. Add a separate production instance

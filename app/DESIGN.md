@@ -6,8 +6,8 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 ## Runtime shape (from Phase 0 spikes — see /docs/adr)
 
 - Deployed to Harper Fabric as component **`sightline`** via `scripts/deploy.mjs`
-  (ops-API `deploy_component` + `restart`), URL fronted on 443. No local Harper
-  (blocked in our sandbox); the Fabric instance is the runtime.
+  (ops-API `deploy_component` + `restart`), URL fronted on 443. It also runs on a
+  local Harper 5.3.3 ([root README, Running locally](../README.md#running-locally)).
 - **Resources** live one-per-file in `src/resources/`, extend `Resource` from
   `'harper'`, are deny-by-default (`allowRead()` to open a GET), and route at their
   `static path` (e.g. `/api/v1/health`). `resources.ts` (the `jsResource` entry
@@ -18,9 +18,10 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 - **Auth:** the Shopify session token rides in `X-Shopify-Session-Token`, NOT
   `Authorization` (Harper's HTTP layer intercepts Authorization). `Session`
   verifies it (HS256, ADR-001) and returns the tenant identity.
-- **Secrets:** the app secret is read from Harper native secrets via a lazy
-  `import('harper').secrets` (encrypted, never logged). Grant matching is keyed on
-  package.json `name` — the component must be named `sightline`.
+- **Secrets:** read through `src/secrets/secretsPolicy.ts`: Harper scoped secrets
+  (the `#harper` `secrets` accessor), then `process.env`; a missing one throws.
+  Grant matching is keyed on package.json `name`, so the component must be named
+  `sightline`.
 
 ## Layout
 
@@ -80,8 +81,8 @@ is the fast-start map for anyone (human or agent) working in `app/`.
   plain node with no browser or DOM shim (`test/view.test.ts`). Keep that split: markup
   decisions that migrate into `main.ts` become untestable.
 - `scripts/` — `deploy.mjs` (build → package → deploy → restart EVERY node → verify the
-  served bundle), `smoke.mjs` (post-deploy route/auth checks), `loadtest.mjs`,
-  `seed-dev-data.mjs`, `gen-contract.mjs`.
+  served bundle, columns and indexes), `smoke.mjs` (route/auth checks), `loadtest.mjs`,
+  `seed-dev-data.mjs`, `set-secrets.mjs`, `gen-contract.mjs`.
 - `schema.graphql` — the sealed tables, split across two databases: `sightline_core`
   (shop, credential, audit, digest subscription/outbox) and `sightline_ledger`
   (deliveries, events, projections, expectations, findings, aggregates, checkpoints,

@@ -3,7 +3,7 @@
 - Status: **Accepted** (Spike C complete)
 - Date: 2026-08-04
 - Phase: 0 (risk retirement), GitHub issue #2 (retention portion) → issue #10
-- Evidence: the throwaway `spikes/retention/` component — unit tests plus live purge, redaction, and TTL-characterization proofs, with findings in its `RUNTIME-NOTES.md`. Deleted after Phase 0; read it at `git show c9a4f5e:spikes/retention`. The decision below, and `app/src/retention.ts`, are what carried forward.
+- Evidence: the throwaway `spikes/retention/` component — unit tests plus live purge, redaction, and TTL-characterization proofs, with findings in its `RUNTIME-NOTES.md`. Deleted after Phase 0; read it at `git show c9a4f5e:spikes/retention`. The decision below, and `app/src/retention/retention.ts`, are what carried forward.
 - Runtime proven against: Harper **5.2.0** on Fabric, via the operations API
 
 ## Context

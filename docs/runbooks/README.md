@@ -7,14 +7,14 @@ self-contained: alert condition → signals → diagnosis → remediation → es
 
 Sightline has no external metrics backend in the MVP. Instead:
 
-- **Metrics** are an in-process tally (`app/src/observe.ts`, the `metrics`
+- **Metrics** are an in-process tally (`app/src/observability/observe.ts`, the `metrics`
   registry). Counters and latency summaries are cumulative for a worker's
   lifetime and carry **no merchant-identifying labels** (a metric is a bare
   name, never keyed by shop).
 - **The `ops.snapshot` heartbeat** (`app/jobs.ts`, once a minute) derives an
   aggregate health view from tables — backlog age/count, dead-letter count,
   reconciliation staleness, reauthorization count, rows overdue for the purge — via
-  `computeOpsHealth` (`app/src/opsHealth.ts`; backlog and dead-letter counts stop
+  `computeOpsHealth` (`app/src/observability/opsHealth.ts`; backlog and dead-letter counts stop
   at 10,000 and set `capped`, so a capped count is a floor) and logs it together with the
   metrics tally as one structured line. When health is degraded the line is
   emitted at `warn`, so a log-based alert can key off
