@@ -407,3 +407,12 @@ test('a handler that fails after a shop/redact leaves no accepted row to dead-le
 	assert.equal(second.deadLettered, 0);
 	assert.deepEqual(w.shopDeliveries(A), []);
 });
+
+test('a metadata-less row of a redacted shop (an older write-back) is removed, not dead-lettered', async () => {
+	const w = world();
+	await w.redactShop(A);
+	await w.deliveries.put({ id: `${A}:old`, shopId: A, receivedAt: NOW, status: 'accepted', attempts: 1 });
+	const r = await w.drain();
+	assert.equal(r.deadLettered, 0);
+	assert.deepEqual(w.shopDeliveries(A), []);
+});

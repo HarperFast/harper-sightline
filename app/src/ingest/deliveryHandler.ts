@@ -72,6 +72,9 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 	};
 	return async (row) => {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
+			// For a redacted shop this is a row a mark wrote back over a deleted one: the mark
+			// deletes it, where a dead letter would alert for a normalizer fault for seven days.
+			if (await isRedacted(deps.tombstones, row.shopId, undefined, row.receivedAt ?? 0)) return;
 			throw new PermanentNormalizeError(`delivery ${row.id} missing normalization metadata`);
 		}
 		// Non-operational topics are handled elsewhere (compliance) or invalidate the shop.
