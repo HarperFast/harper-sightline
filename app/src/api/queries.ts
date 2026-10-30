@@ -20,6 +20,7 @@ import { describeFinding, detectorKey, DETECTOR_FAILED } from '../domain/detecto
 import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from '../domain/orders.ts';
 import { OUTBOX_RETENTION_DAYS } from '../retention/retention.ts';
 import { RECONCILE_STALE_MS } from '../observability/opsHealth.ts';
+import type { ReadCache } from './readCache.ts';
 
 // Minimal search/get surface a Harper table exposes to the read layer. Every query
 // derives shopId from the authenticated principal and constrains the search by it.
@@ -453,6 +454,12 @@ async function countWhere(table: QueryTable, conditions: QuerySpec['conditions']
 	return n;
 }
 
+// The resources pass a per-shop cache (src/api/readCache.ts); the digest and tests call
+// without one and always scan.
+function cachedScan<T>(cache: ReadCache<T> | undefined, shopId: string, scan: () => Promise<T>): Promise<T> {
+	return cache ? cache.get(shopId, scan) : scan();
+}
+
 const DAY_MS = 86_400_000;
 export const ACTIVITY_DOMAINS = ['order', 'fulfillment', 'inventory', 'refund'] as const;
 
@@ -502,6 +509,19 @@ function windowCondition(windowStart: number): QuerySpec['conditions'][number] {
 // count so an unhealthy recorder cannot claim "no gaps".
 export async function getSummary(
 	tables: { events: QueryTable; projections: QueryTable; findings: QueryTable; deliveries: QueryTable; shops: QueryTable },
+	shopId: string,
+	now: number,
+	cache?: ReadCache<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+	const counts = await cachedScan(cache, shopId, () => summaryCounts(tables, shopId, now));
+	// A keyed read, so per request: a finished reconcile shows without waiting out the cache.
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
+	return { ...counts, reconciliation: reconciliationView(shop, now) };
+}
+
+// Everything in the summary that scans the shop's rows; cached per shop (src/api/readCache.ts).
+async function summaryCounts(
+	tables: { events: QueryTable; projections: QueryTable; findings: QueryTable; deliveries: QueryTable },
 	shopId: string,
 	now: number,
 ): Promise<Record<string, unknown>> {
@@ -564,7 +584,6 @@ export async function getSummary(
 		{ attribute: 'shopId', value: shopId },
 		{ attribute: 'status', value: 'dead_letter' },
 	]);
-	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 
 	let ordersTracked = 0;
 	let paid = 0;
@@ -608,7 +627,6 @@ export async function getSummary(
 		aging: { buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: agingCounts[b.key] })) },
 		findings: { ...findingCounts, failedAttempts },
 		recorder: { healthy: deadLettered === 0, deadLetteredDeliveries: deadLettered },
-		reconciliation: reconciliationView(shop, now),
 		activity: { days: WINDOW_DAYS, domains: [...ACTIVITY_DOMAINS], buckets },
 		integrity: { webhookEvents, reconciliationOnlyEvents },
 	};
@@ -616,7 +634,16 @@ export async function getSummary(
 
 // GET /flows: lane counts from the window's projections, via deriveOrderLane (the
 // same definition as the worklist and summary).
-export async function computeFlows(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
+export async function computeFlows(
+	projections: QueryTable,
+	shopId: string,
+	now: number,
+	cache?: ReadCache<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+	return cachedScan(cache, shopId, () => flowCounts(projections, shopId, now));
+}
+
+async function flowCounts(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
 	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 };
 	for await (const p of projections.search({
@@ -666,12 +693,10 @@ export async function getPrivacy(
 	},
 	shopId: string,
 	now: number,
+	cache?: ReadCache<PrivacyCounts>,
 ): Promise<Record<string, unknown>> {
-	const footprint = {
-		events: await countWhere(tables.events, [{ attribute: 'shopId', value: shopId }]),
-		orders: await countWhere(tables.projections, [{ attribute: 'shopId', value: shopId }]),
-		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
-	};
+	const { footprint, webhooks } = await cachedScan(cache, shopId, () => privacyCounts(tables, shopId));
+	// Keyed reads stay per request: a merchant who just saved digest settings sees them here.
 	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 
 	// Stated, never echoed: the address is shown on the Notifications screen only.
@@ -683,22 +708,6 @@ export async function getPrivacy(
 			: {}),
 		status: subscription && subscription.shopId === shopId && subscription.status === 'active' ? 'active' : 'paused',
 	};
-
-	let received = 0;
-	let processed = 0;
-	let deadLettered = 0;
-	let lastReceivedAt: number | undefined;
-	for await (const d of tables.deliveries.search({
-		conditions: [{ attribute: 'shopId', value: shopId }],
-		select: ['status', 'receivedAt'],
-	})) {
-		received++;
-		const status = String(d.status);
-		if (status === 'processed') processed++;
-		else if (status === 'dead_letter') deadLettered++;
-		const at = Number(d.receivedAt);
-		if (Number.isFinite(at) && (lastReceivedAt === undefined || at > lastReceivedAt)) lastReceivedAt = at;
-	}
 
 	return {
 		shop: shopId,
@@ -733,6 +742,49 @@ export async function getPrivacy(
 		},
 		notifications,
 		footprint,
+		webhooks,
+		reconciliation: reconciliationView(shop, now),
+	};
+}
+
+export interface PrivacyCounts {
+	footprint: { events: number; orders: number; findings: number };
+	webhooks: { received: number; processed: number; deadLettered: number; healthy: boolean; lastReceivedAt?: number };
+}
+
+// The privacy screen's scans; cached per shop (src/api/readCache.ts).
+async function privacyCounts(
+	tables: { events: QueryTable; findings: QueryTable; projections: QueryTable; deliveries: QueryTable },
+	shopId: string,
+): Promise<PrivacyCounts> {
+	const footprint = {
+		events: await countWhere(tables.events, [{ attribute: 'shopId', value: shopId }]),
+		orders: await countWhere(tables.projections, [{ attribute: 'shopId', value: shopId }]),
+		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
+	};
+
+	// One pass over the shop's deliveries. Measured on Harper 5.3.3 at 160k deliveries,
+	// the exact `received` count alone costs what this whole pass does (~1.0 s): a count
+	// walks every matching row, by the shopId index or by an id-prefix range (2.6 s).
+	// Splitting it into a count plus indexed status counts plus a newest-first read was
+	// ~1.1 s, so the pass stays and the per-shop cache is what bounds its cost.
+	let received = 0;
+	let processed = 0;
+	let deadLettered = 0;
+	let lastReceivedAt: number | undefined;
+	for await (const d of tables.deliveries.search({
+		conditions: [{ attribute: 'shopId', value: shopId }],
+		select: ['status', 'receivedAt'],
+	})) {
+		received++;
+		const status = String(d.status);
+		if (status === 'processed') processed++;
+		else if (status === 'dead_letter') deadLettered++;
+		const at = Number(d.receivedAt);
+		if (Number.isFinite(at) && (lastReceivedAt === undefined || at > lastReceivedAt)) lastReceivedAt = at;
+	}
+	return {
+		footprint,
 		webhooks: {
 			received,
 			processed,
@@ -740,7 +792,6 @@ export async function getPrivacy(
 			healthy: deadLettered === 0,
 			...(lastReceivedAt === undefined ? {} : { lastReceivedAt }),
 		},
-		reconciliation: reconciliationView(shop, now),
 	};
 }
 
