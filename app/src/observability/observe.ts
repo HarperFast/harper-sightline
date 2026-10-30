@@ -198,4 +198,6 @@ export const M = {
 	// (src/auth/rateLimit.ts). Non-zero in normal use means the limit is too low for real use.
 	rateLimitedRequests: 'rate_limit.requests',
 	rateLimitedExports: 'rate_limit.exports',
+	// Exports refused because another was already running on the thread (src/api/exportGate.ts).
+	exportBusy: 'export.busy',
 } as const;

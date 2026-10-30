@@ -1727,8 +1727,13 @@ export function saveErrorAction(message: string): SaveErrorAction {
 // A 429 is the case that made this worth stating: the server says how long to wait
 // (src/auth/rateLimit.ts), and "Export failed. Try again" would have thrown that
 // away and invited the merchant to keep clicking into the limit.
+//
+// The other 429 is "busy": one export runs at a time (src/api/exportGate.ts), and the
+// one running may be another store's, so the wording must not blame the merchant.
 export function exportErrorMessage(message: string): string {
 	if (/^401\b/.test(message)) return 'Export failed: you were signed out. Reload the page and try again.';
+	const busySeconds = message.match(/^429\b.*?another export is in progress.*?retry in (\d+)s/)?.[1];
+	if (busySeconds) return `Another export is being prepared. Wait ${busySeconds} seconds and try again.`;
 	const seconds = message.match(/^429\b.*?retry in (\d+)s/)?.[1];
 	if (seconds) return `Too many exports in a row. Wait ${seconds} seconds and try again.`;
 	if (/^429\b/.test(message)) return 'Too many exports in a row. Wait a minute and try again.';

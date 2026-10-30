@@ -88,6 +88,11 @@ export function exportFilename(kind: string, now: number): string {
 // leads nowhere. When the cap is reached with a cursor left, one more page is read and
 // `truncated` is true only if it holds a row. `rows.length > cap` is not enough either:
 // the cap is a multiple of the page size, so a truncated set lands on exactly `cap`.
+//
+// Each page's query resolves as microtasks, so without a break the whole export is one
+// turn of the event loop: 13 s on a 160k-event shop, with every webhook on the thread
+// unacked past Shopify's 5 s. Yielding before each page lets queued requests run, which
+// bounds the stall to one page.
 export async function collectExportRows<T>(
 	fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
 	cap: number,
@@ -96,7 +101,9 @@ export async function collectExportRows<T>(
 	const rows: T[] = [];
 	let cursor = initialCursor;
 	let stuck = false;
+	let pages = 0;
 	do {
+		if (pages++ > 0) await yieldToEventLoop();
 		const page = await fetchPage(cursor);
 		rows.push(...page.items);
 		// A pager returning the cursor it was given is not advancing; stop rather than
@@ -108,6 +115,14 @@ export async function collectExportRows<T>(
 		cursor = page.nextCursor;
 	} while (cursor && rows.length < cap);
 	let truncated = stuck || rows.length > cap;
-	if (!truncated && cursor) truncated = (await fetchPage(cursor)).items.length > 0;
+	if (!truncated && cursor) {
+		await yieldToEventLoop();
+		truncated = (await fetchPage(cursor)).items.length > 0;
+	}
 	return { rows: rows.slice(0, cap), truncated };
+}
+
+// A macrotask boundary: I/O callbacks (incoming requests) run before it resolves.
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }

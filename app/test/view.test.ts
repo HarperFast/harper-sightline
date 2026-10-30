@@ -1657,6 +1657,16 @@ test('a rate-limited export tells the merchant how long to wait', () => {
 	assert.equal(exportErrorMessage('429'), 'Too many exports in a row. Wait a minute and try again.');
 });
 
+// A different refusal from the rate limit: the merchant did nothing wrong, another
+// export (possibly another store's) holds the one slot. "Too many exports in a row"
+// would blame them for it.
+test('an export refused because another is running says so, with the wait', () => {
+	assert.equal(
+		exportErrorMessage('429 another export is in progress — retry in 5s'),
+		'Another export is being prepared. Wait 5 seconds and try again.',
+	);
+});
+
 test('an expired session on export says to reload, not to retry forever', () => {
 	assert.equal(exportErrorMessage('401'), 'Export failed: you were signed out. Reload the page and try again.');
 	assert.equal(exportErrorMessage('401 unauthorized'), 'Export failed: you were signed out. Reload the page and try again.');

@@ -58,7 +58,8 @@ is the fast-start map for anyone (human or agent) working in `app/`.
   - `domain/` — the shared vocabulary the rest reads: `model.ts` (the schema.graphql
     mirror), `orders.ts` (the single lane/age definition), `eventKind.ts`, `detector.ts`.
   - `api/` — the read side: `apiContract.ts` (response allowlists), `queries.ts`, `csv.ts`,
-    `readCache.ts` (the per-shop single-flight cache for the summary, flows and privacy scans).
+    `readCache.ts` (the per-shop single-flight cache for the summary, flows and privacy scans),
+    `exportGate.ts` (one CSV export in flight per node, via a lease shared across threads).
   - `digest/` — `digest.ts` (pure domain), `digestData.ts`, `digestBuild.ts`
     (deps-injected orchestration), `digestSubscription.ts`.
   - `privacy/` — `compliance.ts` (mandatory-webhook dispatcher), `redaction.ts`,
