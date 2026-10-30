@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createExportGate, EXPORT_BUSY_RETRY_SECONDS, exportBusyResponse, runExclusive, sharedExportSlot } from '../src/api/exportGate.ts';
+import { readFileSync } from 'node:fs';
+import { createExportGate, EXPORT_BUSY_RETRY_SECONDS, exportBusyResponse, runExclusive } from '../src/api/exportGate.ts';
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -65,59 +66,23 @@ test('release is idempotent: a stale release cannot free a later holder', () => 
 	assert.equal(gate.busy(), false);
 });
 
-// Two gates over one shared slot stand in for two worker threads of a node.
-test('the limit is per node: a gate on another thread sharing the slot is refused', () => {
-	const slot = new BigInt64Array(new SharedArrayBuffer(8));
-	const threadA = createExportGate({ slot });
-	const threadB = createExportGate({ slot });
-	const release = threadA.tryAcquire();
+// Each worker thread loads the module once, so two gates stand in for two workers.
+test('the limit is per worker thread: an export on one worker does not hold another', () => {
+	const workerA = createExportGate();
+	const workerB = createExportGate();
+	const release = workerA.tryAcquire();
 	assert.ok(release);
-	assert.equal(threadB.tryAcquire(), undefined, 'thread B sees thread A’s export');
-	assert.equal(threadB.busy(), true);
+	assert.equal(workerA.tryAcquire(), undefined, 'a second export on the same worker is refused');
+	const releaseB = workerB.tryAcquire();
+	assert.ok(releaseB, 'another worker takes its own');
 	release();
-	const releaseB = threadB.tryAcquire();
-	assert.ok(releaseB, 'free for any thread once released');
 	releaseB();
 });
 
-// A thread that dies mid-export never runs its finally; the lease is what frees the slot.
-test('a lease never released expires, and its late release cannot free the next holder', () => {
-	const slot = new BigInt64Array(new SharedArrayBuffer(8));
-	let clock = 1_760_000_000_000;
-	const gate = createExportGate({ slot, now: () => clock, leaseMs: 120_000 });
-	const abandoned = gate.tryAcquire();
-	assert.ok(abandoned);
-	clock += 119_999;
-	assert.equal(gate.tryAcquire(), undefined, 'still held inside the lease');
-	clock += 1;
-	const next = gate.tryAcquire();
-	assert.ok(next, 'taken over once the lease expired');
-	abandoned();
-	assert.equal(gate.busy(), true, 'the expired holder’s release left the new lease alone');
-	next();
-	assert.equal(gate.busy(), false);
-});
-
-test('sharedExportSlot uses the store’s cross-thread buffer, and falls back per thread without one', () => {
-	const buffers = new Map<string, ArrayBuffer>();
-	const store = {
-		getUserSharedBuffer(key: string, defaultBuffer: ArrayBuffer) {
-			if (!buffers.has(key)) buffers.set(key, defaultBuffer);
-			return buffers.get(key)!;
-		},
-	};
-	const a = sharedExportSlot(store);
-	const b = sharedExportSlot(store);
-	assert.equal(a.shared, true);
-	assert.equal(a.slot.buffer, b.slot.buffer, 'every caller gets the one registered buffer');
-	const release = createExportGate({ slot: a.slot }).tryAcquire();
-	assert.equal(createExportGate({ slot: b.slot }).tryAcquire(), undefined);
-	release?.();
-
-	const fallback = sharedExportSlot(undefined);
-	assert.equal(fallback.shared, false);
-	assert.ok(createExportGate({ slot: fallback.slot }).tryAcquire(), 'a usable slot, not an error');
-	assert.equal(sharedExportSlot({}).shared, false);
+test('the export resource keeps its gate in module state, not in a store buffer shared across threads', () => {
+	const source = readFileSync(new URL('../src/resources/exportResource.ts', import.meta.url), 'utf8');
+	assert.doesNotMatch(source, /getUserSharedBuffer|sharedExportSlot|primaryStore/);
+	assert.match(source, /const exportGate = createExportGate\(\);/);
 });
 
 test('the busy refusal is a 429 with Retry-After and a detail the SPA can read', async () => {

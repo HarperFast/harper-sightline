@@ -60,7 +60,7 @@ is the fast-start map for anyone (human or agent) working in `app/`.
     mirror), `orders.ts` (the single lane/age definition), `eventKind.ts`, `detector.ts`.
   - `api/` — the read side: `apiContract.ts` (response allowlists), `queries.ts`, `csv.ts`,
     `readCache.ts` (the per-shop single-flight cache for the summary, flows and privacy scans),
-    `exportGate.ts` (one CSV export in flight per node, via a lease shared across threads).
+    `exportGate.ts` (one CSV export in flight per worker thread).
   - `digest/` — `digest.ts` (pure domain), `digestData.ts`, `digestBuild.ts`
     (deps-injected orchestration), `digestSubscription.ts`.
   - `privacy/` — `compliance.ts` (mandatory-webhook dispatcher), `redaction.ts`,
@@ -181,7 +181,11 @@ them. A big shop is 160k events (and as many deliveries) in the window.
 - **CSV export** (`csv.ts`, `exportGate.ts`): about 50 pages of 100 rows, 7-13 s of
   CPU on a big shop. Without a yield between pages that was one turn of the event
   loop, so every webhook ack on the thread waited past Shopify's 5 s; two exports at
-  once doubled that wait. `EXPORT_LEASE_MS` (120 s) is about ten times the slowest.
+  once on one thread doubled that wait. With the yield and one export per worker
+  thread, acks during a big-shop events export on that thread ran p50 0.6-0.7 s, p95
+  1.2-1.5 s, max 1.4-1.6 s, none over 5 s; a second concurrent export on the thread got
+  429 in 0.2-0.4 s. On macOS every request landed on one worker, so that is the worst
+  case; a multi-worker Linux node is unmeasured (app-store-review-checklist §1).
 - **Per-shop scans** (`readCache.ts`): a summary took 1.3 s at 163k events and
   saturated near 2 req/s. The privacy screen's delivery pass is about 1.0 s at 160k
   deliveries; its exact count alone costs the same (2.6 s by an id-prefix range), and

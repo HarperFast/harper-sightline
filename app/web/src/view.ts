@@ -1728,7 +1728,7 @@ export function saveErrorAction(message: string): SaveErrorAction {
 // (src/auth/rateLimit.ts), and "Export failed. Try again" would have thrown that
 // away and invited the merchant to keep clicking into the limit.
 //
-// The other 429 is "busy": one export runs at a time (src/api/exportGate.ts), and the
+// The other 429 is "busy": one export runs at a time per worker (src/api/exportGate.ts), and the
 // one running may be another store's, so the wording must not blame the merchant.
 export function exportErrorMessage(message: string): string {
 	if (/^401\b/.test(message)) return 'Export failed: you were signed out. Reload the page and try again.';

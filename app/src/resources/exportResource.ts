@@ -2,8 +2,7 @@ import { Resource } from 'harper';
 import { listEvents, listFindings, listOrders } from '../api/queries.ts';
 import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from '../api/csv.ts';
 import { MAX_LIMIT } from '../api/apiContract.ts';
-import { createExportGate, EXPORT_BUSY_RETRY_SECONDS, exportBusyResponse, runExclusive, sharedExportSlot } from '../api/exportGate.ts';
-import { Shops } from '../db.ts';
+import { createExportGate, EXPORT_BUSY_RETRY_SECONDS, exportBusyResponse, runExclusive } from '../api/exportGate.ts';
 import { createRateLimiter, EXPORTS_PER_MINUTE, RateLimitError } from '../auth/rateLimit.ts';
 import { log, M, metrics } from '../observability/observe.ts';
 import { identity } from './auth.ts';
@@ -15,14 +14,10 @@ import { EventsQ, FindingsQ, ExpectationsQ, ProjectionsQ, EventSkusQ } from './t
 // the counter survives between requests.
 const exportLimiter = createRateLimiter({ limit: EXPORTS_PER_MINUTE });
 
-// One export in flight per node, across all shops and threads (src/api/exportGate.ts).
+// One export in flight per worker thread, across all shops (src/api/exportGate.ts).
 // Taken before the per-shop limiter so a refusal for being busy does not spend the
-// shop's export budget. Any table's store holds the shared slot; Shops is the smallest.
-const { slot: exportSlot, shared: exportSlotShared } = sharedExportSlot(
-	(Shops as unknown as { primaryStore?: Parameters<typeof sharedExportSlot>[0] }).primaryStore,
-);
-if (!exportSlotShared) log('warn', 'export.gate_per_thread', {});
-const exportGate = createExportGate({ slot: exportSlot });
+// shop's export budget.
+const exportGate = createExportGate();
 
 // CSV export of any filtered list. The SPA fetches it and downloads from a blob,
 // since a browser navigation cannot carry the X-Shopify-Session-Token header.
