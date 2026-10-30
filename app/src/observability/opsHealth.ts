@@ -136,15 +136,15 @@ async function overdueRetention(checks: RetentionCheck[], now: number): Promise<
 	const overdueTables: string[] = [];
 	for (const check of checks) {
 		const before = cutoffMs(now, check.retentionDays) - RETENTION_OVERDUE_MS;
-		let n = 0;
+		let overdue = 0;
 		const rows = check.table.search({
 			conditions: [{ attribute: check.tsField, comparator: 'less_than', value: before }],
 			select: [check.keyField],
 			limit: OVERDUE_COUNT_LIMIT,
 		});
-		for await (const _row of rows) n++;
-		if (n) overdueTables.push(check.name);
-		overdueRows += n;
+		for await (const _row of rows) overdue++;
+		if (overdue) overdueTables.push(check.name);
+		overdueRows += overdue;
 	}
 	return { overdueRows, overdueTables };
 }

@@ -133,10 +133,10 @@ export async function purgeExpired(
 	for (let pending = runs; pending.length; pending = pending.filter((r) => r.more && !r.failed)) {
 		for (const run of pending) {
 			try {
-				const n = await deleteMatchingKeys(run.target.table, run.target.keyField, run.condition, undefined, PURGE_BATCH);
-				run.deleted += n;
+				const batch = await deleteMatchingKeys(run.target.table, run.target.keyField, run.condition, undefined, PURGE_BATCH);
+				run.deleted += batch;
 				// A short batch: the table is clear, or a delete failed and the residue check reports it.
-				run.more = n === PURGE_BATCH;
+				run.more = batch === PURGE_BATCH;
 			} catch (err) {
 				run.failed = true;
 				failures.push(`${run.target.name}: ${(err as Error).message}`);

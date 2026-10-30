@@ -50,16 +50,16 @@ export async function handleCompliance(
 			// Tombstone first, then scrub delivery bodies while the events that find them remain.
 			const ids = orderIds(payload, 'orders_to_redact');
 			await deps.tombstoneOrders(shopId, ids);
-			const s = await deps.scrubDeliveries(shopId, ids);
+			const scrub = await deps.scrubDeliveries(shopId, ids);
 			const r = await deps.redactOrders(shopId, ids);
 			await deps.audit('customer_redact', shopId, {
 				orderIds: ids,
 				deleted: r.deleted,
-				scrubbed: s.scrubbed,
-				scrubCapped: s.capped,
+				scrubbed: scrub.scrubbed,
+				scrubCapped: scrub.capped,
 				failures: r.failures,
 			});
-			return { topic, action: 'customer_redact', deleted: r.deleted, scrubbed: s.scrubbed, failures: r.failures };
+			return { topic, action: 'customer_redact', deleted: r.deleted, scrubbed: scrub.scrubbed, failures: r.failures };
 		}
 		case 'customers/data_request': {
 			// No customer PII is stored, so there is nothing to export; record the request for audit.
