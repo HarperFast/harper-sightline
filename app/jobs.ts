@@ -141,7 +141,7 @@ const deps: ProcessDeps = {
 		tombstones: RedactionTombstones,
 		deliveries: Deliveries as unknown as DeliveryPatchTable,
 		uninstall: uninstallShop,
-		eraseOrder: (shopId, orderId) => redactOrders(REDACT_TARGETS, shopId, [orderId]),
+		eraseResource: (shopId, resourceId) => redactOrders(REDACT_TARGETS, shopId, [resourceId]),
 	}),
 };
 

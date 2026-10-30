@@ -52,6 +52,7 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 		await putEvent(row);
 	};
 	const eventSkus = new FakeTable('id');
+	const inventoryItems = new FakeTable('id');
 	const projections = new FakeTable('id');
 	const expectations = new FakeTable('id');
 	const findings = new FakeTable('id');
@@ -71,12 +72,12 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 	const handle = createDeliveryHandler({
 		events: events as unknown as DeliveryHandlerDeps['events'],
 		eventSkus: eventSkus as unknown as DeliveryHandlerDeps['eventSkus'],
-		inventoryItems: new FakeTable('id'),
+		inventoryItems,
 		orders,
 		tombstones,
 		deliveries,
 		uninstall: async () => {},
-		eraseOrder: (shopId, orderId) => redactOrders(targets, shopId, [orderId]),
+		eraseResource: (shopId, resourceId) => redactOrders(targets, shopId, [resourceId]),
 		now: () => clock,
 	});
 	// The jobs.ts read: a range of the pendingKey index.
@@ -130,6 +131,8 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 		events,
 		// By key: a partial row written back by a patch has no shopId.
 		shopDeliveries: (shopId: string) => [...deliveries.rows.keys()].filter((id) => id.startsWith(`${shopId}:`)),
+		eventSkus,
+		inventoryItems,
 		written,
 		tombstones,
 		projections,
@@ -335,6 +338,25 @@ test('shop/redact drops what the drain holds, but a reinstalled shop records aga
 	await w.accept(A, 'p-705', 'orders/paid', paid(705));
 	await w.drain();
 	assert.equal(w.ledger(A, '705').projections, 1);
+});
+
+test('a shop/redact that lands between an inventory event and its SKU index row is erased by the handler', async () => {
+	const w = world();
+	await w.inventoryItems.put({ id: `${A}:5`, shopId: A, inventoryItemId: '5', sku: 'INV-5' });
+	await w.accept(A, 'i-1', 'inventory_levels/update', { inventory_item_id: 5, location_id: 6, available: 1 });
+	const put = w.eventSkus.put.bind(w.eventSkus);
+	let raced = false;
+	w.eventSkus.put = async (row) => {
+		if (!raced) {
+			raced = true;
+			await w.redactShop(A);
+		}
+		await put(row);
+	};
+	await w.drain();
+	assert.ok(raced, 'the event was indexed from the cached item');
+	assert.deepEqual(w.ledger(A, '5'), NONE);
+	assert.deepEqual(w.shopDeliveries(A), []);
 });
 
 test('a shop/redact during a handler that then fails leaves no partial delivery row behind', async () => {

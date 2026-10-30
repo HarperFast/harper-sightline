@@ -39,8 +39,9 @@ export interface DeliveryHandlerDeps {
 	tombstones: Pick<TombstoneTable, 'get'>;
 	deliveries: DeliveryPatchTable;
 	uninstall(shopId: string): Promise<void>;
-	// Erases one order's ledger rows, for a redaction that landed while this handler wrote them.
-	eraseOrder(shopId: string, orderId: string): Promise<unknown>;
+	// Erases the shop's ledger rows for one resource (an order, or an inventory item),
+	// for a redaction that landed while this handler wrote them.
+	eraseResource(shopId: string, resourceId: string): Promise<unknown>;
 	now?: () => number;
 }
 
@@ -90,13 +91,12 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 			}
 			await writeEventWithSkus({ events: deps.events, eventSkus: deps.eventSkus }, event);
 			await indexCachedInventoryEvent({ inventoryItems: deps.inventoryItems, eventSkus: deps.eventSkus }, event);
-			if (orderId === undefined) continue;
-			await refreshOrder(deps.orders, event.shopId, orderId, now());
+			if (orderId !== undefined) await refreshOrder(deps.orders, event.shopId, orderId, now());
 			// A redaction that landed during these writes may have searched before they
-			// committed, so look again and erase the order here. Not closed across nodes:
+			// committed, so look again and erase them here. Not closed across nodes:
 			// the tombstone and the ledger replicate asynchronously.
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
-				await deps.eraseOrder(row.shopId, orderId);
+				if (event.resourceId) await deps.eraseResource(row.shopId, event.resourceId);
 				await drop(row.id);
 			}
 		}
