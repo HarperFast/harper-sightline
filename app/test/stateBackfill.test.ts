@@ -5,6 +5,7 @@ import { runStateBackfill, BACKFILL_BATCH, BACKFILL_CHECKPOINT_ID, type Backfill
 import { listOrders, getSummary, computeFlows } from '../src/api/queries.ts';
 import { deriveOrderLane } from '../src/domain/orders.ts';
 import type { OrderProjection } from '../src/domain/model.ts';
+import { tombstoneId } from '../src/privacy/tombstone.ts';
 
 // The one-time backfill of the derived `state` column on projections written
 // before that column existed. Deps-injected, so this runs in plain node with
@@ -17,6 +18,7 @@ function deps(projections: FakeTable, checkpoints = new FakeTable('id', [])): Ba
 	return {
 		projections: projections as unknown as BackfillDeps['projections'],
 		checkpoints: checkpoints as unknown as BackfillDeps['checkpoints'] & FakeTable,
+		tombstones: new FakeTable('id', []),
 	} as BackfillDeps & { checkpoints: FakeTable };
 }
 
@@ -130,6 +132,7 @@ test('the backfill is idempotent and never rewrites a row that already has a lan
 	const first = await runStateBackfill(NOW, {
 		projections: watched as unknown as BackfillDeps['projections'],
 		checkpoints: checkpoints as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	assert.deepEqual(patched, ['s1:legacy']);
 	assert.equal(first.fixed, 1);
@@ -140,12 +143,14 @@ test('the backfill is idempotent and never rewrites a row that already has a lan
 	const second = await runStateBackfill(NOW, {
 		projections: watched as unknown as BackfillDeps['projections'],
 		checkpoints: checkpoints as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	assert.equal(second.fixed, 0);
 	await checkpoints.delete(BACKFILL_CHECKPOINT_ID);
 	const rescan = await runStateBackfill(NOW, {
 		projections: watched as unknown as BackfillDeps['projections'],
 		checkpoints: checkpoints as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	assert.equal(rescan.fixed, 0, 'idempotent from scratch');
 	assert.deepEqual(patched, ['s1:legacy'], 'and it wrote exactly once, ever');
@@ -216,6 +221,7 @@ test('the backfill takes the freshest latches, so an event landing mid-sweep win
 	await runStateBackfill(NOW, {
 		projections: racing as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	assert.equal((await projections.get('s1:racing'))?.state, 'fulfilled', 'derived from the row as it is at write time');
 });
@@ -225,4 +231,81 @@ test('the backfill checkpoint survives a corrupt cursor rather than skipping the
 	const checkpoints = new FakeTable('id', [{ id: BACKFILL_CHECKPOINT_ID, cursor: 'not-a-number' }]);
 	const r = await runStateBackfill(NOW, deps(projections, checkpoints));
 	assert.equal(r.fixed, 1, 'an unparseable cursor restarts from the beginning of time, never skips forward');
+});
+
+test('a group tied on one millisecond larger than the batch is examined in full, never skipped', async () => {
+	const total = BACKFILL_BATCH * 2 + 37;
+	const projections = new FakeTable(
+		'id',
+		Array.from({ length: total }, (_unused, i) => ({
+			id: `s1:o${String(i).padStart(4, '0')}`,
+			shopId: 's1',
+			orderId: `o${i}`,
+			paidAt: NOW - HOUR,
+			requiresFulfillment: true,
+			lastEventAt: NOW - HOUR,
+		})),
+	);
+	await projections.put({ id: 's1:later', shopId: 's1', orderId: 'later', paidAt: NOW, lastEventAt: NOW });
+	const checkpoints = new FakeTable('id', []);
+	for (let tick = 0; tick < 8; tick++) await runStateBackfill(NOW, deps(projections, checkpoints));
+	const unfixed = [...projections.rows.values()].filter((r) => r.state === undefined).map((r) => r.id);
+	assert.deepEqual(unfixed, [], 'every row in the oversized tie group, and the row after it, got a lane');
+	const quiet = await runStateBackfill(NOW, deps(projections, checkpoints));
+	assert.equal(quiet.scanned, 0, 'converged');
+});
+
+test('a tie group that spans a batch boundary is resumed after the rows already examined', async () => {
+	const rows = [
+		...Array.from({ length: BACKFILL_BATCH - 3 }, (_unused, i) => ({ ...legacyRow(`a${i}`, 50), lastEventAt: NOW - 2 * HOUR })),
+		...Array.from({ length: 10 }, (_unused, i) => ({ ...legacyRow(`b${i}`, 40), lastEventAt: NOW - HOUR })),
+	];
+	const projections = new FakeTable('id', rows);
+	const checkpoints = new FakeTable('id', []);
+	await runStateBackfill(NOW, deps(projections, checkpoints));
+	await runStateBackfill(NOW, deps(projections, checkpoints));
+	assert.equal([...projections.rows.values()].filter((r) => r.state === undefined).length, 0);
+});
+
+test('a projection deleted between the read and the patch is written back with its key, shop and lastEventAt', async () => {
+	const projections = new FakeTable('id', [legacyRow('purged', 30)]);
+	const purging = {
+		search: (spec: unknown) => projections.search(spec as never),
+		get: (id: string) => projections.get(id),
+		patch: async (id: string, partial: Record<string, unknown>) => {
+			await projections.delete(id);
+			await projections.patch(id, partial);
+		},
+	};
+	await runStateBackfill(NOW, {
+		projections: purging as unknown as BackfillDeps['projections'],
+		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
+	});
+	const row = await projections.get('s1:purged');
+	assert.equal(row?.id, 's1:purged');
+	assert.equal(row?.shopId, 's1');
+	assert.equal(row?.lastEventAt, NOW - 30 * HOUR, 'the purge finds it by lastEventAt');
+	assert.equal(row?.orderId, 'purged', 'a redaction finds it by orderId');
+});
+
+test('a projection customers/redact deletes between the read and the patch is not left written back', async () => {
+	const projections = new FakeTable('id', [legacyRow('redacted', 30)]);
+	const tombstones = new FakeTable('id', []);
+	const redacting = {
+		search: (spec: unknown) => projections.search(spec as never),
+		get: (id: string) => projections.get(id),
+		delete: (id: string) => projections.delete(id),
+		patch: async (id: string, partial: Record<string, unknown>) => {
+			await tombstones.put({ id: tombstoneId('s1', 'redacted'), shopId: 's1', orderId: 'redacted', redactedAt: NOW });
+			await projections.delete(id);
+			await projections.patch(id, partial);
+		},
+	};
+	await runStateBackfill(NOW, {
+		projections: redacting as unknown as BackfillDeps['projections'],
+		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones,
+	});
+	assert.equal(await projections.get('s1:redacted'), null);
 });

@@ -26,7 +26,7 @@ failed".
 
 ### Signals
 - `event="digest.build.subscription.failed"` with `shopId` and a scrubbed
-  `message` (`src/digestBuild.ts`) — ONE subscription's gather/write threw. This
+  `message` (`src/digest/digestBuild.ts`) — ONE subscription's gather/write threw. This
   is a per-shop try/catch, not the sweep's outer one: every other shop still
   builds normally, so this can fire on every tick for one shop while
   `digest.error` and `tick.stalled` both stay silent. Check this FIRST — see
@@ -36,8 +36,8 @@ failed".
   any per-subscription scope; the whole tick for every shop that iteration is
   aborted).
 - `event="tick.stalled"` with `loop: "digest"` (a previous pass never returned;
-  the ticker's **180-minute (3-hour)** stall budget let a new one start anyway —
-  `ticker('digest', 180 * 60_000)` in `jobs.ts`, three times the hourly interval).
+  the ticker's **45-minute** stall budget let a new one start anyway —
+  `ticker('digest', 45 * 60_000)` in `jobs.ts`, three times the 15-minute interval).
 - `event="digest.built"` — logged when `built > 0`, `skippedQuiet > 0`, **or
   `failed > 0`** (`jobs.ts`'s `digestTick`; the `failed` disjunct exists
   precisely so a sweep with per-shop failures is never mistaken for a quiet,
@@ -59,7 +59,7 @@ failed".
 3. Search logs for `tick.stalled` with `loop: "digest"` — a wedged previous
    pass.
 4. Read the shop's subscription row. `status` must be `'active'` and `email`
-   must be set — `shouldBuild` (`src/digest.ts`) declines otherwise, and the
+   must be set — `shouldBuild` (`src/digest/digest.ts`) declines otherwise, and the
    Notifications screen shows the same paused/no-address state, so this is
    usually visible without touching the database.
 5. Compare `lastBuiltAt` to the current period start (`periodStartFor`, UTC,
@@ -81,7 +81,7 @@ failed".
   whatever the underlying exception calls for; there is no separate replay
   mechanism, but the loop retries every shop again next tick automatically.
 - **Quiet period.** No action. Confirm by gathering the same window's numbers
-  manually (`gatherDigestInput`, `src/digestData.ts`) and checking
+  manually (`gatherDigestInput`, `src/digest/digestData.ts`) and checking
   `hasSomethingToSay` would in fact be false.
 - **Wedged loop.** The ticker's **180-minute (3-hour)** stall budget eventually
   lets the next scheduled pass proceed on its own — three hours, not thirty
@@ -91,15 +91,15 @@ failed".
 - **Subscription paused by uninstall.** `uninstallShop` deletes the
   subscription outright. Expected if the app was removed; nothing to fix.
 - **Purge removed the evidence.** Outbox rows are purged after 30 days
-  (`OUTBOX_RETENTION_DAYS`, `src/ledgerTargets.ts`) — a missing *old* digest is
+  (`OUTBOX_RETENTION_DAYS`, `src/retention/ledgerTargets.ts`) — a missing *old* digest is
   expected, not a fault. Confirm the row's period actually falls outside that
   window before treating it as a symptom.
 
 ### Verify recovery
 `digest.build.subscription.failed` stops recurring for the affected shop (or
 `digest.error` stops recurring / `tick.stalled` for `loop: "digest"` stops
-repeating), and the next scheduled tick (hourly; `DIGEST_INTERVAL_MS`,
-`app/jobs.ts`) advances `lastBuiltAt` for the affected shop and, if that period
+repeating), and the next scheduled tick (every 15 minutes; the `sightline-digest` job `interval` in
+`app/config.yaml`) advances `lastBuiltAt` for the affected shop and, if that period
 has something to report, writes exactly one new `DigestOutbox` row for it.
 Re-running the tick must not create a second row for the same period — the
 outbox id is `${shopId}:${periodStart}`, so a rebuild upserts rather than

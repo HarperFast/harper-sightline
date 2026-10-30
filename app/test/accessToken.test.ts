@@ -44,8 +44,7 @@ test('a token inside the refresh margin is rotated BEFORE it can 401', async () 
 });
 
 test('an already-expired token is rotated rather than handed to Shopify', async () => {
-	// This is the live bug: previously the expired token was returned unchecked and
-	// the Admin API 401 froze lastReconciledAt.
+	// An expired token must be rotated, not sent to Shopify to 401.
 	const { d, calls } = deps({ accessTokenEnc: '{}', status: 'active', expiresAt: NOW - 60_000 });
 	assert.equal(await getUsableAccessToken(d, 's1', NOW), 'tok-live');
 	assert.ok(calls.includes('rotate:s1'));

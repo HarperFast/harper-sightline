@@ -12,13 +12,14 @@ import {
 	getSetup,
 	listOrders,
 	getOrderDetail,
+	TENANT_SCAN_LIMIT,
 } from '../src/api/queries.ts';
 import { detectorKey } from '../src/domain/detector.ts';
-import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/api/apiContract.ts';
+import { decodeCursor, encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/api/apiContract.ts';
 import { EXPORT_COLUMNS } from '../src/api/csv.ts';
 import { applySubscriptionUpdate } from '../src/digest/digestSubscription.ts';
 
-// Adversarial tenant-isolation suite (#23, threat model §4). Two shops:
+// Adversarial tenant-isolation suite (threat model §4). Two shops:
 // `victim` and `attacker`. The attacker deliberately (a) reuses the victim's
 // order id `o1`/`o2` and SKU, and (b) holds MORE rows, so any broken scope leaks
 // a row or inflates an aggregate. Every read endpoint is attacked with the
@@ -218,6 +219,55 @@ test('listEvents: a cursor crafted from the attacker boundary still yields only 
 	assert.deepEqual(idsOf(page), ['v:e2', 'v:e1']);
 });
 
+async function allPages(fetchPage: (cursor?: string) => ReturnType<typeof listEvents>) {
+	const ids: unknown[] = [];
+	const cursorIds: string[] = [];
+	let cursor: string | undefined;
+	for (let n = 0; n < 20; n++) {
+		const page = await fetchPage(cursor);
+		ids.push(...page.items.map((i) => i.eventId));
+		if (!page.nextCursor) break;
+		cursorIds.push(decodeCursor(page.nextCursor)?.id ?? '');
+		cursor = page.nextCursor;
+	}
+	return { ids, cursorIds };
+}
+
+test('listEvents by resourceId: pages hold only the caller, are never short because another shop has newer rows, and no cursor names another shop', async () => {
+	const { events } = world();
+	// Sorted newest first, o1 is a:e1, v:e2, a:e3, v:e1: an attacker row leads and sits between the victim's.
+	const { ids, cursorIds } = await allPages((cursor) => listEvents(events, V, NOW, { resourceId: 'o1', limit: 1, cursor }));
+	assert.deepEqual(ids, ['v:e2', 'v:e1']);
+	assert.ok(cursorIds.length > 0 && cursorIds.every((id) => id.startsWith('v:')), `cursors named ${cursorIds.join(', ')}`);
+
+	assert.deepEqual(await listEvents(events, V, NOW, { resourceId: 'invX', limit: 1 }), { items: [], nextCursor: undefined });
+});
+
+test('listEvents by resourceId and sku: the EventSku cursor never names another shop', async () => {
+	const { events } = world();
+	const eventSkus = new FakeTable('id', [
+		{ id: 'v:e1:SKU-1', shopId: V, eventId: 'v:e1', sku: 'SKU-1', resourceId: 'o1', occurredAt: NOW - 1000 },
+		{ id: 'a:e1:SKU-1', shopId: A, eventId: 'a:e1', sku: 'SKU-1', resourceId: 'o1', occurredAt: NOW - 100 },
+	]);
+	const { ids, cursorIds } = await allPages((cursor) =>
+		listEvents(events, V, NOW, { resourceId: 'o1', sku: 'SKU-1', limit: 1, cursor }, eventSkus),
+	);
+	assert.deepEqual(ids, ['v:e1']);
+	assert.ok(
+		cursorIds.every((id) => id.startsWith('v:')),
+		`cursors named ${cursorIds.join(', ')}`,
+	);
+});
+
+test('listEvents by resourceId: past the tenant scan cap the page ends without a cursor', async () => {
+	const { events } = world();
+	for (let i = 0; i < TENANT_SCAN_LIMIT; i++) {
+		await events.put({ eventId: `a:flood${i}`, shopId: A, domain: 'order', resourceId: 'o1', occurredAt: NOW - 50, receivedAt: NOW - 50 });
+	}
+	const page = await listEvents(events, V, NOW, { resourceId: 'o1', limit: 1 });
+	assert.deepEqual(page, { items: [], nextCursor: undefined });
+});
+
 test('getEventDetail: victim cannot read an attacker event by its real id', async () => {
 	const { events, projections, findings } = world();
 	for (const id of ['a:e1', 'a:e2', 'a:e3', 'a:e4']) {
@@ -369,7 +419,7 @@ test('listOrders: hostile filters cannot widen the attacker result set beyond it
 	assert.equal(lane.items[0].paidAt, NOW - 50, "the attacker's own o4, not the victim's");
 });
 
-// The digest subscription endpoint (#24) — the app's first and only write
+// The digest subscription endpoint, the app's only write
 // surface. shopId is derived from the verified principal and passed as its own
 // argument; a shopId (or lastBuiltAt/createdAt) carried in the body must be
 // unable to retarget or backdate another tenant's row.

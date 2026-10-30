@@ -5,8 +5,8 @@ import { readShopifySecret } from '../secrets/readSecret.ts';
 import { SHOPIFY_API_KEY } from '../secrets/readSecret.ts';
 import type { TokenDeps } from './accessToken.ts';
 
-// Harper-backed wiring for accessToken.ts. Kept separate from accessToken.ts so
-// the resolution logic stays unit-testable without the Harper runtime.
+// Harper-backed wiring for accessToken.ts, kept separate so that logic is testable
+// without the Harper runtime.
 
 // The shop id IS the myshopify domain, which is what the refresh endpoint wants.
 export async function rotateShopCredential(shopId: string): Promise<boolean> {

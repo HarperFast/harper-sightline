@@ -1,26 +1,20 @@
-// The identity adapter every authenticated resource shares, plus the session
-// payload the SPA boots from. shopId is always derived from the verified
-// principal, never from caller input (threat model §4).
+// The identity adapter every authenticated resource shares, plus the session payload
+// the SPA boots from. shopId comes from the verified principal (threat model §4).
 import { createShopifyIdentityAdapter } from '../auth/identity.ts';
 import { capabilitiesFor } from '../auth/capabilities.ts';
 import { supportContact } from '../privacy/support.ts';
 import { SHOPIFY_API_KEY } from '../secrets/readSecret.ts';
 import { Shops as ShopsTable } from '../db.ts';
 
-// Public app API key (client_id) — not a secret. Sourced from readSecret.ts so the
-// literal cannot drift between here and background token rotation.
+// Public client_id, not a secret; shared with background token rotation via readSecret.ts.
 export const API_KEY = SHOPIFY_API_KEY;
 export const VERSION = '0.1.0';
 
 export const identity = createShopifyIdentityAdapter({ apiKey: API_KEY });
 
-// Verifies the Shopify session token via the identity adapter and returns the
-// tenant identity + capability profile. shopId is derived from the verified
-// principal, never from caller input (threat model §4).
-// The session payload the SPA boots from. `timezone` is the store's configured
-// IANA zone, cached by the reconcile sweep — it is absent until the first sweep
-// completes, and the SPA falls back to the viewer's zone (labelling whichever it
-// used) so a timestamp is never shown against an unstated zone.
+// Verifies the session token and returns the tenant identity and capabilities.
+// `timezone` is cached by the reconcile sweep and absent until the first one
+// completes; the SPA then labels whichever zone it falls back to.
 export async function sessionPayload(shopId: string, userId: string): Promise<Record<string, unknown>> {
 	const shop = await ShopsTable.get(shopId);
 	return {
@@ -28,9 +22,7 @@ export async function sessionPayload(shopId: string, userId: string): Promise<Re
 		user: userId,
 		capabilities: capabilitiesFor(shopId),
 		...(shop?.ianaTimezone ? { timezone: shop.ianaTimezone } : {}),
-		// Merchant-facing support contact, so the UI can offer help on the screens
-		// where a merchant is actually stuck. Absent when unconfigured — never a
-		// fabricated address (src/privacy/support.ts).
+		// Absent when unconfigured, never fabricated (src/privacy/support.ts).
 		support: supportContact(),
 	};
 }

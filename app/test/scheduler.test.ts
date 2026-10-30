@@ -11,10 +11,9 @@ import { readFileSync } from 'node:fs';
 // wiring's shape from the outside.
 //
 // This is a SOURCE-level check on purpose. Importing jobs.ts to read the exports
-// directly would start the 10s processing interval and the purge's post-deploy
-// timer inside the test process — which is precisely why every sweep's logic
-// lives in a deps-injected module (see src/retention/purgeCycle.ts's note) and
-// why no other test imports jobs.ts either.
+// directly would start the purge's post-deploy timer inside the test process —
+// which is precisely why every sweep's logic lives in a deps-injected module (see
+// src/retention/purgeCycle.ts's note) and why no other test imports jobs.ts either.
 
 const config = readFileSync(new URL('../config.yaml', import.meta.url), 'utf8');
 const jobsSource = readFileSync(new URL('../jobs.ts', import.meta.url), 'utf8');
@@ -34,15 +33,16 @@ function declaredJobs(): Array<{ name: string; schedule: string; handler: string
 	return out;
 }
 
-test('the scheduler block declares the seven sweeps that moved off setInterval', () => {
+test('the scheduler block declares all eight sweeps', () => {
 	const jobs = declaredJobs();
-	assert.equal(jobs.length, 7, `expected 7 scheduler jobs, parsed ${jobs.length}: ${jobs.map((j) => j.name).join(', ')}`);
+	assert.equal(jobs.length, 8, `expected 8 scheduler jobs, parsed ${jobs.length}: ${jobs.map((j) => j.name).join(', ')}`);
 	const names = jobs.map((j) => j.name).sort();
 	assert.deepEqual(names, [
 		'sightline-detect',
 		'sightline-digest',
 		'sightline-inventory-enrich',
 		'sightline-ops-snapshot',
+		'sightline-process',
 		'sightline-purge',
 		'sightline-reconcile',
 		'sightline-state-backfill',
@@ -64,6 +64,13 @@ test('every declared handler names an export that actually exists in jobs.ts', (
 	}
 });
 
+test('every exported job handler in jobs.ts is declared in config.yaml', () => {
+	const declared = new Set(declaredJobs().map((j) => j.handler.split('#')[1]));
+	const exported = [...jobsSource.matchAll(/^export const (\w+) = job\(/gm)].map((m) => m[1]);
+	assert.ok(exported.length > 0, 'found no `export const X = job(` handlers in jobs.ts');
+	for (const name of exported) assert.ok(declared.has(name), `jobs.ts exports ${name} but config.yaml never schedules it`);
+});
+
 test('every job handler is registered exactly once', () => {
 	// Two jobs sharing a handler means one sweep runs at two cadences — cheap to
 	// introduce by copy-paste when adding a job, invisible afterwards.
@@ -79,29 +86,42 @@ test('schedules stay within the scheduler intervals Harper accepts', () => {
 	}
 });
 
-test('the 10s processing loop is NOT on the scheduler, and is still started on import', () => {
-	// The deliberate exception, documented under SCHEDULING in jobs.ts: a ~6.5-minute
-	// leader failover would park deliveries past BACKLOG_STALE_MS (5 min) and trip
-	// the health snapshot on every leader change. If someone later moves it, this
-	// test should fail and make them re-read that reasoning first.
+test('delivery processing runs on the scheduler every 10s, and nothing starts a timer of its own', () => {
+	const process = declaredJobs().find((j) => j.name === 'sightline-process');
+	assert.deepEqual(process, { name: 'sightline-process', schedule: '10s', handler: './jobs.ts#processDeliveriesJob' });
+	// A stray setInterval puts that sweep back on every worker thread of every node,
+	// in addition to the leader's occurrence.
+	assert.doesNotMatch(jobsSource, /setInterval\(/, 'jobs.ts must not start interval timers; declare a scheduler job instead');
+	assert.doesNotMatch(jobsSource, /startProcessingLoop/);
+});
+
+// A boot pass started from module load ran on every worker thread: on 2 threads both
+// passes deleted the same keys and each reported 40k for 10k rows per table, and on
+// Fabric that is threads x nodes overlapping purges per restart.
+test('the purge runs only as the leader-coordinated scheduler job, every 5 minutes', () => {
+	assert.doesNotMatch(jobsSource, /startPurgeBootPass|setTimeout\(/, 'jobs.ts must not start a purge (or any timer) on every thread');
+	// Short enough that a never-run job, which re-anchors to now + interval on each
+	// restart, is not postponed for long by restarts.
+	assert.equal(declaredJobs().find((j) => j.name === 'sightline-purge')?.schedule, '5m');
+});
+
+test('the processing time budget is shorter than the interval it runs on', () => {
+	const UNIT_MS: Record<string, number> = { '': 1_000, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+	const [, amount, unit] = /^(\d+)([smhd]?)$/.exec(declaredJobs().find((j) => j.name === 'sightline-process')?.schedule ?? '') ?? [];
+	const budget = /^const PROCESS_BUDGET_MS = ([\d_]+);$/m.exec(jobsSource)?.[1];
+	assert.ok(amount && budget, 'could not read the sightline-process interval or PROCESS_BUDGET_MS');
 	assert.ok(
-		!declaredJobs().some((j) => /process/i.test(j.handler)),
-		'the delivery-processing loop must stay a per-node setInterval — see SCHEDULING in jobs.ts',
-	);
-	assert.match(jobsSource, /^startProcessingLoop\(\);$/m, 'jobs.ts must still start the processing loop on import');
-	assert.match(
-		jobsSource,
-		/^startPurgeBootPass\(\);$/m,
-		'the purge keeps one post-deploy pass; the scheduler does not fire a new job on deploy',
+		Number(budget.replaceAll('_', '')) < Number(amount) * UNIT_MS[unit],
+		'PROCESS_BUDGET_MS must leave headroom inside the interval',
 	);
 });
 
-test('no sweep is left starting its own interval timer', () => {
-	// The regression this whole change prevents: a stray setInterval means that
-	// sweep is back to running on every worker thread on every node, in addition to
-	// the leader-coordinated occurrence.
-	const intervals = jobsSource.match(/setInterval\(/g) ?? [];
-	assert.equal(intervals.length, 1, `expected exactly one setInterval (the processing loop), found ${intervals.length}`);
+// A never-run job re-anchors to now + interval on every restart, so an hourly digest
+// can be postponed indefinitely by restarts under an hour apart. shouldBuild gates the
+// cadence, so a short interval costs one cheap scan.
+test('the digest sweep runs every 15 minutes', () => {
+	assert.equal(declaredJobs().find((j) => j.name === 'sightline-digest')?.schedule, '15m');
+	assert.match(jobsSource, /^const digestTicker = ticker\('digest', 45 \* 60_000\);$/m, 'stall budget is 3x the interval');
 });
 
 test('config.yaml declares the secrets the component cannot run without', () => {

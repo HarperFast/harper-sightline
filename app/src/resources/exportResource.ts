@@ -2,28 +2,28 @@ import { Resource } from 'harper';
 import { listEvents, listFindings, listOrders } from '../api/queries.ts';
 import { collectExportRows, EXPORT_COLUMNS, MAX_EXPORT_ROWS, exportFilename, toCsv } from '../api/csv.ts';
 import { MAX_LIMIT } from '../api/apiContract.ts';
+import { createExportGate, EXPORT_BUSY_RETRY_SECONDS, exportBusyResponse, runExclusive } from '../api/exportGate.ts';
 import { createRateLimiter, EXPORTS_PER_MINUTE, RateLimitError } from '../auth/rateLimit.ts';
 import { log, M, metrics } from '../observability/observe.ts';
+import type { RequestLike } from '../auth/identity.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { EventsQ, FindingsQ, ExpectationsQ, ProjectionsQ, EventSkusQ } from './tables.ts';
 
-// Export gets its own, much tighter limit on top of the per-shop request limit in
-// the identity adapter: it is the only read whose cost is not proportional to what
-// the caller asked for (see EXPORTS_PER_MINUTE). Module scope, so the counter
-// survives between requests — a per-request limiter would count to one forever.
+// A much tighter limit than the per-shop request limit, since export is the one read
+// whose cost is not proportional to the request (EXPORTS_PER_MINUTE). Module scope so
+// the counter survives between requests.
 const exportLimiter = createRateLimiter({ limit: EXPORTS_PER_MINUTE });
 
-// CSV export of any filtered list. The one differentiator over Shopify's own
-// activity log that a merchant can hold in their hand — the log is view-only,
-// non-exportable, and capped at 250 rows.
-//
-// Authenticated by the same session token as every other read, which is why the
-// SPA fetches this and downloads from a blob rather than linking directly: a
-// browser navigation cannot carry the X-Shopify-Session-Token header.
-//
-// Bounded at MAX_EXPORT_ROWS. A truncated export SAYS SO in a response header and
-// in the UI — silent truncation would read as "this is everything".
+// One export in flight per worker thread, across all shops (src/api/exportGate.ts).
+// Taken before the per-shop limiter so a refusal for being busy does not spend the
+// shop's export budget.
+const exportGate = createExportGate();
+
+// CSV export of any filtered list. The SPA fetches it and downloads from a blob,
+// since a browser navigation cannot carry the X-Shopify-Session-Token header.
+// Bounded at MAX_EXPORT_ROWS; a truncated export says so in a response header and
+// the UI, because silent truncation reads as "this is everything".
 export class ExportResource extends Resource {
 	static path = '/api/v1/export';
 	allowRead() {
@@ -36,21 +36,30 @@ export class ExportResource extends Resource {
 		const raw = trailingId(url.pathname, '/api/v1/export') ?? '';
 		const kind = raw.replace(/\.csv$/, '');
 		if (kind !== 'events' && kind !== 'findings' && kind !== 'orders') throw httpError('unknown export kind', 404);
+		return runExclusive(
+			exportGate,
+			() => this.buildExport(shopId, kind, url),
+			() => {
+				metrics.inc(M.exportBusy);
+				log('warn', 'export.busy', { kind, retryAfterSeconds: EXPORT_BUSY_RETRY_SECONDS });
+				return exportBusyResponse();
+			},
+		);
+	}
 
+	private async buildExport(shopId: string, kind: 'events' | 'findings' | 'orders', url: URL): Promise<Response> {
 		const now = Date.now();
-		// Checked after the kind is known, so a typo'd path spends no budget.
 		const decision = exportLimiter.check(shopId, now);
 		if (!decision.allowed) {
 			metrics.inc(M.rateLimitedExports);
 			log('warn', 'export.rate_limited', { kind, retryAfterSeconds: decision.retryAfterSeconds });
+			(this.getContext() as RequestLike).responseHeaders?.set('Retry-After', String(decision.retryAfterSeconds));
 			throw new RateLimitError('exports', decision.retryAfterSeconds);
 		}
 		const p = url.searchParams;
-		// One page-fetching closure per kind, over the SAME query functions the
-		// screens use, so an export can never see a row the UI could not, and
-		// tenant scoping is identical. collectExportRows (src/api/csv.ts) owns the
-		// accumulate-until-cap loop and the truncation determination — pure and
-		// unit-tested, since a Resource class needs the Harper runtime to test.
+		// Closures over the same query functions the screens use, so an export sees no row
+		// the UI could not. collectExportRows (src/api/csv.ts) owns the cap and truncation
+		// logic, which is unit-tested because a Resource class needs the Harper runtime.
 		const fetchPage = (cursor: string | undefined) => {
 			if (kind === 'events') {
 				return listEvents(

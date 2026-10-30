@@ -85,15 +85,15 @@ test('shop redaction erases the notification subscription and the digest outbox'
 		],
 		's1',
 	);
-	assert.equal(await subscriptions.get('s1'), undefined);
-	assert.equal(await outbox.get('s1:100'), undefined);
+	assert.equal(await subscriptions.get('s1'), null);
+	assert.equal(await outbox.get('s1:100'), null);
 	// The other tenant is untouched.
-	assert.notEqual(await subscriptions.get('s2'), undefined);
-	assert.notEqual(await outbox.get('s2:100'), undefined);
+	assert.notEqual(await subscriptions.get('s2'), null);
+	assert.notEqual(await outbox.get('s2:100'), null);
 });
 
 test('customer redaction does NOT touch digest tables — they carry no customer linkage', async () => {
 	const subscriptions = new FakeTable('shopId', [{ shopId: 's1', email: 'ops@merchant.example', status: 'active' }]);
 	await redactOrders([{ name: 'DigestSubscription', keyField: 'shopId', shopField: 'shopId', table: subscriptions }], 's1', ['o1']);
-	assert.notEqual(await subscriptions.get('s1'), undefined);
+	assert.notEqual(await subscriptions.get('s1'), null);
 });

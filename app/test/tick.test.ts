@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTicker } from '../src/jobs/tick.ts';
+import { setLogSink, type LogLevel } from '../src/observability/observe.ts';
 import { ADMIN_TIMEOUT_MS, fetchOrdersUpdatedSince } from '../src/shopify/adminApi.ts';
 
 // The failure this guards against: a background loop whose pass never settles
@@ -102,6 +103,62 @@ test('isRunning reports a stalled pass as not running', async () => {
 	ticker.run(() => pending().promise, T0);
 	assert.equal(ticker.isRunning(T0 + STALL - 1), true);
 	assert.equal(ticker.isRunning(T0 + STALL), false, 'past the budget it is presumed stuck, not running');
+});
+
+test('runBounded releases a caller that serialises on it once the pass is presumed stuck', async () => {
+	// Harper's scheduler awaits a handler before arming the next occurrence. If
+	// the handler awaited a hung pass, the job would never fire again and the stall
+	// check above would never be reached.
+	const stalls: string[] = [];
+	const ticker = createTicker({ name: 'process', stallMs: 20, onStall: (n) => stalls.push(n) });
+	let starts = 0;
+	const hung = () => {
+		starts++;
+		return pending().promise;
+	};
+
+	const first = ticker.runBounded(hung);
+	assert.notEqual(first, null);
+	await first;
+	await new Promise((r) => setTimeout(r, 5));
+	const second = ticker.runBounded(hung);
+	assert.notEqual(second, null, 'the next occurrence reaches the stall check and starts a new pass');
+	await second;
+	assert.equal(starts, 2);
+	assert.deepEqual(stalls, ['process']);
+});
+
+test('runBounded settles with the pass when it finishes in time', async () => {
+	const ticker = createTicker({ name: 'x', stallMs: STALL });
+	let done = false;
+	await ticker.runBounded(async () => {
+		done = true;
+	});
+	assert.equal(done, true);
+	await assert.rejects(ticker.runBounded(() => Promise.reject(new Error('boom'))) as Promise<void>, /boom/);
+});
+
+test('a pass that rejects after the stall timer released the caller is logged at warn, not thrown', async () => {
+	const lines: Array<{ level: LogLevel; line: string }> = [];
+	setLogSink((level, line) => lines.push({ level, line }));
+	try {
+		const ticker = createTicker({ name: 'late', stallMs: 10 });
+		let reject!: (e: Error) => void;
+		const pass = new Promise<void>((_, r) => {
+			reject = r;
+		});
+		await ticker.runBounded(() => pass);
+		reject(new Error('late boom'));
+		await new Promise((r) => setTimeout(r, 5));
+		assert.equal(lines.length, 1);
+		assert.equal(lines[0].level, 'warn');
+		const record = JSON.parse(lines[0].line.replace('[sightline] ', ''));
+		assert.equal(record.event, 'tick.late_rejection');
+		assert.equal(record.loop, 'late');
+		assert.match(record.message, /late boom/);
+	} finally {
+		setLogSink(null);
+	}
 });
 
 // ── the root cause: an unbounded external call ───────────────────────────────

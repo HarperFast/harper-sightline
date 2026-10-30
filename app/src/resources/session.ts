@@ -9,7 +9,6 @@ export class Session extends Resource {
 	}
 	async get() {
 		const principal = await identity.authenticate(this.getContext());
-		// Bootstrap the shop record on first authenticated call (no token exchange).
 		await ensureShopRecord(principal.shopId);
 		return sessionPayload(principal.shopId, principal.userId);
 	}

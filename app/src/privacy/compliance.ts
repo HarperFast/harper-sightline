@@ -1,12 +1,15 @@
-// Shopify mandatory privacy webhooks (#21): customers/data_request,
-// customers/redact, shop/redact. HMAC verification + parsing happen in the
-// resource; this is the pure dispatcher (injected side effects → testable).
-// Every branch is retry-safe: redaction is idempotent (delete-by-condition) and
-// audits are keyed by webhook id.
+// Mandatory privacy webhooks (customers/data_request, customers/redact, shop/redact).
+// The resource verifies the HMAC and parses; this is the pure dispatcher. Retry-safe:
+// redaction is idempotent and audits are keyed by webhook id.
 
 export interface ComplianceDeps {
 	redactShop(shopId: string): Promise<{ deleted: number; failures: string[] }>;
 	redactOrders(shopId: string, orderIds: string[]): Promise<{ deleted: number; failures: string[] }>;
+	// Tombstones (src/privacy/tombstone.ts) make the worker drop a delivery for the
+	// request that is still queued or mid-write, which the deletes cannot reach.
+	tombstoneOrders(shopId: string, orderIds: string[]): Promise<void>;
+	tombstoneShop(shopId: string): Promise<void>;
+	scrubDeliveries(shopId: string, orderIds: string[]): Promise<{ scrubbed: number; capped: boolean }>;
 	audit(action: string, shopId: string, detail: Record<string, unknown>): Promise<void>;
 }
 
@@ -16,10 +19,10 @@ export interface ComplianceResult {
 	topic: string;
 	action: ComplianceAction;
 	deleted?: number;
+	scrubbed?: number;
 	failures?: string[];
 }
 
-// Order ids from a compliance payload list field (numbers or strings → strings).
 function orderIds(payload: Record<string, unknown>, key: string): string[] {
 	const raw = payload[key];
 	if (!Array.isArray(raw)) return [];
@@ -34,22 +37,41 @@ export async function handleCompliance(
 ): Promise<ComplianceResult> {
 	switch (topic) {
 		case 'shop/redact': {
-			// Erase the whole tenant (~48h after uninstall). Idempotent.
+			// The erase deletes the shop's tombstones too, so the shop's is written on both
+			// sides of it: before, for deliveries in flight during the erase.
+			await deps.tombstoneShop(shopId);
 			const r = await deps.redactShop(shopId);
+			await deps.tombstoneShop(shopId);
 			await deps.audit('shop_redact', shopId, { deleted: r.deleted, failures: r.failures });
 			return { topic, action: 'shop_redact', deleted: r.deleted, failures: r.failures };
 		}
 		case 'customers/redact': {
-			// Remove records linked to the customer's orders. We hold no customer id,
-			// so `orders_to_redact` is the only customer-scoped key we can act on.
+			// No customer id is held, so `orders_to_redact` is the only key we can act on.
+			// Tombstone first, then scrub delivery bodies while the events that find them remain.
 			const ids = orderIds(payload, 'orders_to_redact');
+			await deps.tombstoneOrders(shopId, ids);
+			// The tombstone is the guarantee and the scrub only speeds it up, so a scrub that
+			// fails (e.g. its read snapshot expired under load) is reported and the erase still runs.
+			let scrub = { scrubbed: 0, capped: false };
+			const scrubFailures: string[] = [];
+			try {
+				scrub = await deps.scrubDeliveries(shopId, ids);
+			} catch (err) {
+				scrubFailures.push(`scrub: ${err instanceof Error ? err.message : String(err)}`);
+			}
 			const r = await deps.redactOrders(shopId, ids);
-			await deps.audit('customer_redact', shopId, { orderIds: ids, deleted: r.deleted, failures: r.failures });
-			return { topic, action: 'customer_redact', deleted: r.deleted, failures: r.failures };
+			const failures = [...scrubFailures, ...r.failures];
+			await deps.audit('customer_redact', shopId, {
+				orderIds: ids,
+				deleted: r.deleted,
+				scrubbed: scrub.scrubbed,
+				scrubCapped: scrub.capped,
+				failures,
+			});
+			return { topic, action: 'customer_redact', deleted: r.deleted, scrubbed: scrub.scrubbed, failures };
 		}
 		case 'customers/data_request': {
-			// Sightline stores no customer PII, so there is nothing to export. Record
-			// the request for the audit trail; provision (if any) is an ops process.
+			// No customer PII is stored, so there is nothing to export; record the request for audit.
 			await deps.audit('customer_data_request', shopId, { note: 'no customer PII stored', orders: orderIds(payload, 'orders_requested') });
 			return { topic, action: 'customer_data_request' };
 		}

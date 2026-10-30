@@ -4,9 +4,6 @@ import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { ProjectionsQ, EventsQ, FindingsQ } from './tables.ts';
 
-// The operational worklist (orders and one order's full observed history). Every
-// count on the Overview drills in here, so this is the endpoint that turns
-// aggregates into something a merchant can act on.
 export class OrdersResource extends Resource {
 	static path = '/api/v1/orders';
 	allowRead() {

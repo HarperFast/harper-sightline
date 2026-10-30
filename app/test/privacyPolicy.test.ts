@@ -83,11 +83,8 @@ test('the policy lists exactly the customer fields the code excludes', () => {
 
 test('the policy discloses exactly what IS stored, and no more', () => {
 	const html = privacyPolicyHtml({});
-	// A substring spot-check would still pass if an item were quietly dropped, or
-	// if a stored fact were never added at all — the exact failure mode that
-	// under-disclosed order value/currency and product/variant titles before this
-	// fix. Extracting and deep-equaling the actual "What we store" list closes
-	// that gap: it can only pass if the rendered list matches, item for item.
+	// Deep-equaling the extracted "What we store" list fails if an item is dropped or a
+	// stored fact was never added, which a substring spot-check would miss.
 	const section = html.match(/<h2>What we store<\/h2>\s*<ul>([\s\S]*?)<\/ul>/);
 	assert.ok(section, 'the "What we store" section must exist');
 	const items = [...section[1].matchAll(/<li>(.*?)<\/li>/g)].map((m) => m[1]);
@@ -177,8 +174,7 @@ test('the policy is a standalone document, not the embedded app shell', () => {
 	const html = privacyPolicyHtml({ email: 'help@example.com' });
 	assert.ok(html.startsWith('<!doctype html>'));
 	assert.ok(html.includes('<title>Privacy Policy'));
-	// A reviewer opens this in a normal tab — it must not depend on App Bridge or
-	// carry the app's frame-ancestors assumptions.
+	// Opens in a normal tab: no App Bridge dependency or frame-ancestors assumptions.
 	assert.ok(!html.includes('app-bridge'), 'no App Bridge dependency');
 	assert.ok(!html.includes('shopify-api-key'), 'no api key meta');
 	assert.ok(!html.includes('__SIGHTLINE_SESSION__'), 'no session injection');

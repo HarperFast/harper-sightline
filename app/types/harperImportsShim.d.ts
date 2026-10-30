@@ -18,3 +18,4 @@
 // of the runtime module.
 export { databases, type Table } from 'harper';
 export declare const secrets: Record<string, string | undefined>;
+export declare const transaction: <T>(work: () => Promise<T>) => Promise<T>;

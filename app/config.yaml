@@ -6,19 +6,11 @@ jsResource:
 # The SPA + assets are served by the AppHome resource (resources.ts) so the HTML
 # can carry a frame-ancestors CSP for embedding in Shopify Admin.
 
-# Secret material this component REQUIRES, declared so a misconfigured deploy
-# fails at component load with a NAMED reason (`missing` / `ungranted` /
-# `custody-unavailable`) instead of silently running on a weak fallback. That
-# named reason is the whole point: the previous design fell back to a hardcoded
-# dev secret and a publicly-derivable AES key, and the only signal was a log line
-# nobody read.
-#
-# All three are provisioned as SCOPED secrets (`set_secret` with
-# `grants: ['sightline']`, see scripts/set-secrets.mjs), not `processEnv: true`.
-# Scoped values are readable only through the per-component `secrets` accessor:
-# they never land in `process.env`, so they are absent from environment dumps,
-# child processes, and anything that enumerates the environment. `process.env`
-# remains a fallback in code for local dev and CI only.
+# Secret material this component requires, declared so a misconfigured deploy fails
+# at load with a named reason (`missing` / `ungranted` / `custody-unavailable`).
+# Provisioned as scoped secrets (`set_secret` with `grants: ['sightline']`, see
+# scripts/set-secrets.mjs), readable only through the `secrets` accessor and never
+# in `process.env`; `process.env` is a code fallback for local dev and CI only.
 env:
   # Shopify app secret. Verifies webhook HMACs (shopifyWebhook.ts,
   # complianceWebhook.ts) and embedded session tokens (identity.ts).
@@ -29,42 +21,25 @@ env:
   # treats it as absent.
   SIGHTLINE_OPS_TOKEN: { required: true, description: Operator token for /api/v1/ops }
 
-# Periodic background work. Seven of the eight loops that used to be
-# setInterval timers in jobs.ts now run here; see the "SCHEDULING" comment at the
-# top of jobs.ts for why the eighth (10s delivery processing) deliberately did
-# NOT move.
-#
-# WHY THIS IS BETTER THAN setInterval. jobs.ts is imported by
-# src/resources/boot.ts, so Harper used to start a full set of eight timers on
-# EVERY worker thread on EVERY node. Every thread swept every active shop through
-# the Admin API every 10 minutes; every thread ran the hourly purge. Correctness
-# was never the issue — every sweep is idempotent by construction (ADR-002) — but
-# the duplicated work scaled with threads x nodes for no benefit. Harper's
-# scheduler is leader-coordinated: each occurrence runs once, on one elected node.
-#
-# Handlers stay wrapped in createTicker (src/jobs/tick.ts). The scheduler
-# guarantees non-overlap per job on the leader, but documents no stall timeout,
-# and a hung handler on the leader now wedges that job CLUSTER-WIDE rather than
-# on one thread — so the stall backstop matters more here, not less.
-#
-# Every handler must be idempotent: the scheduler can deliver an occurrence twice
-# across a failover, and cron jobs make up one missed occurrence (catchUp).
-# That was already true of all seven.
+# Periodic background work: each occurrence runs once, on the elected leader (see
+# the comment at the top of jobs.ts). Handlers must be idempotent, since a
+# failover can deliver an occurrence twice.
 scheduler:
   jobs:
-    # One-time repair of the derived `state` column on projections written before
-    # it existed. Short interval so a deploy converges quickly, then it goes
-    # quiet — a converged pass reads one small batch and writes nothing.
+    # Processes accepted webhook deliveries: normalize -> ledger -> projection.
+    # jobs.ts's PROCESS_BUDGET_MS is sized to this interval; change them together.
+    - name: sightline-process
+      interval: 10s
+      handler: ./jobs.ts#processDeliveriesJob
+    # One-time repair of the derived `state` column; a converged pass writes nothing.
     - name: sightline-state-backfill
       interval: 1m
       handler: ./jobs.ts#stateBackfillJob
-    # Ops-health heartbeat: backlog age/count, dead letters, reconcile staleness,
-    # reauth. Emitted at warn when unhealthy so an alert can key off the level.
+    # Ops-health heartbeat, emitted at warn when unhealthy.
     - name: sightline-ops-snapshot
       interval: 1m
       handler: ./jobs.ts#opsSnapshotJob
-    # Expires pending expectations whose deadline passed with NO new event. The
-    # event-driven path in the processing loop already handles transitions.
+    # Expires pending expectations whose deadline passed with no new event.
     - name: sightline-detect
       interval: 5m
       handler: ./jobs.ts#detectJob
@@ -76,12 +51,15 @@ scheduler:
     - name: sightline-inventory-enrich
       interval: 15m
       handler: ./jobs.ts#inventoryEnrichJob
-    # Seven-day ledger purge + the outbox's own thirty-day purge (ADR-003).
+    # Seven-day ledger purge + the outbox's own thirty-day purge (ADR-003). No
+    # boot pass, so a short interval: a never-run job re-anchors to now + interval
+    # on every restart.
     - name: sightline-purge
-      interval: 1h
+      interval: 5m
       handler: ./jobs.ts#purgeJob
-    # Builds each subscriber's digest for the last COMPLETE period. Hourly tick;
-    # shouldBuild() does the real cadence gating, so cadence lives in data.
+    # Builds each subscriber's digest for the last complete period; shouldBuild()
+    # does the cadence gating, so the short interval is cheap and a restart cannot
+    # postpone a never-run job by an hour.
     - name: sightline-digest
-      interval: 1h
+      interval: 15m
       handler: ./jobs.ts#digestJob

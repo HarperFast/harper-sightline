@@ -1,17 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { processAcceptedBatch, type ProcessDeps, type DeliveryRow } from '../src/ingest/processor.ts';
+import { drainAccepted, type ProcessDeps, type DeliveryRow } from '../src/ingest/processor.ts';
 import { purgeExpired, cutoffMs, DAY_MS, type RetentionTarget } from '../src/retention/retention.ts';
 import { FakeTable } from './fakeTable.ts';
 import { listEvents, getSummary } from '../src/api/queries.ts';
 import { MAX_LIMIT } from '../src/api/apiContract.ts';
+import { listPendingIn } from './pendingRows.ts';
 
-// Reliability & capacity tests (#24). These prove the correctness invariants at
-// volume locally; the true production-like gates (10-min 100 rps burst, encrypted
-// backup/restore) run against the staged environment (#25) — see
-// docs/reliability-report.md. Timing assertions are deliberately generous: they
-// catch pathological (e.g. O(n^2)) regressions without flaking in CI; the report
-// records the actual measured numbers.
+// Reliability and capacity tests. They prove the correctness invariants at volume
+// locally; the production-like gates (10-min 100 rps burst, encrypted backup/restore)
+// run against the staged environment (docs/reliability-report.md). Timing
+// assertions are generous: they catch pathological (e.g. O(n^2)) regressions
+// without flaking in CI.
 
 // A durable inbox that persists across simulated worker restarts. `handle`
 // records an idempotent downstream effect keyed by delivery id, so a redelivered
@@ -30,10 +30,10 @@ function durableWorld(n: number) {
 	const failOnceMarks = new Set<string>();
 
 	const deps: ProcessDeps = {
-		async listAccepted(limit) {
-			return [...inbox.values()].filter((r) => r.status === 'accepted').slice(0, limit);
+		async listPending(after, limit) {
+			return listPendingIn(inbox.values(), after, limit);
 		},
-		async markProcessed(id) {
+		async markProcessed({ id }) {
 			// Simulate a crash *between* handle and the durable status write: the
 			// effect already happened, but the row stays 'accepted' and is redelivered.
 			if (failOnceMarks.has(id)) {
@@ -42,7 +42,7 @@ function durableWorld(n: number) {
 			}
 			inbox.get(id)!.status = 'processed';
 		},
-		async markFailed(id, attempts, dead) {
+		async markFailed({ id }, attempts, dead) {
 			const r = inbox.get(id)!;
 			r.attempts = attempts;
 			r.status = dead ? 'dead_letter' : 'accepted';
@@ -58,15 +58,16 @@ function durableWorld(n: number) {
 test('no accepted delivery is lost and processing catches up across a restart', async () => {
 	const N = 500;
 	const w = durableWorld(N);
-	// First worker drains a few batches, then "crashes" (we simply stop looping —
-	// the durable inbox keeps the remaining 'accepted' rows).
-	for (let batch = 0; batch < 3; batch++) await processAcceptedBatch(w.deps, 50);
+	// First worker runs out of budget mid-backlog, then "crashes" (we simply stop
+	// calling it — the durable inbox keeps the remaining 'accepted' rows). The
+	// clock counts handled rows, so the budget is 150 rows.
+	await drainAccepted(w.deps, { budgetMs: 150, now: () => w.handleCalls() });
 	const drainedByFirst = [...w.inbox.values()].filter((r) => r.status === 'processed').length;
 	assert.ok(drainedByFirst > 0 && drainedByFirst < N, 'first worker made partial progress');
 
 	// A fresh worker (restart) resumes from the durable inbox until it is empty.
 	for (let guard = 0; guard < 100; guard++) {
-		const r = await processAcceptedBatch(w.deps, 50);
+		const r = await drainAccepted(w.deps, { budgetMs: 60_000 });
 		if (r.processed === 0) break;
 	}
 
@@ -79,7 +80,7 @@ test('a crash between handle and the status write is recovered idempotently (at-
 	const w = durableWorld(10);
 	w.failOnceMarks.add('d3'); // d3's markProcessed throws once → stays accepted → redelivered
 	for (let guard = 0; guard < 20; guard++) {
-		const r = await processAcceptedBatch(w.deps, 50);
+		const r = await drainAccepted(w.deps, { budgetMs: 60_000 });
 		if (r.processed === 0 && [...w.inbox.values()].every((x) => x.status !== 'accepted')) break;
 	}
 	assert.equal([...w.inbox.values()].filter((r) => r.status === 'processed').length, 10, 'all recovered');
@@ -133,7 +134,7 @@ test('high-volume summary counts correctly over a large ledger', async () => {
 test('seven-day purge removes only expired rows at volume', async () => {
 	const NOW = 1000 * DAY_MS;
 	const cutoff = cutoffMs(NOW);
-	// 8k expired stays under MAX_DELETES_PER_RUN (10k), so a single run fully drains.
+	// A single run drains it (retention.test.ts covers more than one batch's worth).
 	const expired = Array.from({ length: 8_000 }, (_, i) => ({ eventId: `x${i}`, shopId: 's', receivedAt: cutoff - DAY_MS }));
 	const fresh = Array.from({ length: 5_000 }, (_, i) => ({ eventId: `f${i}`, shopId: 's', receivedAt: NOW - 1000 }));
 	const events = new FakeTable('eventId', [...expired, ...fresh]);

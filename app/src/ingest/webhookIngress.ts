@@ -1,14 +1,11 @@
 import { Deliveries } from '../db.ts';
 
-// Namespaced idempotency key: one durable delivery per (shop, webhookId).
 export function deliveryKey(shopDomain: string, webhookId: string): string {
 	return `${shopDomain}:${webhookId}`;
 }
 
-// Durably accept a verified delivery, idempotently. The primary key guarantees
-// one row per (shop, webhookId), so a duplicate delivery is a no-op. No
-// normalization or Admin API calls happen here — the handler acks fast and a
-// worker processes accepted rows later (ADR-002).
+// Durably accepts a verified delivery, idempotently: the primary key gives one row
+// per (shop, webhookId). No normalization or Admin API calls here (ADR-002).
 export async function acceptDelivery(args: {
 	shopId: string;
 	webhookId: string;

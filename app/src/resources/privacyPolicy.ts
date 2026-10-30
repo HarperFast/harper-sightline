@@ -2,11 +2,9 @@ import { Resource } from 'harper';
 import { privacyPolicyHtml } from '../privacy/privacyPolicy.ts';
 import { supportContact } from '../privacy/support.ts';
 
-// The public privacy policy (#26). Deliberately UNAUTHENTICATED: the App Store
-// listing links to it and a reviewer must be able to read it without installing
-// the app. Contains no shop data — it is the same static document for everyone —
-// so there is nothing here to scope to a tenant. No frame-ancestors CSP: unlike
-// the app itself this is meant to open in a normal browser tab, not an iframe.
+// The public privacy policy, unauthenticated so a reviewer can read it without
+// installing. The same static document for everyone, so nothing is tenant-scoped.
+// No frame-ancestors CSP: it opens in a normal tab, not an iframe.
 export class PrivacyPolicy extends Resource {
 	static path = '/privacy-policy';
 	allowRead() {

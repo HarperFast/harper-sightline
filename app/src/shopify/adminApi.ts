@@ -1,13 +1,10 @@
-// Shopify Admin GraphQL client for reconciliation (#13). Uses the stored offline
-// access token to read order state directly — the gap-fill for missed webhooks
-// and the install backfill. Read-only; only the fields we already normalize.
+// Shopify Admin GraphQL client for reconciliation. Read-only, using the stored
+// offline token; only fields we already normalize.
 
 const API_VERSION = '2026-07';
 
-// Node's fetch has NO default timeout, so a hung connection leaves the promise
-// pending indefinitely. That is what allowed a stuck reconcile sweep to wedge its
-// loop permanently (see src/jobs/tick.ts). Bounding the call turns an unbounded hang
-// into an ordinary error that the next tick retries.
+// Node's fetch has no default timeout; an unbounded hang wedged the reconcile sweep
+// (src/jobs/tick.ts). Bounding it makes the hang an ordinary error the next tick retries.
 export const ADMIN_TIMEOUT_MS = 30_000;
 
 interface GraphqlBody<T> {
@@ -15,18 +12,13 @@ interface GraphqlBody<T> {
 	errors?: Array<{ message: string; extensions?: { code?: unknown } }>;
 }
 
-// A GraphQL error whose message says the token's scopes don't cover the field
-// requested (Shopify's Admin GraphQL wording: "Access denied for <field> field.
-// Required access: `<scope>` access scope or higher.") means no retry can ever
-// succeed until the app requests the scope AND the merchant re-authorizes —
-// unlike a rate limit or a transient upstream error, which are worth retrying.
-// Narrow and comment-only: this is not a general error taxonomy, just the one
-// failure mode (missing scope) that must be distinguishable from a blip.
+// A GraphQL "Access denied for <field>" error means the token's scopes do not cover
+// the field: no retry succeeds until the app requests the scope and the merchant
+// re-authorizes. This is the one failure that must be distinguishable from a blip.
 const ACCESS_DENIED_RE = /access denied/i;
 
-// Mirrors PermanentNormalizeError's duck-typed `permanent` flag (src/ingest/normalize.ts)
-// so a scope failure is visible to a caller without adminApi.ts and normalize.ts
-// needing to share a class hierarchy.
+// Duck-typed `permanent` flag, as PermanentNormalizeError (src/ingest/normalize.ts),
+// so callers need no shared class hierarchy.
 export class PermanentAdminApiError extends Error {
 	readonly permanent = true;
 	constructor(message: string) {
@@ -39,16 +31,10 @@ export function isPermanentAdminError(err: unknown): boolean {
 	return typeof err === 'object' && err !== null && (err as { permanent?: unknown }).permanent === true;
 }
 
-// Shopify rate limiting. Transient — always worth retrying — but distinguishable
-// from a fault, because "throttled" is a capacity signal (we are asking for more
-// than the shop's quota grants) while a 500 is an outage. Both previously landed
-// in the same reconcile.error counter, which made a shop whose backfill could not
-// fit inside its quota indistinguishable from a Shopify blip in ops.snapshot.
-// Deliberately carries no retry-after delay: the reconcile sweep aborts and the
-// 10-minute cron retries, an interval already far longer than Shopify's
-// seconds-scale throttle window, and sweepOrdersSince persists partial progress
-// so each retry resumes rather than replays. Sleeping inside the sweep would
-// stall a tick to no benefit.
+// Shopify rate limiting: transient, but counted apart from a fault because it means
+// the sweep asked for more than the shop's quota. Carries no retry-after: the sweep
+// aborts, the 10-minute schedule retries (far longer than the throttle window), and
+// sweepOrdersSince persists partial progress, so sleeping would only stall a tick.
 export class ThrottledAdminApiError extends Error {
 	readonly throttled = true;
 	readonly statusCode: number | undefined;
@@ -63,7 +49,6 @@ export function isThrottledAdminError(err: unknown): boolean {
 	return typeof err === 'object' && err !== null && (err as { throttled?: unknown }).throttled === true;
 }
 
-// Low-level transport. Injectable `fetchImpl` for tests.
 export async function adminGraphql<T>(
 	shop: string,
 	token: string,
@@ -75,9 +60,8 @@ export async function adminGraphql<T>(
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': token },
 		body: JSON.stringify({ query, variables }),
-		// A timeout aborts the request and rejects, so the caller's catch handles it
-		// like any other transient failure. No statusCode, so isAuthError correctly
-		// declines to burn a token rotation on it.
+		// A timeout rejects like any transient failure; it has no statusCode, so isAuthError
+		// does not burn a token rotation on it.
 		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) {
@@ -90,9 +74,8 @@ export async function adminGraphql<T>(
 	if (body.errors?.length) {
 		const message = body.errors.map((x) => x.message).join('; ');
 		if (ACCESS_DENIED_RE.test(message)) throw new PermanentAdminApiError(`admin graphql errors: ${message}`);
-		// A GraphQL throttle is an HTTP 200 carrying extensions.code, so the status
-		// line above cannot see it. Matched on the code, not the message, because the
-		// code is the contractual signal.
+		// A GraphQL throttle is an HTTP 200 with extensions.code, invisible to the status
+		// check above; match the code, not the message.
 		if (body.errors.some((x) => String(x.extensions?.code).toUpperCase() === 'THROTTLED')) {
 			throw new ThrottledAdminApiError(`admin graphql errors: ${message}`);
 		}
@@ -113,7 +96,7 @@ export interface ReconcileOrder {
 	fulfilledAt?: number;
 }
 
-// gid://shopify/Order/123 → "123" (matches the numeric resourceId from webhooks).
+// gid://shopify/Order/123 -> "123", matching the webhooks' numeric resourceId.
 export function numericId(gid: unknown): string | undefined {
 	if (typeof gid !== 'string') return undefined;
 	const m = gid.match(/(\d+)\s*$/);
@@ -137,8 +120,7 @@ interface OrderNode {
 	fulfillments?: Array<{ status?: unknown; createdAt?: unknown }>;
 }
 
-// Shape a raw GraphQL order node into the minimal reconcile record (approved
-// fields only). Exported for contract-fixture tests.
+// Shapes a raw order node into the minimal reconcile record (approved fields only).
 export function toReconcileOrder(node: OrderNode): ReconcileOrder | null {
 	const orderId = numericId(node.id);
 	if (!orderId) return null;
@@ -161,7 +143,6 @@ export function toReconcileOrder(node: OrderNode): ReconcileOrder | null {
 
 const ORDERS_QUERY = `query($q:String!,$cursor:String){orders(first:50,query:$q,after:$cursor,sortKey:UPDATED_AT){edges{cursor node{id createdAt updatedAt cancelledAt displayFinancialStatus displayFulfillmentStatus lineItems(first:100){nodes{quantity requiresShipping}} fulfillments(first:20){status createdAt}}}pageInfo{hasNextPage}}}`;
 
-// One page of orders updated at/after `sinceMs`, oldest-updated first.
 export async function fetchOrdersUpdatedSince(
 	shop: string,
 	token: string,
@@ -187,18 +168,9 @@ export async function fetchOrdersUpdatedSince(
 	return { orders, nextCursor: data.orders.pageInfo.hasNextPage ? last : undefined };
 }
 
-// A trivial authenticated call used to prove the offline token works.
-export async function fetchShopName(shop: string, token: string, fetchImpl: typeof fetch = fetch): Promise<string> {
-	const data = await adminGraphql<{ shop: { name: string } }>(shop, token, `{shop{name}}`, {}, fetchImpl);
-	return data.shop.name;
-}
-
-// The store's configured IANA timezone, so merchant-facing timestamps render in
-// the shop's zone rather than the viewer's (screen spec: "merchant timezone").
-// A shop-level setting, not protected customer data, and readable with the scopes
-// we already hold. Returns undefined rather than throwing when the field is
-// missing or malformed — a timezone is a display nicety and must never be able to
-// fail reconciliation.
+// The store's IANA timezone, so merchant-facing timestamps render in the shop's
+// zone. Returns undefined rather than throwing: it is a display nicety and must
+// never fail reconciliation.
 export async function fetchShopTimezone(shop: string, token: string, fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
 	const data = await adminGraphql<{ shop: { ianaTimezone?: unknown } }>(shop, token, `{shop{ianaTimezone}}`, {}, fetchImpl);
 	const tz = data.shop?.ianaTimezone;
@@ -207,9 +179,8 @@ export async function fetchShopTimezone(shop: string, token: string, fetchImpl: 
 
 const INVENTORY_ITEMS_QUERY = `query($ids:[ID!]!){nodes(ids:$ids){... on InventoryItem{id sku variant{title product{title}}}}}`;
 
-// Resolve inventory item ids to their SKU/product facts. Ids arrive as numeric
-// strings (matching the webhook's inventory_item_id) and are widened to gids for
-// the API. Nodes that no longer exist come back null and are skipped.
+// Ids arrive as numeric strings (matching the webhook) and are widened to gids;
+// deleted nodes come back null and are skipped.
 export async function fetchInventoryItems(
 	shop: string,
 	token: string,
@@ -237,8 +208,7 @@ export async function fetchInventoryItems(
 
 const LOCATIONS_QUERY = `{locations(first:100){nodes{id name}}}`;
 
-// A shop's locations. Small and slow-changing, so the whole set is cached in one
-// call rather than resolved per event.
+// Small and slow-changing, so cached as one set rather than resolved per event.
 export async function fetchLocations(
 	shop: string,
 	token: string,

@@ -29,7 +29,7 @@ So: §1 decomposes and orders them, §2 designs the first one properly, §3 size
 
 This is the finding that shapes the whole sub-project, and it is not a matter of adding a query filter.
 
-Sightline's tenancy today is: `src/identity.ts` verifies a Shopify session token, `principal.shopId` is derived from it and never from caller input, and `src/queries.ts` constrains every search by that `shopId`. That invariant is the product's tenant isolation, it is tested (`crossTenant.test.ts`), and it is correct.
+Sightline's tenancy today is: `src/auth/identity.ts` verifies a Shopify session token, `principal.shopId` is derived from it and never from caller input, and `src/api/queries.ts` constrains every search by that `shopId`. That invariant is the product's tenant isolation, it is tested (`crossTenant.test.ts`), and it is correct.
 
 But a Shopify session token is **issued by one store's embedded admin and scoped to that store**. An agency operator looking at twenty stores is not inside any store's admin. There is no session token that means "this person may see these twenty shops." The cross-store view therefore cannot be authenticated by the mechanism the whole app currently rests on.
 
@@ -50,7 +50,7 @@ The direction of trust is the part to get right. An agency must not be able to a
 Consequences:
 
 - A grant is merchant-authorized by construction, which is also the only story that survives a privacy review.
-- `app/uninstalled` must revoke every grant for that shop, and the shop must leave every portfolio view at once. The uninstall path already revokes the token and clears shop state (`src/lifecycle.ts`); grants join that list, and the smoke coverage added for uninstall should be extended to assert grant revocation too.
+- `app/uninstalled` must revoke every grant for that shop, and the shop must leave every portfolio view at once. The uninstall path already revokes the token and clears shop state (`src/shopify/lifecycle.ts`); grants join that list, and the smoke coverage added for uninstall should be extended to assert grant revocation too.
 - `shop/redact` must remove the shop from org-visible aggregates as well as from its own rows.
 - Grant creation, acceptance, and revocation are all audit events (`src/audit.ts`).
 

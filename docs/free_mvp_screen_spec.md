@@ -66,7 +66,7 @@ Order #1048  No Shopify fulfillment confirmation after 24h  [View evidence]
 
 Acceptance:
 
-- Counts reconcile to the selected time window and documented definitions. The order tiles, the flow lanes, the aging breakdown, and the Orders worklist all read the same window (`lastEventAt` inside the last 7 days) and the same lane definition (`src/orders.ts`), so they can never describe different sets of orders — the divergence this spec used to permit between the Overview and the flow lanes is a defect, not a feature.
+- Counts reconcile to the selected time window and documented definitions. The order tiles, the flow lanes, the aging breakdown, and the Orders worklist all read the same window (`lastEventAt` inside the last 7 days) and the same lane definition (`src/domain/orders.ts`), so they can never describe different sets of orders — the divergence this spec used to permit between the Overview and the flow lanes is a defect, not a feature.
 - Health is separate from finding count: an unhealthy recorder cannot claim “no gaps.”
 - Flow width/count is meaningful without color; status has text/icon labels.
 - **Aging breakdown**: orders awaiting confirmation, bucketed by hours elapsed since payment (Under 24h / 24–48h / 48–72h / Over 72h — the last bucket is exactly the set the 72-hour confirmation detector has already flagged). Every bucket, and every top-level count on this screen, links into the Orders worklist pre-filtered to reproduce it — a merchant's next question after any number here is always "which ones?", and every number answers it.
@@ -113,7 +113,7 @@ States: loading, empty ("No orders match"), error (retry), authorization-expired
 
 Acceptance:
 
-- **The lane definition comes from `src/orders.ts` and nowhere else.** The worklist's lane column, the Overview's flow lanes, and the aging breakdown all call the same `deriveOrderLane`/`isAwaitingConfirmation` functions over the same windowed set of order projections. No screen, and no query, may re-derive "paid and fulfillment-eligible and not yet fulfilled/cancelled/refunded" itself — three independent copies of that predicate is how the Overview and the flow lanes disagreed about the same orders before this was fixed.
+- **The lane definition comes from `src/domain/orders.ts` and nowhere else.** The worklist's lane column, the Overview's flow lanes, and the aging breakdown all call the same `deriveOrderLane`/`isAwaitingConfirmation` functions over the same windowed set of order projections. No screen, and no query, may re-derive "paid and fulfillment-eligible and not yet fulfilled/cancelled/refunded" itself — three independent copies of that predicate is how the Overview and the flow lanes disagreed about the same orders before this was fixed.
 - Every order appears at most once, in its single most-final lane (a cancelled order that was fulfilled first is `cancelled`, not both).
 - A failed fulfillment attempt is a distinct flag on the row (visually separate from the lane badge), stated as direct evidence — "Shopify recorded a fulfillment attempt for this order that did not succeed" — never as an inference from absence, and it carries no absence disclaimer, because absence is not what is being reported.
 - Results are cursor-paginated and tenant-scoped; an order id that belongs to another shop never surfaces, even if the id string collides.

@@ -385,13 +385,9 @@ test('a TypeScript interface member this guard cannot classify fails loudly rath
 });
 
 test('a non-exported interface in model.ts is not loaded, and does not need a matching @table', () => {
-	// Before this guard skipped non-exported interfaces, NotATable's presence
-	// alone made loadModelInterfaces() return it as if it were a table mirror,
-	// and diffSchemaAndModel() then demanded a @table NotATable in
-	// schema.graphql that has no reason to exist. Asserting the returned map's
-	// contents (not just that this doesn't throw) is what makes this test able
-	// to fail: a version that loaded NotATable but never diffed it against the
-	// schema would pass a throws-only check but is still the bug.
+	// Asserting the returned map's contents (not just that nothing throws) is what lets
+	// this fail: a version that loaded NotATable as a table mirror would demand a
+	// `@table NotATable` in schema.graphql.
 	const project = fixtureSnapshot.getDefaultProjectForFile(nonExportedHelperPath);
 	assert.ok(project, 'could not resolve a TypeScript project for the fixture');
 	const interfaces = loadModelInterfaces(project, nonExportedHelperPath, 'inline-fixture');

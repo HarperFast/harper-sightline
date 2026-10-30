@@ -9,11 +9,11 @@
 
 | # | Severity | Finding | Disposition |
 |---|---|---|---|
-| F1 | **P0** | Committed dev Shopify app secret (`shpss_…`) in `src/readSecret.ts` — present in git history. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (rotate the burned value). See §1.1. |
+| F1 | **P0** | Committed dev Shopify app secret (`shpss_…`) in `src/secrets/readSecret.ts` — present in git history. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (rotate the burned value). See §1.1. |
 | F2 | **P0** | Token "encryption at rest" falls back to a deterministic, publicly-derivable key (`sha256('sightline-dev-token-key')`) when `SIGHTLINE_TOKEN_KEY` is unset. | **Closed in code** (fallback deleted; reads Harper scoped secrets, fails closed) + **owner action** (provision the key). See §1.1. |
 | F3 | **P1** | `detectorKey` was not shop-namespaced → two tenants sharing an order id collide on one finding/expectation row. | **Fixed** — key is now `${detector}:${shopId}:${orderId}:${ruleVersion}`; regression test in `crossTenant.test.ts`. |
 | F4 | Info | Cross-tenant read isolation depends entirely on `shopId` coming from the verified principal on every endpoint. | **Verified** — automated suite attacks every endpoint (§2). No leak. |
-| F5 | **P0** | Percent-encoded path traversal in `AppHome`'s static-asset branch → **unauthenticated arbitrary file read**, including `src/readSecret.ts` and therefore the app secret (F1). | **Fixed** — containment moved into `src/assetPath.ts`; regression tests in `test/assetPath.test.ts`. See §1.2. |
+| F5 | **P0** | Percent-encoded path traversal in `AppHome`'s static-asset branch → **unauthenticated arbitrary file read**, including `src/secrets/readSecret.ts` and therefore the app secret (F1). | **Fixed** — containment moved into `src/resources/assetPath.ts`; regression tests in `test/assetPath.test.ts`. See §1.2. |
 | F6 | P2 | `?shop=` flows unvalidated into the `frame-ancestors` CSP, and takes precedence over the verified principal's shop. | **Fixed** — the CSP is built from the verified principal; `?shop=` is a pattern-checked fallback. `src/resources/frameAncestors.ts`, regression tests in `test/frameAncestors.test.ts`. See §1.3. |
 | F7 | P3 | No rate limiting on session-token verification or on `/api/v1/export`. | **Fixed** — per-shop request and export limits at the shared auth point, plus a size cap on the token itself. `src/auth/rateLimit.ts`, tests in `test/rateLimit.test.ts`. See §1.3. |
 
@@ -57,7 +57,7 @@ session tokens, so the read defeats the tenant isolation of §2 rather than mere
 leaking source. It is the reason F1's "already in git history, owner will rotate"
 disposition was not the whole story.
 
-Fixed by `src/assetPath.ts` `resolveAssetUrl`, which refuses the traversal
+Fixed by `src/resources/assetPath.ts` `resolveAssetUrl`, which refuses the traversal
 primitives in any encoding (checked before and after one decode round, so
 `%252e%252e` is caught) **and** requires the resolved URL to sit under
 `web/dist/assets/` — the second check being the one that cannot be fooled by an
@@ -103,12 +103,16 @@ shipped:
   and excess keys collapse into a shared bucket that throttles sooner, never later).
   Wired in two places:
 
-  - **Per shop, every authenticated read:** 600/min, enforced inside
+  - **Per shop, every authenticated read:** 200/min, enforced inside
     `identity.authenticate()` — the one line every resource already shares, so a new
     resource cannot forget it. Counted AFTER verification and keyed by the **verified**
     shop: a key taken from unverified input would let a caller both choose their own
     bucket and mint unlimited new ones.
   - **Per shop, `/api/v1/export`:** 10/min, on top of the above.
+
+  Counters live in each worker thread's module memory, so the effective bound is the
+  stated limit × worker threads × nodes. They are soft abuse dampers, not quotas, and
+  nothing here is a security boundary.
 
   Session-token verification itself is bounded differently, and deliberately: an
   invalid token has no verified shop to key on, so `verifySessionToken` instead refuses
@@ -163,14 +167,14 @@ Sightline is one shared multi-tenant deployment; every privacy/correctness guara
 ## 4. Encryption evidence
 
 - **At rest — tokens:** Shopify offline/refresh tokens are stored only as AES-256-GCM envelopes (`crypto.ts`, versioned key, per-record IV, GCM auth tag). Plaintext tokens are never persisted, logged, or returned. The key comes from `SIGHTLINE_TOKEN_KEY`, read as a scoped Harper secret with `process.env` as the dev/CI fallback; there is no weak default — an absent or wrong-shaped key throws (F2, closed). Rotation is not yet supported: the envelope's `v` field exists for it, but with no dual-key decrypt path a key change invalidates every stored token.
-- **At rest — ledger:** operational data is Level-1 PCD only (ids, statuses, timestamps, SKU/qty, tracking presence) — **no customer name/email/phone/address** (`pii.ts` strips at ingress; `data-inventory.md`). Physical deletion at 7 days via `DELETE`-by-age (ADR-003), not TTL.
+- **At rest — ledger:** operational data is Level-1 PCD only (ids, statuses, timestamps, SKU/qty, tracking presence) — **no customer name/email/phone/address** (`privacy/pii.ts` stores only an allowlist of fields at ingress; `data-inventory.md`). Physical deletion at 7 days via `DELETE`-by-age (ADR-003), not TTL.
 - **In transit:** Shopify → ingress and Harper → Shopify Admin API are HTTPS; the embedded app is served over HTTPS inside Shopify Admin. HMAC over the raw body authenticates every webhook.
 - **Backups:** encrypted backup + tested restore is a Fabric-deployment concern owned by **#24** (reliability/backup/restore) and **#25** (staged deploy); this review records the requirement and the at-rest guarantees the backups inherit.
 
 ## 5. Residual risks (accepted / monitored)
 
 - **F1/F2 until owner action complete** — mitigated by the fail-closed guard; must be closed at launch (#25). F5 showed the rotation is not optional: a file read was enough to reach the committed secret.
-- **F6/F7 closed** (2026-08-26) — see §1.3. The residual, accepted, is that rate limits are per node rather than cluster-wide, and that an unauthenticated app load is framed under `https://*.myshopify.com` rather than a single origin.
+- **F6/F7 closed** (2026-08-26) — see §1.3. The residual, accepted, is that rate limits are counted per worker thread rather than cluster-wide (effective bound: limit × threads × nodes; soft dampers, not quotas), and that an unauthenticated app load is framed under `https://*.myshopify.com` rather than a single origin.
 - **Shared-cluster blast radius** — a tenant-isolation regression would expose all shops; mitigated by the automated suite (§2), which must run in CI (#25). Scale-tier dedicated clusters are a future option.
 - **On-disk index residue** could not be directly inspected via the ops API; we rely on `DELETE` (removes index entries) + verify-by-re-query (ADR-003).
 - **Quarterly Shopify API-version bump** — stale `api_version` can silently change payloads; recurring operational task (threat model §5).

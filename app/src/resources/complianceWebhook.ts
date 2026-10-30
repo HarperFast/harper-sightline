@@ -1,17 +1,25 @@
 import { Resource } from 'harper';
 import { verifyWebhookHmac } from '../shopify/webhookHmac.ts';
 import { readShopifySecret } from '../secrets/readSecret.ts';
-import { redactShop, redactOrders } from '../privacy/redaction.ts';
+import { redactShop, redactOrders, scrubDeliveries, type ScrubTables } from '../privacy/redaction.ts';
+import { tombstoneOrders, tombstoneShop } from '../privacy/tombstone.ts';
 import { REDACT_TARGETS } from '../retention/ledgerTargets.ts';
+import { Deliveries, Events, RedactionTombstones } from '../db.ts';
+import { log, metrics, M } from '../observability/observe.ts';
 import { writeAudit } from '../audit.ts';
+import { checkWebhookShop } from '../ingest/webhookShop.ts';
 import { handleCompliance, type ComplianceDeps } from '../privacy/compliance.ts';
 import { httpError } from './http.ts';
 
-// Shopify mandatory privacy/compliance webhooks (#21). Separate URIs from the
-// operational events endpoint (shopify.app.toml [webhooks.privacy_compliance]).
-// Authenticated by HMAC over the RAW body — an invalid HMAC 401s and performs NO
-// mutation (verification precedes any dispatch). Retry-safe: redaction is
-// idempotent and audits are keyed by webhook id.
+const scrubTables: ScrubTables = {
+	deliveries: Deliveries as unknown as ScrubTables['deliveries'],
+	events: Events as unknown as ScrubTables['events'],
+};
+
+// Mandatory compliance webhooks, on separate URIs from operational events
+// (shopify.app.toml [webhooks.privacy_compliance]). HMAC over the raw body; an
+// invalid HMAC 401s with no mutation. Retry-safe: redaction is idempotent and audits
+// are keyed by webhook id.
 export class ComplianceWebhook extends Resource {
 	static path = '/webhooks/shopify/compliance';
 	allowRead() {
@@ -44,10 +52,22 @@ export class ComplianceWebhook extends Resource {
 			// tolerate an empty/invalid body — HMAC already proved authenticity
 		}
 
+		// Redaction is idempotent and Shopify retries after the shop row is gone, so
+		// no known-shop requirement; the body must still name the header's shop.
+		const verdict = await checkWebhookShop({ shopId, topic, body: payload, requireKnownShop: false, isKnownShop: async () => true });
+		if (!verdict.ok) {
+			metrics.inc(M.webhookBadRequest);
+			log('warn', 'webhook.rejected', { cid: webhookId, topic, reason: verdict.reason });
+			throw httpError(verdict.reason, verdict.status);
+		}
+
 		const deps: ComplianceDeps = {
 			redactShop: (sid) => redactShop(REDACT_TARGETS, sid),
 			redactOrders: (sid, ids) => redactOrders(REDACT_TARGETS, sid, ids),
-			// Keyed by webhook id → a Shopify retry upserts the same audit row.
+			tombstoneOrders: (sid, ids) => tombstoneOrders(RedactionTombstones, sid, ids, Date.now()),
+			tombstoneShop: (sid) => tombstoneShop(RedactionTombstones, sid, Date.now()),
+			scrubDeliveries: (sid, ids) => scrubDeliveries(scrubTables, sid, ids),
+			// Keyed by webhook id so a retry upserts the same audit row.
 			audit: (action, sid, detail) => writeAudit(`${action}:${webhookId}`, sid, action, Date.now(), detail),
 		};
 		const result = await handleCompliance(topic, shopId, payload, deps);

@@ -1,8 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// Verify a Shopify webhook HMAC over the RAW request body (base64 HMAC-SHA256
-// with the app secret), constant-time. MUST run on the untouched bytes before
-// any JSON parsing — a re-serialized body will not match (plan §12).
+// Verifies a Shopify webhook HMAC (base64 HMAC-SHA256, app secret) in constant time.
+// It must run on the untouched raw bytes: a re-serialized body will not match.
 export function verifyWebhookHmac(rawBody: Buffer | string, hmacHeader: string | null, secret: string): boolean {
 	if (!hmacHeader) return false;
 	const bytes = typeof rawBody === 'string' ? Buffer.from(rawBody, 'utf8') : rawBody;

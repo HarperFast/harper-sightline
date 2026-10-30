@@ -8,9 +8,7 @@ import { resolveAssetUrl } from './assetPath.ts';
 import { frameAncestors } from './frameAncestors.ts';
 import { API_KEY, sessionPayload } from './auth.ts';
 
-// The built SPA lives at the component root, two levels up from src/resources/.
-// Resolved once here so every path below is relative to the build output rather
-// than to this module's own location.
+// Two levels up from src/resources/; paths below are relative to the build output.
 const WEB_DIST = new URL('../../web/dist/', import.meta.url);
 
 // The built SPA, loaded once at component start.
@@ -31,12 +29,10 @@ const MIME: Record<string, string> = {
 	'.woff2': 'font/woff2',
 };
 
-// Serves the embedded SPA and its assets from the site root. A resource matches
-// as a prefix before the static handler, so this catches all non-/api/v1 GETs.
-// The HTML entry/fallback carries a frame-ancestors CSP so Shopify Admin can
-// iframe the app (required for embedded apps); real asset files are served with
-// their content-type and no CSP. Who may frame it is decided by frameAncestors
-// (./frameAncestors.ts) from the VERIFIED principal, never by `?shop=` alone.
+// Serves the embedded SPA and assets from the site root; a resource matches as a
+// prefix before the static handler, so this catches all non-/api/v1 GETs. The HTML
+// entry carries a frame-ancestors CSP so Shopify Admin can iframe it, decided by
+// frameAncestors from the verified principal, never by `?shop=` alone.
 export class AppHome extends Resource {
 	static path = '/';
 	allowRead() {
@@ -56,9 +52,8 @@ export class AppHome extends Resource {
 			// defaults
 		}
 
-		// Real static asset. resolveAssetUrl (src/resources/assetPath.ts) is the containment
-		// boundary: this branch reads a file off disk for an UNAUTHENTICATED caller,
-		// so it must never resolve outside web/dist/assets/ in any encoding.
+		// resolveAssetUrl (assetPath.ts) is the containment boundary: this reads a file for
+		// an unauthenticated caller and must never resolve outside web/dist/assets/.
 		const assetUrl = resolveAssetUrl(pathname, WEB_DIST);
 		if (assetUrl) {
 			try {
@@ -69,28 +64,23 @@ export class AppHome extends Resource {
 			}
 		}
 
-		// Embedded load: Shopify passes the session token as `?id_token=<JWT>`.
-		// Verify it server-side and inject the session into the HTML so the SPA
-		// renders without an App Bridge fetch (App Bridge forces Authorization:
-		// Bearer, which Harper's auth layer rejects — ADR-001). Client-side
-		// navigation keeps the session in memory, so only the initial load needs it.
+		// Embedded load: Shopify passes the session token as `?id_token=`. Verify it and
+		// inject the session into the HTML, since App Bridge forces Authorization: Bearer,
+		// which Harper's auth layer rejects (ADR-001). Client-side navigation keeps the
+		// session in memory, so only the initial load needs it.
 		let sessionScript = '';
-		// The shop as Shopify itself signed it. `?shop=` is a caller-supplied hint;
-		// this is the only shop value derived from verified material, and it is what
-		// the CSP below prefers (security review F6).
+		// The shop as Shopify signed it; `?shop=` is only a caller hint, so the CSP prefers this.
 		let verifiedShop: string | undefined;
 		if (idToken) {
 			try {
 				const secret = await readShopifySecret();
 				const principal = verifySessionToken(idToken, { apiKey: API_KEY, secret });
-				// Set as soon as the signature checks out, not at the end of the block: a
-				// later storage failure must not silently downgrade the CSP to the
-				// wildcard for a load whose shop we do know.
+				// Set as soon as the signature checks out so a later storage failure cannot downgrade
+				// the CSP to the wildcard for a shop we know.
 				verifiedShop = principal.shopId;
 				await ensureShopRecord(principal.shopId);
-				// One-time (per install, until expiry): exchange this real id_token for
-				// an offline Admin API token so reconciliation (#13) can run. Best-effort
-				// — a failure never blocks the embed (webhook capture works regardless).
+				// Exchange this id_token for an offline Admin API token. Best-effort: a failure
+				// never blocks the embed.
 				await ensureCredential({ shop: principal.shopId, sessionToken: idToken, apiKey: API_KEY, secret });
 				const session = await sessionPayload(principal.shopId, principal.userId);
 				const json = JSON.stringify(session).replace(/</g, '\\u003c');

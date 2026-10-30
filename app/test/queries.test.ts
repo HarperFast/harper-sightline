@@ -12,9 +12,10 @@ import {
 	getSetup,
 	listOrders,
 	getOrderDetail,
+	TENANT_SCAN_LIMIT,
 } from '../src/api/queries.ts';
 import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/api/apiContract.ts';
-import { detectorKey } from '../src/domain/detector.ts';
+import { detectorKey, DETECTOR, DETECTOR_FAILED, FAILED_RULE } from '../src/domain/detector.ts';
 import { runStateBackfill, type BackfillDeps } from '../src/jobs/stateBackfill.ts';
 
 const NOW = 1_000_000_000_000;
@@ -77,15 +78,10 @@ function fixtures() {
 	// - oA-oF are the WORKLIST set, hour-scale ages, purpose-built for the order
 	//   list/aging/lane tests.
 	//
-	// EVERY row carries a stored `state` that agrees with its own latches — that is
-	// an invariant of this fixture set, not an incidental detail. The stored column
-	// is what listOrders filters on while getSummary/computeFlows derive the lane
-	// live, so a fixture row whose `state` disagrees with its latches encodes a
-	// count/list divergence AS THE EXPECTED RESULT: a correct implementation then
-	// fails the suite and an incorrect one passes. (Three rows here carried no
-	// `state` at all for exactly that reason, which is how C1 stayed invisible.) The
-	// one deliberate exception is oLegacy below, whose whole purpose is to be the
-	// pre-backfill shape, and which is named and tested as such.
+	// Every row carries a stored `state` that agrees with its own latches: listOrders
+	// filters the stored column while getSummary/computeFlows derive the lane live, so a
+	// disagreeing fixture would encode a count/list divergence as the expected result.
+	// The one exception is oLegacy, the pre-backfill shape, named and tested as such.
 	//
 	// All of these functions read from this SAME table — one shared universe, not
 	// two. getSummary and computeFlows share one window predicate: both filter on
@@ -902,8 +898,8 @@ test('the order scans bound the window in the database, not only in code', async
 	const { events, findings, deliveries, shops } = fixtures();
 	const projections = new FakeTable('id', [
 		{ id: 's1:in', shopId: 's1', orderId: 'in', paidAt: NOW - HOUR, requiresFulfillment: true, state: 'awaiting', lastEventAt: NOW - HOUR },
-		// Purge residue: expired but still queryable (a purge run capped at
-		// MAX_DELETES_PER_RUN leaves some behind).
+		// Purge residue: expired but still queryable (a purge run that runs out of
+		// time leaves some behind).
 		{
 			id: 's1:old',
 			shopId: 's1',
@@ -951,12 +947,8 @@ test('the fulfilled count is lane-consistent: a fulfilled-then-cancelled order c
 	const flows = await computeFlows(projections, 's1', NOW);
 	const orders = summary.orders as { fulfilled: number };
 	const lanes = flows.lanes as Record<string, number>;
-	// oE (paid, then fulfilled, then cancelled) must land in exactly one lane —
-	// cancelled — on every surface that counts lanes. Before this fix, getSummary
-	// counted "has a fulfilledAt" (3: o1, oD, oE) while computeFlows already
-	// counted "is in the fulfilled lane" (2: o1, oD) — the same order rendering as
-	// two different "Fulfilled" tile numbers, both linking to the same worklist
-	// filter.
+	// oE (paid, fulfilled, then cancelled) must land in exactly one lane, cancelled, on
+	// every surface that counts lanes.
 	assert.equal(orders.fulfilled, lanes.fulfilled, 'the Overview tile and the flow lane must agree');
 	assert.equal(lanes.fulfilled, 2, 'o1 and oD only — oE is cancelled, not fulfilled');
 	assert.equal(lanes.cancelled, 1, 'oE counts once, in cancelled');
@@ -1046,14 +1038,8 @@ test('the no-customer-PII promise is unchanged by the notification address', asy
 });
 
 test('the deletion disclosure states the digest outbox retention alongside the ledger purge', async () => {
-	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention/retention.ts directly
-	// (queries.ts used to hold its own duplicated `DIGEST_OUTBOX_RETENTION_DAYS`
-	// literal, checked against the real constant by reading src/retention/ledgerTargets.ts
-	// as text — now that db.ts is importable under test, the constant could have
-	// been imported from ledgerTargets.ts, but it lives in retention.ts instead,
-	// which has no imports of its own, so queries.ts stays testable without
-	// `--conditions=test`. Either way there is only one number to get right, not
-	// two to keep in sync).
+	// getPrivacy imports OUTBOX_RETENTION_DAYS from src/retention/retention.ts, which has
+	// no imports of its own, so queries.ts stays testable without `--conditions=test`.
 	const { events, findings, projections, deliveries, shops } = fixtures();
 	const privacy = await getPrivacy({ events, findings, projections, deliveries, shops }, 's1', NOW);
 	const automatic = (privacy.deletion as Record<string, string>).automatic;
@@ -1225,13 +1211,10 @@ test('the summary counts events observed by direct check rather than by webhook'
 });
 
 test('a webhook event and its reconciliation twin for the same order and change are not counted as reconciliation-only', async () => {
-	// This is the exact defect a reviewer proved empirically: reconcileShopWithToken
-	// is a rolling resync, so a healthy webhook delivery is routinely followed by a
-	// matching reconciliation event for the SAME change on the next sweep. Webhook
-	// and reconciliation event ids can never collide, so both rows persist — and the
-	// old tally (source === 'reconciliation') counted the reconciliation twin as a
-	// capture failure even though the webhook plainly arrived. This test is the one
-	// that returns 1 (wrongly) on the pre-fix implementation.
+	// reconcileShopWithToken is a rolling resync, so a healthy webhook is routinely
+	// followed by a reconciliation event for the same change. Both rows persist, and
+	// counting the twin as reconciliation-only would report a capture failure the
+	// webhook disproves.
 	const { events, projections, findings, deliveries, shops } = fixtures();
 	await events.put({
 		eventId: 's1:webhook-o10',
@@ -1463,6 +1446,7 @@ test('orders filter by maximum age, so an aging bucket link opens the bucket', a
 	await runStateBackfill(NOW, {
 		projections: projections as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	const bucketed = async (min: number, max?: number) =>
 		(await listOrders(projections, 's1', NOW, { state: 'awaiting', minAgeHours: min, maxAgeHours: max })).items
@@ -1483,6 +1467,7 @@ test('the age bounds partition: no awaiting order lands in two buckets or in non
 	await runStateBackfill(NOW, {
 		projections: projections as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	// An order paid EXACTLY on a boundary is the case a `<=`/`<=` pair would
 	// double-count and a `<`/`<` pair would drop. The query pairs `<=` with `>`.
@@ -1688,4 +1673,168 @@ test('order detail only surfaces events inside the retention window', async () =
 		(detail.events as Array<Record<string, unknown>>).map((e) => e.eventId),
 		['s1:in'],
 	);
+});
+
+// Findings from one detector sweep share `detectedAt`, so a tie group can exceed any
+// fixed over-fetch. Every row must still be reachable, once, in id order.
+test('listFindings pages through a tie group larger than the page and any read-ahead', async () => {
+	const rows = Array.from({ length: 200 }, (_, i) => ({
+		id: `s1:fulfillment_confirmation:o${String(i).padStart(3, '0')}:1`,
+		shopId: 's1',
+		orderId: `o${i}`,
+		detector: 'fulfillment_confirmation',
+		status: 'pending',
+		detectedAt: NOW - HOUR,
+	}));
+	const findings = new FakeTable('id', rows);
+	const none = new FakeTable('id');
+	const seen: string[] = [];
+	let cursor: string | undefined;
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listFindings(findings, none, none, 's1', { limit: 50, cursor });
+		seen.push(...page.items.map((i) => String(i.id)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	assert.deepEqual(seen, rows.map((r) => r.id).reverse(), 'all 200 rows, each once, descending by id');
+});
+
+test('listOrders pages a tie group in the ascending direction too', async () => {
+	const rows = Array.from({ length: 120 }, (_, i) => ({
+		id: `s1:o${String(i).padStart(3, '0')}`,
+		shopId: 's1',
+		orderId: `o${String(i).padStart(3, '0')}`,
+		state: 'unfulfilled',
+		lastEventAt: NOW - HOUR,
+		paidAt: NOW - HOUR,
+	}));
+	const projections = new FakeTable('id', rows);
+	const seen: string[] = [];
+	let cursor: string | undefined;
+	for (let guard = 0; guard < 10; guard++) {
+		const page = await listOrders(projections, 's1', NOW, { sort: 'oldest', limit: 50, cursor });
+		seen.push(...page.items.map((i) => String(i.orderId)));
+		if (!page.nextCursor) break;
+		cursor = page.nextCursor;
+	}
+	assert.deepEqual(
+		seen,
+		rows.map((r) => r.orderId),
+		'all 120 rows, each once, ascending by id',
+	);
+});
+
+function recordSearches(table: FakeTable): Array<Parameters<FakeTable['search']>[0]> {
+	const seen: Array<Parameters<FakeTable['search']>[0]> = [];
+	const search = table.search.bind(table);
+	table.search = (query) => {
+		seen.push(query);
+		return search(query);
+	};
+	return seen;
+}
+const hasShopCondition = (query: { conditions: unknown[] }) =>
+	query.conditions.some((c) => (c as { attribute?: string }).attribute === 'shopId');
+
+test('a resourceId lookup never walks the shopId index, and still never leaks another shop', async () => {
+	const { events } = fixtures();
+	await events.put({ eventId: 's2:o1', shopId: 's2', resourceId: 'o1', domain: 'order', occurredAt: NOW - 1000, receivedAt: NOW - 1000 });
+	const seen = recordSearches(events);
+
+	const page = await listEvents(events, 's1', NOW, { resourceId: 'o1' });
+
+	assert.ok(!page.items.some((i) => String(i.eventId).startsWith('s2')), 'no cross-tenant leak');
+	assert.deepEqual(page.items.map((i) => i.eventId).sort(), ['s1:e1', 's1:e2']);
+	assert.ok(seen.length > 0 && seen.every((q) => !hasShopCondition(q)), 'shopId is filtered in the app, not queried');
+	assert.ok(
+		seen.every((q) => q.limit === TENANT_SCAN_LIMIT),
+		'the store is bounded by the tenant scan cap',
+	);
+});
+
+test('an event detail relates events by resourceId alone, scoped to the shop in the app', async () => {
+	const { events, projections, findings } = fixtures();
+	await events.put({ eventId: 's2:o1', shopId: 's2', resourceId: 'o1', domain: 'order', occurredAt: NOW - 1000, receivedAt: NOW - 1000 });
+	const seen = recordSearches(events);
+
+	const detail = await getEventDetail(events, projections, findings, 's1', 's1:e1');
+
+	assert.ok(detail);
+	assert.ok(!(detail.relatedEventIds as string[]).includes('s2:o1'), 'no cross-tenant relation');
+	assert.ok(seen.length > 0 && seen.every((q) => !hasShopCondition(q)));
+});
+
+test("an order detail reads its findings by their deterministic keys, never by a search, and only this shop's", async () => {
+	const { events, projections } = fixtures();
+	const findings = new FakeTable('id', [
+		{
+			id: detectorKey('s1', 'o1'),
+			shopId: 's1',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW - 10,
+		},
+		{
+			id: detectorKey('s1', 'o1', FAILED_RULE),
+			shopId: 's1',
+			orderId: 'o1',
+			detector: DETECTOR_FAILED,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW - 5,
+		},
+		{
+			id: detectorKey('s2', 'o1'),
+			shopId: 's2',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW - 1,
+		},
+		// A row stored under this shop's key but holding another shop: the tenant check still applies.
+		{
+			id: detectorKey('s1', 'o1', { ...FAILED_RULE, ruleVersion: 1 }) + ':x',
+			shopId: 's2',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW,
+		},
+	]);
+	const searched = recordSearches(findings);
+	const detail = (await getOrderDetail(projections, events, findings, 's1', NOW, 'o1')) as { findings: Array<{ id: string }> };
+	assert.deepEqual(detail.findings.map((f) => f.id).sort(), [detectorKey('s1', 'o1'), detectorKey('s1', 'o1', FAILED_RULE)].sort());
+	assert.equal(searched.length, 0, 'GapFinding.orderId is not indexed, so a search would scan');
+
+	const foreign = new FakeTable('id', [
+		{
+			id: detectorKey('s1', 'o1'),
+			shopId: 's2',
+			orderId: 'o1',
+			detector: DETECTOR,
+			ruleVersion: 1,
+			status: 'unconfirmed',
+			detectedAt: NOW,
+		},
+	]);
+	const guarded = (await getOrderDetail(projections, events, foreign, 's1', NOW, 'o1')) as { findings: unknown[] };
+	assert.deepEqual(guarded.findings, [], 'a row holding another shop is never returned, whatever its key');
+});
+
+test('an order detail reads its events by resourceId alone, scoped to the shop in the app', async () => {
+	const { events, projections, findings } = fixtures();
+	await events.put({ eventId: 's2:o1', shopId: 's2', resourceId: 'o1', domain: 'order', occurredAt: NOW - 1000, receivedAt: NOW - 1000 });
+	const seen = recordSearches(events);
+	const row = await projections.get('s1:o1');
+	assert.ok(row, 'fixture has an s1 projection for o1');
+
+	const detail = await getOrderDetail(projections, events, findings, 's1', NOW, 'o1');
+
+	const ids = (detail as { events: Array<{ eventId: string }> }).events.map((e) => e.eventId);
+	assert.ok(ids.length > 0 && ids.every((id) => id.startsWith('s1')), 'only this shop events');
+	assert.ok(seen.every((q) => !hasShopCondition(q)));
 });

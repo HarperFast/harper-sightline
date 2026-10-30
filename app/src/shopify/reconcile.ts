@@ -22,12 +22,9 @@ function reconEvent(
 	};
 }
 
-// Map an authoritative Admin API order into the reconciliation events the
-// projection reducer already understands (same latch semantics as webhooks).
-// Because the reducer is monotonic, these merge safely with any webhook-derived
-// state — reconciliation only fills gaps, it never regresses. Timestamps are the
-// order's own (createdAt/updatedAt/cancelledAt/fulfillment createdAt); exact
-// enough for gap-fill.
+// Maps an Admin API order into the events the projection reducer understands. The
+// reducer is monotonic, so these merge with webhook-derived state: reconciliation
+// fills gaps and never regresses. Timestamps are the order's own.
 export function synthesizeEvents(shop: string, order: ReconcileOrder): OperationalEvent[] {
 	const events: OperationalEvent[] = [];
 	const created = order.createdAt ?? order.updatedAt ?? 0;

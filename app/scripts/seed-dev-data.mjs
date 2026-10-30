@@ -1,40 +1,23 @@
-// Seed a dev store's Sightline tables with orders in every state the UI can show.
+// Seeds a dev store with orders in every state the UI can show. It writes raw
+// `WebhookDelivery` rows with `status: 'accepted'`, as the ingress would, and lets
+// the running component derive projections and findings, so every number the UI
+// shows comes from the real pipeline rather than a hand-written fiction.
 //
-// HOW IT WORKS, AND WHY THIS WAY
-// ------------------------------
-// This does NOT write projections or findings. It writes raw `WebhookDelivery`
-// rows with `status: 'accepted'` — exactly what the webhook ingress would have
-// written — and lets the running component do the rest. jobs.ts's processing
-// loop picks up accepted deliveries, normalizes them, folds them into
-// OrderProjection, indexes SKUs, and the detector loop then produces findings.
-//
-// So every number and lane the UI shows is genuinely derived by the real
-// pipeline. Hand-writing projections would let the seed contain combinations the
-// reducer can never actually produce, which is worse than no test data: the
-// views would be verified against a fiction.
-//
-// USAGE
-//   # validate offline — no credentials, no network, nothing written:
+//   # validate offline (no credentials, no network, nothing written):
 //   node seed-dev-data.mjs --dry-run --shop=my-store.myshopify.com
 //
 //   # write to a live instance:
 //   HARPER_OPS_URL=https://<host>:9925/ HARPER_USER=... HARPER_PASS=... \
 //     node seed-dev-data.mjs --shop=my-store.myshopify.com
 //
-// The dry run pipes every generated payload through the REAL normalizer and
-// reducer (src/ingest/normalize.ts, src/ingest/projection.ts, src/domain/orders.ts) and asserts each
-// order lands in the lane and age bucket it was designed for. It exits non-zero
-// on any mismatch, so a payload that would not produce the intended state is
-// caught before anything touches the cluster.
-//
-// Run it from `app/` so the relative imports resolve.
+// The dry run pipes every payload through the real normalizer and reducer and
+// asserts each order lands in its designed lane and age bucket, exiting non-zero
+// on a mismatch. Run it from `app/` so the relative imports resolve.
 
 import { normalizeDelivery } from '../src/ingest/normalize.ts';
 import { rebuildProjection } from '../src/ingest/projection.ts';
 import { deriveOrderLane, ageBucketKey, ageHours } from '../src/domain/orders.ts';
 import { FULFILLMENT_DEADLINE_MS } from '../src/domain/detector.ts';
-
-// ─── args ─────────────────────────────────────────────────────────────────────
 
 const args = new Map(
 	process.argv.slice(2).map((a) => {
@@ -54,15 +37,9 @@ const HOUR = 3_600_000;
 const iso = (ms) => new Date(ms).toISOString();
 const hoursAgo = (h) => NOW - h * HOUR;
 
-// ─── the catalogue ────────────────────────────────────────────────────────────
-//
-// Each spec declares the state it is MEANT to produce. The dry run checks that
-// claim against the real reducer, so these comments cannot quietly go stale.
-//
-// Ages are chosen to land in specific aging buckets. The confirmation detector's
-// deadline is FULFILLMENT_DEADLINE_MS (72h), so anything paid longer ago than
-// that and still unfulfilled will produce a `fulfillment_confirmation` finding
-// once the detector loop runs.
+// Each spec declares the state it is meant to produce; the dry run checks it against
+// the real reducer. Anything paid longer ago than FULFILLMENT_DEADLINE_MS (72h) and
+// unfulfilled produces a `fulfillment_confirmation` finding.
 
 const DEADLINE_H = FULFILLMENT_DEADLINE_MS / HOUR;
 
@@ -72,7 +49,6 @@ const nextOrder = () => {
 	return { id: String(7518851000000 + seq), name: `#${seq}` };
 };
 
-/** A shipping line item: counts toward fulfillableItemCount. */
 const shipItem = (sku, qty = 1) => ({
 	sku,
 	quantity: qty,
@@ -80,7 +56,6 @@ const shipItem = (sku, qty = 1) => ({
 	requires_shipping: true,
 });
 
-/** A digital line item: requires_shipping false, so it never counts. */
 const digitalItem = (sku, qty = 1) => ({
 	sku,
 	quantity: qty,
@@ -93,19 +68,15 @@ const LOCATIONS = ['61234567890', '61234567891'];
 const CARRIERS = ['UPS', 'USPS', 'DHL eCommerce'];
 
 /**
- * The spec list. `lane` and `bucket` are assertions the dry run verifies.
- * `findings` documents what the detector should later produce — the dry run
- * checks the preconditions for it, since the detector itself runs in-cluster.
+ * `lane` and `bucket` are verified by the dry run. `findings` documents what the
+ * detector should later produce; the dry run checks only its preconditions.
  */
 const SPECS = [
-	// ── awaiting confirmation, one per aging bucket ───────────────────────────
-	// The worklist's reason for existing. Four buckets: <24h, 24-48, 48-72, >72.
-	// Enough of these that the unfiltered worklist runs past one page, so keyset
-	// pagination and the cursor get exercised rather than just the first screen.
+	// Awaiting confirmation, one per aging bucket (<24h, 24-48, 48-72, >72); enough
+	// that the worklist runs past one page and exercises keyset pagination.
 	...[2, 6, 9, 14, 17, 20, 23].map((h) => ({ lane: 'awaiting', bucket: 'under24', paidH: h, items: [shipItem(SKUS[0], 2)] })),
 	...[26, 30, 33, 38, 44, 47].map((h) => ({ lane: 'awaiting', bucket: 'h24to48', paidH: h, items: [shipItem(SKUS[1])] })),
 	...[50, 54, 58, 63, 70].map((h) => ({ lane: 'awaiting', bucket: 'h48to72', paidH: h, items: [shipItem(SKUS[2], 3)] })),
-	// Past the 72h deadline → these are the ones that produce findings.
 	...[80, 96, 120, 168].map((h) => ({
 		lane: 'awaiting',
 		bucket: 'over72',
@@ -114,10 +85,8 @@ const SPECS = [
 		findings: ['fulfillment_confirmation'],
 	})),
 
-	// ── a failed fulfillment attempt: a PRESENCE, not an absence ──────────────
-	// Shopify itself recorded status 'error'/'failure'. The order stays awaiting
-	// (a failed attempt is a finding about it, not a lane of its own), so these
-	// also appear in the worklist.
+	// A failed attempt Shopify recorded ('error'/'failure'): a presence. The order stays
+	// awaiting, so it also appears in the worklist.
 	{
 		lane: 'awaiting',
 		bucket: 'over72',
@@ -135,7 +104,6 @@ const SPECS = [
 		findings: ['fulfillment_attempt_failed'],
 	},
 
-	// ── fulfilled, with and without tracking ─────────────────────────────────
 	...[4, 30, 52, 100].map((h, i) => ({
 		lane: 'fulfilled',
 		paidH: h,
@@ -143,8 +111,7 @@ const SPECS = [
 		fulfilledH: Math.max(1, h - 3),
 		tracking: i % 2 === 0 ? CARRIERS[i % CARRIERS.length] : undefined,
 	})),
-	// Fulfilled only AFTER the deadline: the detector should have opened a
-	// finding and then resolved it. Exercises the resolved state on Findings.
+	// Fulfilled only after the deadline: the detector opens a finding, then resolves it.
 	{
 		lane: 'fulfilled',
 		paidH: 140,
@@ -154,29 +121,19 @@ const SPECS = [
 		findings: ['fulfillment_confirmation(resolved)'],
 	},
 
-	// ── digital: no fulfillment is ever expected ──────────────────────────────
-	// requires_shipping false everywhere, so requiresFulfillment is never
-	// latched. Must NOT read as "fulfilled" and must NOT produce a finding.
+	// Digital: requires_shipping false everywhere, so it is never "fulfilled" and never produces a finding.
 	...[8, 40, 90].map((h) => ({ lane: 'no_fulfillment_expected', paidH: h, items: [digitalItem(SKUS[4], 1)] })),
 
-	// ── unpaid ────────────────────────────────────────────────────────────────
 	...[3, 26].map((h) => ({ lane: 'unpaid', createdH: h, items: [shipItem(SKUS[0])], unpaid: true })),
 
-	// ── cancelled ─────────────────────────────────────────────────────────────
 	{ lane: 'cancelled', paidH: 48, cancelledH: 40, items: [shipItem(SKUS[1], 2)] },
 	{ lane: 'cancelled', paidH: 96, cancelledH: 90, items: [shipItem(SKUS[0]), shipItem(SKUS[4], 2)] },
-	// Cancelled BEFORE payment. This reads as `unpaid`, not `cancelled` — and
-	// that is deliberate, not a bug: deriveOrderLane checks paidAt first, on the
-	// stated rule that "an unpaid order is unpaid regardless of anything else"
-	// (src/domain/orders.ts). Kept in the seed precisely because it is the surprising
-	// case, and worth having on screen to judge whether that ordering reads right.
+	// Cancelled before payment reads as `unpaid`: deriveOrderLane checks paidAt first
+	// (src/domain/orders.ts). Kept because it is the surprising case.
 	{ lane: 'unpaid', createdH: 30, cancelledH: 28, items: [shipItem(SKUS[3])], unpaid: true },
 
-	// ── refunded ──────────────────────────────────────────────────────────────
 	...[36, 96].map((h) => ({ lane: 'refunded', paidH: h, refundedH: Math.max(1, h - 10), items: [shipItem(SKUS[2], 2)] })),
 ];
-
-// ─── payload builders ─────────────────────────────────────────────────────────
 
 let webhookSeq = 0;
 const deliveries = [];
@@ -193,9 +150,7 @@ function pushDelivery(topic, payload, receivedAt) {
 		status: 'accepted',
 		attempts: 0,
 		hmacVerified: true,
-		// The ingress stores the PII-stripped body; include_fields in
-		// shopify.app.toml already excludes customer data, and nothing here
-		// invents any.
+		// The ingress stores the PII-stripped body; nothing here invents any.
 		payload: JSON.stringify(payload),
 	});
 }
@@ -221,10 +176,8 @@ function buildOrder(spec) {
 		line_items: spec.items,
 	};
 
-	// orders/create — always, so the recorder sees the order exist.
 	pushDelivery('orders/create', { ...base, updated_at: iso(createdAt), financial_status: 'pending', fulfillment_status: null }, createdAt);
 
-	// orders/paid — unless the order is meant to stay unpaid.
 	if (!spec.unpaid) {
 		const paidAt = hoursAgo(spec.paidH ?? createdH);
 		pushDelivery(
@@ -234,7 +187,6 @@ function buildOrder(spec) {
 		);
 	}
 
-	// A failed fulfillment attempt Shopify itself recorded.
 	if (spec.attemptFailed) {
 		const at = hoursAgo(Math.max(1, (spec.paidH ?? 2) - 2));
 		pushDelivery(
@@ -253,7 +205,6 @@ function buildOrder(spec) {
 		);
 	}
 
-	// A successful fulfillment.
 	if (spec.fulfilledH !== undefined) {
 		const at = hoursAgo(spec.fulfilledH);
 		pushDelivery(
@@ -275,7 +226,6 @@ function buildOrder(spec) {
 		pushDelivery('orders/updated', { ...base, updated_at: iso(at), financial_status: 'paid', fulfillment_status: 'fulfilled' }, at);
 	}
 
-	// A refund making the order fully refunded.
 	if (spec.refundedH !== undefined) {
 		const at = hoursAgo(spec.refundedH);
 		pushDelivery(
@@ -293,7 +243,6 @@ function buildOrder(spec) {
 		pushDelivery('orders/updated', { ...base, updated_at: iso(at), financial_status: 'refunded', fulfillment_status: null }, at);
 	}
 
-	// A cancellation.
 	if (spec.cancelledH !== undefined) {
 		const at = hoursAgo(spec.cancelledH);
 		pushDelivery(
@@ -314,10 +263,8 @@ function buildOrder(spec) {
 
 const orders = SPECS.map(buildOrder);
 
-// Inventory movements, so the Events view's inventory domain and SKU column
-// have something in them. These carry no order linkage by design — inventory
-// events key on inventory_item_id, which is why redaction treats them as
-// non-order-linked.
+// Inventory movements so the Events view has an inventory domain and SKU column;
+// they carry no order linkage.
 for (let i = 0; i < 6; i += 1) {
 	const at = hoursAgo(2 + i * 7);
 	pushDelivery(
@@ -332,8 +279,6 @@ for (let i = 0; i < 6; i += 1) {
 	);
 }
 
-// ─── dry run: prove the payloads produce the intended states ──────────────────
-
 function verify() {
 	const byOrder = new Map();
 	let normalized = 0;
@@ -343,7 +288,6 @@ function verify() {
 		const events = normalizeDelivery(meta, JSON.parse(d.payload));
 		normalized += events.length;
 		for (const e of events) {
-			// The reducer keys on the order id; inventory events aren't order-linked.
 			if (e.domain === 'inventory' || !e.resourceId) continue;
 			const list = byOrder.get(e.resourceId) ?? [];
 			list.push({ ...e, shopId: SHOP, eventId: `${SHOP}:${d.webhookId}:${list.length}` });
@@ -358,9 +302,7 @@ function verify() {
 
 	for (const { id, name, spec } of orders) {
 		const events = byOrder.get(id) ?? [];
-		// Shuffle: the reducer is meant to be commutative, so a correct seed must
-		// produce the same lane regardless of arrival order. This catches a spec
-		// that only works because the events happen to arrive in a tidy sequence.
+		// Shuffled: the reducer is commutative, so the lane must not depend on arrival order.
 		const shuffled = [...events].sort((a, b) => (a.eventId < b.eventId ? 1 : -1));
 		const projection = rebuildProjection(shuffled);
 		if (!projection) {
@@ -378,8 +320,7 @@ function verify() {
 			if (bucket !== spec.bucket) problems.push(`${name}: intended bucket ${spec.bucket}, got ${bucket}`);
 		}
 
-		// Precondition for the confirmation detector: awaiting, and paid longer
-		// ago than the deadline. The detector itself runs in-cluster.
+		// Precondition for the confirmation detector: awaiting, and paid longer ago than the deadline.
 		if (spec.findings?.some((f) => f.startsWith('fulfillment_confirmation'))) {
 			const age = ageHours(projection.paidAt, NOW) ?? 0;
 			if (spec.findings.includes('fulfillment_confirmation') && age <= DEADLINE_H) {
@@ -419,9 +360,6 @@ if (DRY_RUN) {
 	process.exit(0);
 }
 
-// ─── live insert ──────────────────────────────────────────────────────────────
-
-process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = process.env;
 if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 	console.error('\nset HARPER_OPS_URL, HARPER_USER, HARPER_PASS (or pass --dry-run)');
@@ -457,9 +395,9 @@ for (let i = 0; i < deliveries.length; i += BATCH) {
 
 console.log(`
 Done. The component does the rest:
-  - the processing loop (runs every ~30s) normalizes these into OperationalEvent
+  - the process job (every 10s) normalizes these into OperationalEvent
     and folds them into OrderProjection
-  - the detector loop (every ~15m) then opens findings for anything past the
+  - the detect job (every 5m) then opens findings for anything past the
     ${DEADLINE_H}h confirmation deadline, and for the recorded failed attempts
   - the state backfill gives older projections their lane
 

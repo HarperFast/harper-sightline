@@ -16,7 +16,8 @@ visible in a dead-letter state" holds. But that order's evidence never reached
 the ledger/detector, so a real gap could go unrecorded.
 
 ### Signals
-- `ops.snapshot` `deadLetter.count` (aggregate) marks health unhealthy.
+- `ops.snapshot` `deadLetter.count` (aggregate) marks health unhealthy. It is
+  counted up to 10,000; `deadLetter.capped: true` means the count is a floor.
 - `getSummary` (merchant API) exposes `recorder.deadLetteredDeliveries` per shop —
   an unhealthy recorder must never render as "no gaps" (screen spec).
 - `process.error` lines around the same time hint at the cause.
@@ -26,7 +27,7 @@ the ledger/detector, so a real gap could go unrecorded.
    `status="dead_letter"` (via Harper Studio / operations API — see
    `fabric-investigation` skill). Note `topic`, `attempts`, and the row id
    (`shopId:webhookId`); **do not** dump the stored `payload` into shared logs
-   (PII-stripped, but still merchant data).
+   (allowlisted fields only, but still merchant data).
 2. Classify:
    - **Permanent** (dead-lettered on attempt 1): unsupported/broken payload shape.
      A new Shopify API version or an un-handled topic variant is the usual cause.
@@ -34,7 +35,7 @@ the ledger/detector, so a real gap could go unrecorded.
      down for the whole retry window — see [webhook-backlog](./webhook-backlog.md).
 
 ### Remediate
-- **Permanent shape bug**: fix the normalizer (`app/src/normalize.ts`) to handle
+- **Permanent shape bug**: fix the normalizer (`app/src/ingest/normalize.ts`) to handle
   the shape (add/adjust a versioned normalizer + fixture test), ship, and rely on
   reconciliation to backfill the affected orders from the Admin API — the
   authoritative order state re-enters through the same reducer, so the projection

@@ -39,6 +39,11 @@ test('captures payment, eligibility, and fulfillment evidence', () => {
 	assert.equal(p?.fulfilledAt, 30);
 	assert.equal(p?.lastSourceVersion, 30);
 	assert.equal(p?.lastEventAt, 30);
+	assert.equal(p?.firstEventAt, 10);
+});
+
+test('eventCount counts only the order-linked events the rebuild folded', () => {
+	assert.equal(rebuildProjection([created(10), ev('inventory', 15, { resourceId: '99999' }), fulfilled(30)])?.eventCount, 2);
 });
 
 test('a digital order (no shippable units) is not fulfillment-eligible', () => {
@@ -93,7 +98,7 @@ test('rebuildProjection equals incremental application, ignoring non-order event
 	const events = [created(10), paid(20), inventory, fulfilled(30)];
 	const rebuilt = rebuildProjection(events);
 	const incremental = fold(events.filter(isOrderLinked));
-	assert.deepEqual(rebuilt, incremental);
+	assert.deepEqual(rebuilt, { ...incremental, eventCount: 3 });
 	// The inventory event is excluded from the order projection.
 	assert.equal(rebuilt?.orderId, 'o1');
 });

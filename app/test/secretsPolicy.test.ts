@@ -11,10 +11,7 @@ import { secrets } from '#harper';
 // test is now the ABSENCE of a fallback: every one of these reads must throw
 // rather than return something weak.
 //
-// The Harper-secrets branch is exercised here for the first time. It used to sit
-// behind a dynamic `import('harper')` that threw under `node --test`, so the
-// production read path had no offline coverage at all — only the env and
-// dev-constant branches did. `#harper` resolves to test/harperStub.ts under
+// The Harper-secrets branch: `#harper` resolves to test/harperStub.ts under
 // `--conditions=test`, whose `secrets` export is a plain mutable object.
 
 // Save/restore BOTH sources this suite mutates, so nothing leaks between tests.
@@ -76,9 +73,8 @@ test('the environment is the fallback when the store has no row', async () => {
 });
 
 test('whitespace-only and empty values count as absent, not as a value', async () => {
-	// A secret pasted with a trailing newline, or an env var set to '', used to be
-	// truthy enough to be used and then fail as an authentication error somewhere
-	// far away.
+	// A pasted trailing newline or an env var set to '' must not be used and then fail
+	// as an authentication error elsewhere.
 	await withSecrets({ SIGHTLINE_TEST_SECRET: '   ' }, () => {
 		assert.throws(() => requiredSecret('SIGHTLINE_TEST_SECRET'), MissingSecretError);
 		assert.equal(optionalSecret('SIGHTLINE_TEST_SECRET'), undefined);
@@ -139,8 +135,7 @@ test('token encryption has no fallback key — an unconfigured key throws both w
 });
 
 test('a wrong-shaped token key is rejected as its own failure, not ignored', async () => {
-	// Previously an invalid key silently fell through to the dev key, so a truncated
-	// paste produced tokens encrypted under a key nobody intended and said nothing.
+	// An invalid key must fail loudly, not be ignored.
 	await withSecrets({ SIGHTLINE_TOKEN_KEY: 'abc123' }, () => {
 		assert.throws(
 			() => encryptToken('shpat_token'),

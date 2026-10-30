@@ -5,22 +5,14 @@ import { DETECTOR_FAILED } from '../domain/detector.ts';
 import { eventKind, MATCH_MARGIN_MS } from '../domain/eventKind.ts';
 import { ageHours, isAwaitingConfirmation } from '../domain/orders.ts';
 
-// Gathering the digest's inputs. Split from digest.ts because rendering changes
-// for editorial reasons and gathering changes for schema reasons.
-//
-// Every search is constrained by shopId — a digest is the one artifact that
-// leaves the app, so cross-tenant bleed here would be the worst possible place
-// for it. The adversarial tests in test/digestData.test.ts pin that.
+// Gathers the digest's inputs. Every search is constrained by shopId: the digest
+// is the one artifact that leaves the app (test/digestData.test.ts pins this).
 
-// How many orders to name. Enough to be actionable, few enough that the message
-// stays readable and does not become a data export.
+// Enough to act on without becoming a data export.
 export const TOP_AWAITING = 5;
 
-// MATCH_MARGIN_MS lives in src/domain/eventKind.ts, imported rather than redeclared:
-// this window is closed on both ends (periodStart and periodEnd are both real
-// elapsed instants), so the margin below widens BOTH edges — see the comment on
-// the constant itself for why src/api/queries.ts's getSummary, whose window ends at
-// `now`, only ever needs the lower one.
+// MATCH_MARGIN_MS (src/domain/eventKind.ts): this window is closed on both ends, so
+// the margin widens both edges, unlike getSummary whose window ends at `now`.
 
 export async function gatherDigestInput(
 	tables: { projections: QueryTable; findings: QueryTable; events: QueryTable; deliveries: QueryTable },
@@ -30,27 +22,10 @@ export async function gatherDigestInput(
 	periodEnd: number,
 	now: number,
 ): Promise<DigestInput> {
-	// ORDERS with a failed-attempt finding detected in the period — Shopify recorded
-	// a fulfillment attempt that did not succeed. Direct evidence of a presence, so
-	// it is counted on its own terms and by detection time, which is what makes it a
-	// statement about this window (hence the name: getSummary's sibling counts the
-	// same findings with NO time bound at all).
-	//
-	// It counts ORDERS, not attempts, and the rendered copy says so. `DETECTOR_FAILED`
-	// writes one finding per (order, ruleVersion), not one per attempt, so two failed
-	// attempts on one order are ONE finding and count as 1 — a label saying "attempts"
-	// would overstate what this measures. The measure is right and useful; it was the
-	// words that were wrong, on this surface and on the Overview tile.
-	//
-	// It is NOT a subset of `ordersAwaiting` below, and must not be presented as one.
-	// This count used to be taken inside a loop that incremented the headline count
-	// for every finding first, so the two figures were nested while the bodies
-	// printed them as two adjacent, disjoint-looking lines — and it filed a PRESENCE
-	// (an attempt Shopify recorded as failed) underneath an ABSENCE headline. The
-	// `status === 'unconfirmed'` gate is kept deliberately: it is the same definition
-	// getSummary's `findings.failedAttempts` uses, so the two surfaces cannot
-	// disagree about which findings qualify — only about the window, which the names
-	// now distinguish.
+	// ORDERS with a failed-attempt finding detected in the period. One finding exists
+	// per (order, ruleVersion), so two failed attempts on one order count once. Not a
+	// subset of `ordersAwaiting`. The `status === 'unconfirmed'` gate is the same
+	// definition getSummary's `findings.failedAttempts` uses.
 	let failedAttemptsInPeriod = 0;
 	for await (const row of tables.findings.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const finding = row as unknown as GapFinding;
@@ -60,42 +35,18 @@ export async function gatherDigestInput(
 		if (finding.detector === DETECTOR_FAILED) failedAttemptsInPeriod++;
 	}
 
-	// Changes that reached us only through a direct Admin API check — the webhook
-	// never arrived. Evidence about OUR capture path only (see the integrity copy).
+	// Changes that reached us only through a direct Admin API check (the webhook never
+	// arrived). A reconciliation row alone is not that evidence: the sweep writes a
+	// synthesized event for every order it touches, so a healthy webhook is routinely
+	// followed by a matching reconciliation event. A reconciliation event counts as a
+	// gap only when no webhook event for the same (resourceId, kind) is found.
 	//
-	// A reconciliation-sourced row alone is NOT that evidence: reconcileShopWithToken
-	// (jobs.ts) is a rolling resync, not a gap detector — it writes a synthesized
-	// event for every order it touches on every sweep, unconditionally. Webhook and
-	// reconciliation event ids can never collide, so a healthy webhook delivery is
-	// routinely followed by a matching reconciliation event for the SAME change on
-	// the next sweep, and both rows persist. Counting that pair as a gap would tell
-	// a merchant their webhook failed when it did not — the exact false alarm the
-	// safety bias forbids (see src/domain/eventKind.ts). A reconciliation event counts as a
-	// gap only when no webhook-sourced event for the same (resourceId, kind) is
-	// found alongside it.
-	//
-	// Matching is BEST-EFFORT, and the reason is worth stating plainly: the two
-	// paths derive `occurredAt` from DIFFERENT fields, so a webhook event and its
-	// reconciliation twin do NOT carry the same instant, for any of the four kinds.
-	//
-	//   kind        webhook (src/ingest/normalize.ts)   reconciliation (src/shopify/reconcile.ts)
-	//   paid        order updated_at             order createdAt ?? updatedAt
-	//   cancelled   order updated_at             order cancelledAt
-	//   fulfilled   fulfillment updated_at       order fulfilledAt ?? updatedAt
-	//   refunded    refund processed_at          order updatedAt
-	//
-	// Two observations of one change can therefore be minutes or days apart, in
-	// EITHER direction (`paid` and `cancelled` put the reconciliation twin earlier,
-	// `refunded` puts it later), which is enough to split them across a period
-	// boundary. So the webhook key-set is gathered over a window widened by a day on
-	// each side, while only IN-PERIOD reconciliation rows are ever candidates: the
-	// same single query with wider bounds, no extra round trip. That closes the
-	// ordinary near-boundary case — an order created at 23:55 and paid at 00:05 the
-	// next day used to produce a digest whose only content was a false claim that a
-	// webhook had not arrived — without pretending the general problem is solved. A
-	// pair separated by more than the margin still fails to collide and is still
-	// over-counted, and over-counting a capture gap is the direction this product's
-	// safety bias cares about, so this is a known residual rather than a guarantee.
+	// Matching is best-effort: the two paths take `occurredAt` from different fields
+	// (src/ingest/normalize.ts vs src/shopify/reconcile.ts), so twins can be minutes or
+	// days apart in either direction and straddle a period boundary. The webhook
+	// key-set is gathered over a window widened by MATCH_MARGIN_MS on each side while
+	// only in-period reconciliation rows are candidates. A pair further apart than the
+	// margin is still over-counted, the direction the safety bias prefers.
 	const webhookKeys = new Set<string>();
 	const reconciliationCandidates: Array<{ resourceId: string; kind: ReturnType<typeof eventKind> }> = [];
 	for await (const row of tables.events.search({
@@ -105,9 +56,7 @@ export async function gatherDigestInput(
 			{ attribute: 'occurredAt', value: periodEnd + MATCH_MARGIN_MS, comparator: 'less_than' },
 		],
 		operator: 'and',
-		// occurredAt is selected because the widened query now returns rows OUTSIDE
-		// the period, and the in-period test below is what keeps the gap count
-		// period-scoped.
+		// Selected because the widened query returns rows outside the period.
 		select: ['resourceId', 'domain', 'state', 'topic', 'source', 'occurredAt'],
 	})) {
 		const resourceId = typeof row.resourceId === 'string' ? row.resourceId : undefined;
@@ -117,28 +66,23 @@ export async function gatherDigestInput(
 			topic: row.topic as string | undefined,
 		});
 		if (String(row.source) === 'reconciliation') {
-			// Only the period's own reconciliation rows are candidates — the margin
-			// exists to find MATCHES, never to widen what the digest reports on.
+			// Margin rows exist to find matches, not to widen what the digest reports.
 			const occurredAt = Number(row.occurredAt);
 			if (!(occurredAt >= periodStart && occurredAt < periodEnd)) continue;
-			// Safety bias: a reconciliation event whose kind cannot be determined is
-			// never treated as a capture-gap candidate.
+			// A reconciliation event of unknown kind is never a gap candidate.
 			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
 		} else if (resourceId !== undefined && kind !== undefined) {
-			// Webhook rows from the margin DO count towards matching. That is the
-			// entire point: the twin whose timestamp fell just outside the period is
-			// exactly the evidence that the webhook path worked.
+			// Margin webhook rows count toward matching: a twin just outside the period proves the webhook worked.
 			webhookKeys.add(`${resourceId}:${kind}`);
 		}
 	}
-	// Second pass over the already-fetched candidates, not a second query.
+	// Second pass over the fetched candidates, not a second query.
 	let deliveryGaps = 0;
 	for (const c of reconciliationCandidates) {
 		if (!webhookKeys.has(`${c.resourceId}:${c.kind}`)) deliveryGaps++;
 	}
 
-	// Recorder health, so a digest can never report "all quiet" from an incomplete
-	// pipeline. Same signal the Overview uses.
+	// A digest must not report "all quiet" from an incomplete pipeline; same signal as the Overview.
 	let deadLettered = 0;
 	for await (const _row of tables.deliveries.search({
 		conditions: [
@@ -151,48 +95,22 @@ export async function gatherDigestInput(
 		deadLettered++;
 	}
 
-	// The orders awaiting fulfillment confirmation, as of NOW rather than as of the
-	// period end: a merchant acting on this message needs the current wait.
-	// `isAwaitingConfirmation` / `ageHours` come from src/domain/orders.ts — the single
-	// definition the Overview and the worklist also use, so a digest can never
-	// name a different set of orders, or a different age for one, than the app.
+	// Orders awaiting confirmation as of now, not the period end, using the Overview's
+	// `isAwaitingConfirmation` / `ageHours` (src/domain/orders.ts). One loop yields both
+	// the count and the list, so they agree by construction; the count is of orders, not
+	// findings (one order can carry two).
 	//
-	// This ONE loop produces both the headline count and the list beneath it, which
-	// is the point. The headline used to be a count of unconfirmed GapFinding rows
-	// detected in the period, rendered under an "orders awaiting" label — three
-	// defects at once. Findings are not orders: `detectorKey()` is
-	// `${detector}:${shopId}:${orderId}:${ruleVersion}` and both detectors run per
-	// order independently, so one order past its deadline that ALSO had a failed
-	// attempt produced two findings and was counted as two "orders". And the number
-	// disagreed with the list printed directly below it, and with the Overview tile
-	// — three populations, one label. Deriving the count from the same iteration
-	// that builds the list makes number-equals-list true by construction rather
-	// than by agreement, and `isAwaitingConfirmation` is what makes it agree with
-	// getSummary's `orders.awaitingConfirmation` (pinned by a test that asserts the
-	// two are equal on one fixture).
-	//
-	// One divergence from that tile remains, and it is deliberate: getSummary also
-	// bounds its projection scan to the 7-day read window (`windowCondition`),
-	// while this scan does not. An order still awaiting past that window — purge
-	// residue, since retention normally removes it — is counted and named here but
-	// absent from the Overview. Bounding it identically would mean silently
-	// dropping the oldest, most overdue orders from the one message whose job is to
-	// surface them, so the digest keeps the wider set.
-	//
-	// So when the two numbers disagree, THIS is the more complete one, and it can
-	// only ever be the higher: an order that has been awaiting for ten days is still
-	// awaiting, and telling the merchant so is the entire point of the message. The
-	// fix for a disagreement is never to bound this scan — see the note on the
-	// equality assertion in test/digestData.test.ts, which explains how to read the
-	// direction of the difference.
+	// Unlike getSummary this scan is not bounded to the 7-day window: an order awaiting
+	// longer (purge residue) is named here though absent from the Overview. That is
+	// deliberate, because bounding it would drop the most overdue orders from the
+	// message meant to surface them, so a disagreement means this count is higher. See
+	// the equality assertion in test/digestData.test.ts.
 	const awaiting: DigestOrderRef[] = [];
 	for await (const row of tables.projections.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const p = row as unknown as OrderProjection;
 		if (!isAwaitingConfirmation(p)) continue;
 		const hours = ageHours(p.paidAt, now);
-		// isAwaitingConfirmation already requires p.paidAt !== undefined, so this is
-		// always defined here; the check keeps the `number | undefined` honest
-		// without a cast, rather than asserting past it.
+		// Always defined here; keeps the `number | undefined` honest without a cast.
 		if (hours === undefined) continue;
 		awaiting.push({ orderName: p.orderName, orderId: p.orderId, ageHours: hours });
 	}
@@ -203,8 +121,7 @@ export async function gatherDigestInput(
 		cadence,
 		periodStart,
 		periodEnd,
-		// Orders, not findings — and every one of them is in `awaiting`, of which
-		// topAwaiting is the first TOP_AWAITING entries.
+		// Orders, not findings; topAwaiting is the first TOP_AWAITING of `awaiting`.
 		ordersAwaiting: awaiting.length,
 		failedAttemptsInPeriod,
 		deliveryGaps,

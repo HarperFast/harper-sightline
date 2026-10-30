@@ -56,17 +56,17 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 | Spoofed webhook (no valid HMAC) | Constant-time HMAC over the untouched raw body **before** parsing → 401 (plan §12) | S |
 | Replay / duplicate delivery | `(shopId, webhookId)` idempotency key; duplicate = 2xx no-op (plan §13) | S |
 | Ingress DoS / burst overload | Minimal durable handler, fast 2xx, backlog worker + reconciliation; burst test gate (plan §13) | S |
-| Authenticated read abuse (one token, unbounded expensive reads) | Per-shop fixed-window limits at the single shared auth point — 600 requests/min, and 10/min for `/api/v1/export`, which pages to 5000 rows per call; oversized session tokens refused before any decoding. Per node, so a cluster admits a multiple: this bounds one shop's demand on the app and is **not** a volumetric-DoS control — that remains an edge/L7 concern | S |
+| Authenticated read abuse (one token, unbounded expensive reads) | Per-shop fixed-window limits at the single shared auth point — 200 requests/min, and 10/min for `/api/v1/export`, which pages to 5000 rows per call, yields to the event loop between pages, and runs one at a time per worker thread (a second concurrent export on that thread gets 429 + Retry-After; `src/api/exportGate.ts`); oversized session tokens refused before any decoding. Counters are per worker thread, so the effective bound is the limit × worker threads × nodes: a soft damper on one shop's demand, not a quota, not a security boundary, and **not** a volumetric-DoS control — that remains an edge/L7 concern | S |
 | Payload tampering / unexpected shapes | Verify-before-parse; unknown additive fields tolerated; breaking shapes dead-letter (backlog #9) | S |
-| PII arriving in payloads | `include_fields` whitelists exclude PII; Level-2 fields redacted without approval (contract §5) | M |
+| PII arriving in payloads | `include_fields` whitelists exclude PII; Level-2 fields redacted without approval; ingress stores only an allowlist of those fields, and a body is cleared once processed (contract §5) | M |
 
 ### 3.4 Background workers & processing
 | Threat | Mitigation | Status |
 |---|---|---|
 | Double-processing under multi-node/thread | Per-item atomic single-winner insert → exactly-once regardless of worker count (ADR-002) | M |
 | Work lost on restart | Durable inbox + startup recovery scan (ADR-002, proven) | M |
-| Duplicate active schedulers | Atomic-claim lease with TTL takeover (ADR-002) | M |
-| Poison message stalls the pipeline | TTL'd processing claim + attempt-count dead-letter (ADR-002 → #9) | S |
+| Duplicate active schedulers | Periodic sweeps run as Harper scheduler jobs (leader-coordinated, lease without compare-and-set, so a transient dual-leader window is possible); every sweep is idempotent (ADR-002) | M |
+| Poison message stalls the pipeline | Processing is a scheduler job with a failure-capped drain; a delivery dead-letters after MAX_ATTEMPTS (permanent errors immediately) and is skipped for the rest of the drain (ADR-002) | S |
 
 ### 3.5 Admin API access (Harper → Shopify)
 | Threat | Mitigation | Status |
@@ -86,6 +86,7 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 |---|---|---|
 | Data retained past 7 days / "deleted" but physically present | Explicit `DELETE`-by-age purge (removes data + index); **TTL not relied on** (ADR-003, proven) | M |
 | Redaction request not honored / not idempotent | Targeted `DELETE WHERE shopId/customer`, idempotent; mandatory privacy webhooks wired (ADR-003, contract §4) | M/S |
+| Redaction undone by a delivery still in flight (accepted before the request, written after it) | 7-day redaction tombstone checked by the worker before and after it writes, and by the reconcile sweep; matching deliveries dropped silently with a counter (`docs/data-inventory.md`, Redaction tombstones). **Needs compliance review before release.** Not closed across nodes (async replication) | M |
 | Purge silently fails | Purge-lag/failure metrics + alerts; verify-by-re-query (ADR-003 → #10/#21) | S |
 
 ### 3.8 Deployment, ops & supply chain
@@ -127,7 +128,7 @@ Each Phase-0 **S** ("to build/verify") is now resolved against shipped code. Ful
 | Webhook ingress (3.3) | Constant-time HMAC verify-before-parse → 401 no-mutation; `(shopId,webhookId)` idempotency | `webhookHmac.ts`, `webhookIngress.ts` + tests |
 | Workers (3.4) | Idempotent, deterministically-keyed processing; durable inbox; dead-letter visibility | `processor.ts`, `jobs.ts` + `processor.test.ts` |
 | Admin API (3.5) | Read-only least scopes; durable cursor never past committed work; throttle-aware | `adminApi.ts`, `reconcile.ts` + `reconcile.test.ts` |
-| **Tenant data access (3.6)** | Every query derives `shopId` from the principal; **shop-namespaced keys**; field allowlists; no `@export` | **`test/crossTenant.test.ts`** (every endpoint attacked), `queries.ts`, `tenant.ts` |
+| **Tenant data access (3.6)** | Every query derives `shopId` from the principal; **shop-namespaced keys**; field allowlists; no `@export`; the summary/flows/privacy read caches are keyed by that same `shopId`, one cache per endpoint | **`test/crossTenant.test.ts`** (every endpoint attacked), `test/readCache.test.ts`, `queries.ts`, `tenant.ts`, `readCache.ts` |
 | Retention/deletion (3.7) | `DELETE`-by-age purge (data+index); idempotent redaction; purge-lag metrics | `retention.ts`, `redaction.ts` + tests; observability #22 |
 | Authenticated read abuse (3.3) | Per-shop request + export limits at `identity.authenticate()`, the one line every read shares; refusals are 429 carrying a wait time, and are counted (`rate_limit.requests`, `rate_limit.exports`) | `src/auth/rateLimit.ts` + `test/rateLimit.test.ts`; `exportResource.ts` |
 | Deployment/supply chain (3.8) | **0 npm runtime deps** (`npm audit`: 0 vulns); PII/secret-safe logging; unconditionally fail-closed secret reads via Harper scoped secrets | `package.json`, `observe.ts` redaction, `secretsPolicy.ts`, `config.yaml` `env:` |

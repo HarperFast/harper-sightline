@@ -25,13 +25,21 @@ and detector fall behind, so the merchant UI goes stale.
 - `event="process.error"` lines (worker exceptions), with `message`.
 - `process.processed` flat while `webhook.accepted` keeps rising.
 - `ops.snapshot` `backlog.accepted` / `backlog.oldestAgeMs` trend.
+- **Counts are floors when capped.** The backlog scan stops at 10,000 rows
+  (`BACKLOG_COUNT_LIMIT`) and sets `backlog.capped: true`. `backlog.accepted` then
+  reads 10,000 however large the backlog is, so "climbing" stops being visible above
+  it: watch `backlog.oldestAgeMs` and `process.processed` instead. The stale check
+  stays exact when capped (a direct query for an accepted row older than 5 min), and
+  `oldestAgeMs` is then the age of a stale row it found, a floor on the true oldest.
 
 ### Diagnose
 1. Read recent `process.error` lines — a repeating `message` points at the failing
    dependency (table unavailable, schema flake, normalizer bug).
-2. Check whether the process loop is running at all: `process.tick` lines should
-   appear whenever there is work. Silence = worker not scheduled (component
-   didn't load `jobs.ts`, or the worker thread died).
+2. Check whether the `sightline-process` scheduler job is running at all:
+   `process.tick` lines should appear whenever there is work, and the
+   `system.hdb_scheduler_state` row `job:<component>:sightline-process` carries
+   its `lastRunAt` / `lastStatus`. No `ops.snapshot` lines either = no scheduler
+   leader; failover takes 4-6.25 minutes (heartbeat 60 s, stale after 5 min, watcher 75 s), after which the backlog drains.
 3. Confirm the deliveries are genuinely `accepted` (not `dead_letter`) — a
    backlog of `accepted` rows retries; see [dead-letters](./dead-letters.md) if
    they are dead-lettering instead.
@@ -40,11 +48,21 @@ and detector fall behind, so the merchant UI goes stale.
 - **Transient dependency error** (DB blip, schema flake per
   `harper-fabric-sealed-column-add-flaky`): the pipeline retries automatically
   (`MAX_ATTEMPTS`), so recovery is usually just waiting for the dependency to
-  heal. Verify the table with `describe_table` after any recent schema deploy.
-- **Worker not running**: redeploy / restart the component so `jobs.ts` reloads
-  and `startProcessingLoop()` runs. Processing is idempotent (only `accepted`
+  heal. Each occurrence stops after 50 failed rows, so a sustained outage
+  dead-letters at most 50 deliveries per `MAX_ATTEMPTS` occurrences (~50s). Verify the table with `describe_table` after any recent schema deploy.
+- **Worker not running**: redeploy / restart the component so the scheduler
+  re-registers `sightline-process`. Processing is idempotent (only `accepted`
   rows are listed; downstream writes are deterministically keyed), so a restart
   cannot double-process.
+- **`process.keyless_skipped` rising**: the drain is passing over accepted rows
+  that hold no `id` or `shopId`. Such a row was written by a patch over a delivery
+  that `shop/redact` had just deleted, before patches carried the key (Harper stores
+  only the patched fields). The counter goes up on every lap while any such row
+  exists, so it tells you that some exist, not how many. They cost one read per
+  lap and block nothing, and nothing in the app removes them: the purge finds rows
+  by `receivedAt`, which they lack, and SQL `DELETE` reports them as skipped hashes
+  because no key is stored (seen on Harper 5.3.3). Escalate to Harper Fabric
+  on-call to remove them from the table's primary store.
 - **Persistent normalizer bug**: the offending deliveries will dead-letter after
   `MAX_ATTEMPTS`; fix forward and reprocess is out of scope for MVP (dead-letter
   is the visible terminal state). Escalate to the normalizer owner.
@@ -58,7 +76,11 @@ on the next `ops.snapshot`.
 ## HMAC rejection spike {#hmac-rejection-spike}
 
 ### Alert
-`webhook.hmac_fail` counter spiking (elevated 401s on `/webhooks/shopify/events`).
+`webhook.signature_fail` counter spiking (elevated 401s on `/webhooks/shopify/events`).
+Counters are per worker thread and `ops.snapshot` shows the leader thread only, so a
+spike may be larger than the snapshot shows; the 401 rate in access logs is the
+instance-wide signal. (Renamed from `webhook.hmac_fail`, which the log redactor
+printed as `[redacted]`.)
 
 ### Why it matters
 Every delivery is HMAC-verified over the raw body before parsing; a failure 401s
@@ -78,7 +100,7 @@ Shopify traffic → silent capture loss) or someone is probing the endpoint.
 ### Remediate
 - Secret mismatch: restore/rotate the correct Shopify secret and confirm custody
   is initialized (see the secrets-custody runbook context). Once fixed,
-  `webhook.hmac_fail` returns to baseline and `webhook.accepted` resumes.
+  `webhook.signature_fail` returns to baseline and `webhook.accepted` resumes.
 - Missed deliveries during the mismatch window are recovered by reconciliation
   (the Admin API sweep backfills order state independently of webhooks) — confirm
   reconciliation is healthy ([stale-reconciliation](./stale-reconciliation.md)).

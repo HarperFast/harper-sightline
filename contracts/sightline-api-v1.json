@@ -8,7 +8,7 @@
 	},
 	"rateLimits": {
 		"windowSeconds": 60,
-		"requests": 600,
+		"requests": 200,
 		"exports": 10,
 		"status": 429
 	},

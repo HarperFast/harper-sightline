@@ -22,16 +22,17 @@ A production install cannot even start without real secrets now — the fallback
 
 | Item | Status | Evidence / action |
 |---|---|---|
-| Embedded app using App Bridge + Session tokens | ✅ | `embedded = true`; session-JWT verification in `src/verifySessionToken.ts`, adapter in `src/identity.ts` |
+| Embedded app using App Bridge + Session tokens | ✅ | `embedded = true`; session-JWT verification in `src/auth/verifySessionToken.ts`, adapter in `src/auth/identity.ts` |
 | Uses Polaris / App Home patterns | ✅ | Ported to Polaris web components (PR #63) |
-| OAuth / managed install, expiring offline tokens | ✅ | `src/exchangeToken.ts`, `src/lifecycle.ts`; atomic rotation, `reauthorization_required` on refresh failure |
-| Webhook HMAC verification | ✅ | Raw-body constant-time verify before parse (`src/webhookHmac.ts`); invalid → 401, no mutation |
-| Mandatory compliance webhooks | ✅ | `customers/data_request`, `customers/redact`, `shop/redact` declared in `shopify.app.toml` and implemented in `src/compliance.ts`; live-verified (#21) |
-| `app/uninstalled` handling | ✅ | Token revoked, shop data erased (`src/lifecycle.ts`, `src/redaction.ts`) |
-| No write scopes / no store mutation | ✅ | `scopes = "read_orders,read_fulfillments,read_inventory,read_products,read_locations"`; all write capabilities hard-`false` in `src/capabilities.ts` |
+| OAuth / managed install, expiring offline tokens | ✅ | `src/shopify/exchangeToken.ts`, `src/shopify/lifecycle.ts`; atomic rotation, `reauthorization_required` on refresh failure |
+| Webhook HMAC verification | ✅ | Raw-body constant-time verify before parse (`src/shopify/webhookHmac.ts`); invalid → 401, no mutation |
+| Mandatory compliance webhooks | ✅ | `customers/data_request`, `customers/redact`, `shop/redact` declared in `shopify.app.toml` and implemented in `src/privacy/compliance.ts`; live-verified (#21) |
+| `app/uninstalled` handling | ✅ | Token revoked, shop data erased (`src/shopify/lifecycle.ts`, `src/privacy/redaction.ts`) |
+| No write scopes / no store mutation | ✅ | `scopes = "read_orders,read_fulfillments,read_inventory,read_products,read_locations"`; all write capabilities hard-`false` in `src/auth/capabilities.ts` |
 | Performance: fast webhook ack | ✅ | Ack p95 gate documented and tested (#24, `docs/reliability-report.md`) |
 | Pinned API version | ✅ | `api_version = "2026-07"`; quarterly bump is a standing operational task (threat model §5) |
 | **Load burst + backup/restore drills** | ☐ | Tooled and documented in #24, deferred to live infra. `npm run loadtest` now also proves the burst **drained** (backlog returns to baseline, no new dead letters, drain rate ≥ offered rate) rather than only that it was acked — see `docs/reliability-report.md` §3 and the capacity caveat in §5.1. Restore procedure in the same doc |
+| **Webhook acks during a big-shop export, multi-worker** | ☐ | Measure webhook ack latency during a big-shop export on a real multi-worker Linux/Fabric node, then decide whether to raise the per-worker limit of one export in flight (`src/api/exportGate.ts`) or add a per-shop cooldown. The local macOS figures (`app/DESIGN.md`, Measured costs) had every request on one worker thread, so they are the worst case, not the expected one |
 | **Rollback verified** | ☐ | Path is "deploy an earlier ref" (`docs/deployment.md`); never exercised end to end |
 | **Staging smoke: uninstall** | 🟡 | **Covered:** `SMOKE_UNINSTALL=1 npm run smoke` bootstraps a throwaway shop, posts a signed `app/uninstalled`, and polls `/api/v1/setup` until the shop reads as no longer installed — so it asserts the state change, not just the ack. Opt-in because it writes state. **Needs:** the flag set in the staged deploy run |
 | **Staging smoke: reconciliation** | ☐ | Still uncovered. Reconciliation needs a real offline Admin token, which the synthetic smoke shop has no way to obtain — this one can only be exercised against a genuinely installed store, so it belongs to the §4 walkthrough rather than to `smoke.mjs` |
@@ -41,17 +42,17 @@ A production install cannot even start without real secrets now — the fallback
 | Item | Status | Evidence |
 |---|---|---|
 | PCD Level 1 approval | ✅ | **Granted 2026-08-04.** Protected `orders/*`, `fulfillments/*`, `refunds/create` subscriptions deploy without rejection |
-| Level 2 fields not requested | ✅ | `include_fields` whitelists exclude all PII; `src/pii.ts` strips at ingress before storage |
+| Level 2 fields not requested | ✅ | `include_fields` whitelists exclude all PII; `src/privacy/pii.ts` stores only those fields (and the line-item fields the normalizer reads) at ingress |
 | Data minimisation documented | ✅ | `docs/shopify-contract.md` §3/§5, `docs/data-inventory.md` |
-| Encryption at rest / in transit | ✅ | AES-256-GCM token envelopes (`src/crypto.ts`); HTTPS throughout (`docs/security-review.md` §4) |
+| Encryption at rest / in transit | ✅ | AES-256-GCM token envelopes (`src/secrets/crypto.ts`); HTTPS throughout (`docs/security-review.md` §4) |
 | Retention + real deletion | ✅ | 7-day DELETE-based purge, verified by re-query (ADR-003) |
 
 ## 3. Listing requirements
 
 | Item | Status | Action |
 |---|---|---|
-| **Privacy policy, publicly reachable** | 🟡 | **Built:** served unauthenticated at `/privacy-policy` (`src/privacyPolicy.ts`), versioned with the app, claims pinned by tests against the code's own constants. **Needs:** legal review, an effective date via `SIGHTLINE_POLICY_UPDATED`, and the production URL in the Partner Dashboard |
-| **Support contact, reachable** | ✅ | `support@harperdb.io`, committed as the default in `src/support.ts` (product metadata, identical in every environment — so a deploy cannot forget it), overridable via `SIGHTLINE_SUPPORT_EMAIL` / `SIGHTLINE_SUPPORT_URL`. Surfaced on the Privacy screen and on the expired-session and load-failure states — the two places a merchant is actually stuck. **Owner still enters it in the Partner Dashboard listing**, which is a separate field the app cannot populate |
+| **Privacy policy, publicly reachable** | 🟡 | **Built:** served unauthenticated at `/privacy-policy` (`src/privacy/privacyPolicy.ts`, served by `src/resources/privacyPolicy.ts`), versioned with the app, claims pinned by tests against the code's own constants. **Needs:** legal review, an effective date via `SIGHTLINE_POLICY_UPDATED`, and the production URL in the Partner Dashboard |
+| **Support contact, reachable** | ✅ | `support@harperdb.io`, committed as the default in `src/privacy/support.ts` (product metadata, identical in every environment — so a deploy cannot forget it), overridable via `SIGHTLINE_SUPPORT_EMAIL` / `SIGHTLINE_SUPPORT_URL`. Surfaced on the Privacy screen and on the expired-session and load-failure states — the two places a merchant is actually stuck. **Owner still enters it in the Partner Dashboard listing**, which is a separate field the app cannot populate |
 | App name, tagline, description | ☐ | Must describe **Record** only: parallel read-only capture, 7-day searchable ledger, absence-based findings. Draft not written |
 | Screenshots | ☐ | Must come from the real UI with representative, non-fictional data. **Blocked on the live-embed check** (§5) |
 | Pricing | ☐ | Free. No paid plan may be listed while the capabilities are `false` |

@@ -105,11 +105,62 @@ test('collectExportRows: a pager that stops advancing is not followed to the cap
 	assert.equal(truncated, true);
 });
 
+// A big-shop export is ~50 pages. Each page's query and hydration resolve as microtasks,
+// so without a macrotask break between pages the whole export ran as one turn of the
+// event loop: 13 s during which no webhook on that thread could be acked.
+test('collectExportRows: yields to the event loop between pages', async () => {
+	let macrotasks = 0;
+	let stop = false;
+	const spin = () => {
+		if (stop) return;
+		macrotasks++;
+		setImmediate(spin);
+	};
+	setImmediate(spin);
+	const seen: number[] = [];
+	const pager = fakePager(10, 2);
+	await collectExportRows(async (cursor) => {
+		seen.push(macrotasks);
+		return pager(cursor);
+	}, 4);
+	stop = true;
+	assert.equal(seen.length, 3, 'two pages plus the truncation probe');
+	for (let i = 1; i < seen.length; i++) assert.ok(seen[i] > seen[i - 1], `the event loop ran before page ${i + 1}`);
+});
+
 test('collectExportRows: exhausted exactly at the cap, with no more data, is not truncated', async () => {
 	// Pins the fix at the right moment: reading `cursor` after the loop must see
 	// the falsy value from the FINAL page, not a stale truthy value from an
 	// earlier one.
 	const { rows, truncated } = await collectExportRows(fakePager(4, 2), 4);
 	assert.deepEqual(rows, [0, 1, 2, 3]);
+	assert.equal(truncated, false);
+});
+
+// keysetPage hands out a cursor whenever a page is full, so a source of exactly `cap`
+// rows still ends on a cursor that leads to an empty page.
+function fullPageCursorPager(total: number, pageSize: number) {
+	return async (cursor: string | undefined) => {
+		const offset = cursor ? Number(cursor) : 0;
+		const items = Array.from({ length: Math.min(pageSize, total - offset) }, (_, i) => offset + i);
+		return { items, nextCursor: items.length === pageSize ? String(offset + items.length) : undefined };
+	};
+}
+
+test('collectExportRows: exactly the cap, with a full-page cursor on the last page, is not truncated', async () => {
+	const { rows, truncated } = await collectExportRows(fullPageCursorPager(4, 2), 4);
+	assert.deepEqual(rows, [0, 1, 2, 3]);
+	assert.equal(truncated, false);
+});
+
+test('collectExportRows: one row past the cap IS truncated, and the extra row is not returned', async () => {
+	const { rows, truncated } = await collectExportRows(fullPageCursorPager(5, 2), 4);
+	assert.deepEqual(rows, [0, 1, 2, 3]);
+	assert.equal(truncated, true);
+});
+
+test('collectExportRows: one row below the cap is not truncated', async () => {
+	const { rows, truncated } = await collectExportRows(fullPageCursorPager(3, 2), 4);
+	assert.deepEqual(rows, [0, 1, 2]);
 	assert.equal(truncated, false);
 });

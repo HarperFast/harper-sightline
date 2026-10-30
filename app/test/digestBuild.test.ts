@@ -95,7 +95,7 @@ test('a subscription already built for this period is not rebuilt', async () => 
 	assert.equal(result.built, 0);
 	assert.equal(result.skippedNotDue, 1);
 	assert.equal(result.skippedQuiet, 0);
-	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), undefined);
+	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), null);
 	// Untouched — the loop never re-gathered this period, so there is nothing new
 	// to stamp.
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, PERIOD_START);
@@ -113,7 +113,7 @@ test('a quiet, healthy period writes no outbox row but still advances lastBuiltA
 	assert.equal(result.built, 0);
 	assert.equal(result.skippedNotDue, 0);
 	assert.equal(result.skippedQuiet, 1);
-	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), undefined);
+	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), null);
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, PERIOD_START);
 });
 
@@ -128,7 +128,7 @@ test('a subscription with no address never builds', async () => {
 	const result = await runDigestBuild(NOW, deps);
 	assert.equal(result.built, 0);
 	assert.equal(result.skippedNotDue, 1);
-	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), undefined);
+	assert.equal(await outboxes.get(`s1:${PERIOD_START}`), null);
 	assert.equal((await subscriptions.get('s1'))?.lastBuiltAt, undefined);
 });
 
@@ -189,7 +189,7 @@ test('a failure building one subscription does not starve subscriptions after it
 			outboxRows.set(row.id, row);
 		},
 		async get(id: string) {
-			return outboxRows.get(id);
+			return outboxRows.get(id) ?? null;
 		},
 	};
 	const { deps, subscriptions } = buildDeps({
@@ -226,6 +226,28 @@ test('a failure building one subscription does not starve subscriptions after it
 	assert.equal(lines.length, 1);
 	assert.match(lines[0], /"shopId":"s1"/);
 	assert.doesNotMatch(lines[0], /bad@b\.example/);
+});
+
+test('a subscription that fails with a non-Error value is counted like any other failure', async () => {
+	const { deps } = buildDeps({
+		subscriptions: new FakeTable('shopId', [{ shopId: 's1', email: 'a@b.example', status: 'active' }]),
+		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1')]),
+	});
+	deps.outboxes = {
+		async put() {
+			throw undefined;
+		},
+		async get() {
+			return null;
+		},
+	} as unknown as DigestBuildDeps['outboxes'];
+	setLogSink(() => {});
+	try {
+		assert.equal((await runDigestBuild(NOW, deps)).failed, 1);
+	} finally {
+		setLogSink(null);
+	}
 });
 
 // scrubKnownAddress: used where the address at risk is already in hand (the
@@ -283,4 +305,32 @@ test('scrubEmailShaped leaves a module path with an @scope segment unchanged, bu
 	// time — reducing false positives on paths must not turn into a blanket
 	// exemption that also misses genuine addresses.
 	assert.equal(scrubEmailShaped('Cannot find module for ops@merchant.example'), 'Cannot find module for [address]');
+});
+
+// A live subscription iterator holds a Harper read snapshot that expires after
+// maxTransactionOpenTime (30 s); the rows are read out before any shop is built.
+test('a slow build cannot expire the subscription read snapshot and starve the subscriptions after it', async () => {
+	const outboxRows = new Map<string, DigestOutbox>();
+	const { deps, subscriptions } = buildDeps({
+		subscriptions: new FakeTable('shopId', [
+			{ shopId: 's1', email: 'a@b.example', status: 'active' },
+			{ shopId: 's2', email: 'c@b.example', status: 'active' },
+		]),
+		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1'), unconfirmedFinding('s2', 'o2')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1'), awaitingOrder('s2', 'o2')]),
+	});
+	deps.outboxes = {
+		async put(row: DigestOutbox) {
+			outboxRows.set(row.id, row);
+			if (row.shopId === 's1') subscriptions.expireSnapshots(); // the first build took long enough
+		},
+		async get(id: string) {
+			return outboxRows.get(id) ?? null;
+		},
+	} as unknown as DigestBuildDeps['outboxes'];
+
+	const result = await runDigestBuild(NOW, deps);
+
+	assert.equal(result.built, 2);
+	assert.equal(result.failed, 0);
 });

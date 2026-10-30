@@ -1,6 +1,5 @@
-// Request/response plumbing shared by the resource classes. Deliberately free of
-// any `harper` import so it is unit-testable — a Resource class needs the Harper
-// runtime to load, these helpers do not.
+// Request/response helpers shared by the resource classes; free of any `harper`
+// import so they are unit-testable.
 
 export function httpError(message: string, statusCode: number): Error & { statusCode: number } {
 	const e = new Error(message) as Error & { statusCode: number };
@@ -8,7 +7,6 @@ export function httpError(message: string, statusCode: number): Error & { status
 	return e;
 }
 
-// Parse a URL, returning its pathname and search params (defensive).
 export function parseUrl(url: string | undefined): URL {
 	try {
 		return new URL(url ?? '/', 'https://sightline.local');
@@ -17,7 +15,6 @@ export function parseUrl(url: string | undefined): URL {
 	}
 }
 
-// The single path segment after `base`, decoded, or undefined for the collection.
 export function trailingId(pathname: string, base: string): string | undefined {
 	if (!pathname.startsWith(base + '/')) return undefined;
 	const rest = pathname.slice(base.length + 1);

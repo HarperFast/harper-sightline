@@ -1,23 +1,24 @@
 // Deploy the Sightline component to a Harper instance via the operations API,
 // then restart and wait for it to load. Creds from env; nothing secret committed.
 //   HARPER_OPS_URL=https://<host>:9925/ HARPER_USER=... HARPER_PASS=... \
-//   NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/deploy.mjs
-import { execSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+//   node scripts/deploy.mjs
+// TLS is verified. Only a host with a self-signed certificate needs an explicit
+// NODE_TLS_REJECT_UNAUTHORIZED=0 on the command line.
+import { execFileSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { expectedColumns, indexedColumns } from './schemaColumns.mjs';
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';
 const { HARPER_OPS_URL, HARPER_USER, HARPER_PASS } = process.env;
 if (!HARPER_OPS_URL || !HARPER_USER || !HARPER_PASS) {
 	console.error('set HARPER_OPS_URL, HARPER_USER, HARPER_PASS');
 	process.exit(2);
 }
 const auth = 'Basic ' + Buffer.from(`${HARPER_USER}:${HARPER_PASS}`).toString('base64');
-// `url` defaults to the configured ops endpoint. It is explicit because a Fabric
-// cluster has several nodes and each must be addressed individually — see the
-// multi-node section below.
+// `url` defaults to the configured ops endpoint; a Fabric cluster has several nodes
+// and each must be addressed individually (see below).
 const opAt = async (url, b) => {
 	try {
 		const r = await fetch(url, {
@@ -41,35 +42,30 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const appDir = fileURLToPath(new URL('..', import.meta.url));
 const files = ['config.yaml', 'schema.graphql', 'resources.ts', 'jobs.ts', 'src', 'package.json'];
 if (existsSync(join(appDir, 'web/dist/index.html'))) files.push('web/dist');
-const tarPath = join(tmpdir(), 'sightline-deploy.tar');
-execSync(`tar -cf ${tarPath} -C ${appDir} ${files.join(' ')}`, { stdio: 'ignore' });
-
+// A fresh private directory, and no shell: a predictable path in the shared tmpdir
+// could be pre-created by another user, and a checkout path may hold spaces.
+const tarDir = mkdtempSync(join(tmpdir(), 'sightline-deploy-'));
+const tarPath = join(tarDir, 'sightline.tar');
+execFileSync('tar', ['-cf', tarPath, '-C', appDir, ...files], { stdio: 'ignore' });
 const payload = readFileSync(tarPath).toString('base64');
+rmSync(tarDir, { recursive: true, force: true });
 console.log('deploy:', (await op({ operation: 'deploy_component', project: 'sightline', payload })).message ?? '(no message)');
 
 const base = process.env.SIGHTLINE_BASE ?? HARPER_OPS_URL.replace(/:9925\/?$/, '');
 
-// The version marker we can actually verify from outside: the hashed SPA bundle
-// name that Vite just produced. `/api/v1/health` is useless for this — the OLD
-// component answers it 200 just as happily, so polling it made a deploy that
-// shipped nothing report success.
+// The verifiable version marker is the hashed SPA bundle name Vite just produced;
+// `/api/v1/health` is useless because the old component answers it 200 too.
 const localHtml = existsSync(join(appDir, 'web/dist/index.html')) ? readFileSync(join(appDir, 'web/dist/index.html'), 'utf8') : '';
 const expectedAsset = localHtml.match(/assets\/index-[A-Za-z0-9_-]+\.js/)?.[0];
 if (!expectedAsset) console.log('warn: no built web/dist asset to verify against — run `npm run build` first');
 
-// A Fabric cluster runs several nodes behind one hostname, and COMPONENT CODE IS
-// NOT REPLICATED THE WAY DATABASES ARE. `restart` sent to the load-balanced ops
-// endpoint reaches exactly one node, so the others keep serving the previous
-// build — the app then flip-flops between versions depending on which node the
-// request lands on. Enumerate the peers and restart every node by its own
-// hostname.
-// Discovery has to start from whichever node the load balancer hands us, then
-// walk outward: `cluster_status.connections` lists that node's PEERS but not
-// itself, and its own identity is `replication.hostname` from its configuration.
-// (Do NOT use the CA subject — the CA is cluster-wide and always names the
-// issuing node, so on any other node it silently reports the wrong name and the
-// real one gets missed.) Walking every discovered node's peers as well means a
-// cluster larger than two is covered too.
+// Component code is not replicated like databases: `restart` sent to the
+// load-balanced ops endpoint reaches one node, so the others keep serving the old
+// build. Enumerate the peers and restart every node by its own hostname.
+// Discovery starts from whichever node the load balancer returns and walks outward:
+// `cluster_status.connections` lists a node's peers but not itself, whose identity
+// is `replication.hostname` (not the CA subject, which is cluster-wide and names the
+// issuing node). Walking each discovered node's peers covers clusters larger than two.
 const nodeNames = new Set();
 const queue = [HARPER_OPS_URL];
 const visited = new Set();
@@ -112,8 +108,7 @@ for (const t of targets) {
 	let ok = false;
 	for (let i = 0; i < 25 && !ok; i++) {
 		await sleep(4000);
-		// Verified per node, and against the ASSET the build just produced — not
-		// merely "is something answering".
+		// Verified per node against the asset the build produced, not merely "something answers".
 		const asset = await servedAsset(t.base);
 		if (asset && (!expectedAsset || asset === expectedAsset)) {
 			console.log(`${t.name}: live after ~${(i + 1) * 4}s serving ${asset}`);
@@ -123,8 +118,7 @@ for (const t of targets) {
 	if (!ok) failures.push(`${t.name}: did not come back serving ${expectedAsset ?? 'the app'}`);
 }
 
-// Finally confirm the load-balanced hostname is consistent, several times — a
-// single probe can hit the one node that happens to be current.
+// Confirm the load-balanced hostname is consistent several times; one probe can hit the current node.
 if (!failures.length && expectedAsset) {
 	const seen = new Set();
 	for (let i = 0; i < 8; i++) seen.add(await servedAsset(base));
@@ -142,22 +136,15 @@ if (failures.length) {
 	process.exit(1);
 }
 
-// Self-heal the Harper Fabric @sealed column-add flake: deploy_component
-// intermittently fails to (re)add optional columns to an existing sealed table,
-// which silently drops data and degrades the detector. Verify the columns added
-// after initial table creation and re-create any that are missing. Idempotent.
-const EXPECTED_COLUMNS = [
-	['sightline_ledger', 'WebhookDelivery', 'payload'],
-	['sightline_ledger', 'OperationalEvent', 'fulfillableItemCount'],
-	['sightline_ledger', 'OrderProjection', 'requiresFulfillment'],
-	['sightline_ledger', 'OrderProjection', 'fulfilledAt'],
-	// Added in #62 for store-timezone rendering. Degrades to the viewer's zone if
-	// dropped, so it is cosmetic rather than an outage — but self-healing it here
-	// beats a manual describe_table check after every deploy.
-	['sightline_core', 'Shop', 'ianaTimezone'],
-];
+// Self-heals the Fabric @sealed column-add flake: deploy_component intermittently
+// fails to add optional columns to an existing sealed table, silently dropping data.
+// Verifies every column in schema.graphql and re-creates missing ones; idempotent.
+const EXPECTED_COLUMNS = expectedColumns(readFileSync(new URL('../schema.graphql', import.meta.url), 'utf8'));
+const described = new Map();
 for (const [database, table, attribute] of EXPECTED_COLUMNS) {
-	const desc = await op({ operation: 'describe_table', database, table });
+	const tableKey = `${database}.${table}`;
+	if (!described.has(tableKey)) described.set(tableKey, await op({ operation: 'describe_table', database, table }));
+	const desc = described.get(tableKey);
 	const has = Array.isArray(desc?.attributes) && desc.attributes.some((a) => a.attribute === attribute);
 	if (!has) {
 		const r = await op({ operation: 'create_attribute', database, table, attribute });
@@ -165,3 +152,20 @@ for (const [database, table, attribute] of EXPECTED_COLUMNS) {
 	}
 }
 console.log('schema columns verified');
+
+// An @indexed added to an existing column is applied (and back-filled) by the
+// deploy; no operation can create it afterwards, so a missing one is reported.
+// describe_table marks an indexed attribute with an `indexed` property, and lists
+// @computed attributes only with include_computed.
+const notIndexed = [];
+for (const [database, table, attribute] of indexedColumns(readFileSync(new URL('../schema.graphql', import.meta.url), 'utf8'))) {
+	const desc = await op({ operation: 'describe_table', database, table, include_computed: true });
+	const attr = Array.isArray(desc?.attributes) ? desc.attributes.find((a) => a.attribute === attribute) : undefined;
+	if (!attr?.indexed) notIndexed.push(`${table}.${attribute}`);
+}
+if (notIndexed.length) {
+	console.error(`\nINDEX MISSING after deploy: ${notIndexed.join(', ')}`);
+	console.error('Queries on these fall back to full table scans. Redeploy and re-check with describe_table.');
+	process.exit(1);
+}
+console.log('schema indexes verified');

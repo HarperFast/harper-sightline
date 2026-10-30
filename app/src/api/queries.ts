@@ -16,24 +16,30 @@ import {
 	ORDER_FIELDS,
 	ORDER_LIST_FIELDS,
 } from './apiContract.ts';
-import { describeFinding, detectorKey, DETECTOR_FAILED } from '../domain/detector.ts';
+import { describeFinding, detectorKey, DETECTOR_FAILED, DETECTOR_RULES } from '../domain/detector.ts';
 import { AGE_BUCKETS, ageBucketKey, ageHours, deriveOrderLane, isAwaitingConfirmation } from '../domain/orders.ts';
 import { OUTBOX_RETENTION_DAYS } from '../retention/retention.ts';
 import { RECONCILE_STALE_MS } from '../observability/opsHealth.ts';
+import type { ReadCache } from './readCache.ts';
 
-// Minimal search/get surface a Harper table exposes to the read layer. Every
-// query below derives shopId from the authenticated principal (never caller
-// input) and constrains the search by it — the tenant-isolation guarantee.
+// Minimal search/get surface a Harper table exposes to the read layer. Every query
+// derives shopId from the authenticated principal and constrains the search by it.
+export type QueryCondition = { attribute: string; value: unknown; comparator?: string } | QuerySpec;
 export interface QuerySpec {
-	conditions: Array<{ attribute: string; value: unknown; comparator?: string }>;
+	conditions: QueryCondition[];
 	operator?: 'and' | 'or';
-	sort?: { attribute: string; descending?: boolean };
+	sort?: QuerySort;
 	select?: string[];
 	limit?: number;
 }
+export interface QuerySort {
+	attribute: string;
+	descending?: boolean;
+	next?: QuerySort;
+}
 export interface QueryTable {
 	search(spec: QuerySpec): AsyncIterable<Record<string, unknown>>;
-	get(id: string): Promise<Record<string, unknown> | undefined>;
+	get(id: string): Promise<Record<string, unknown> | null>;
 }
 
 export interface Page {
@@ -41,11 +47,14 @@ export interface Page {
 	nextCursor?: string;
 }
 
-// Keyset pagination over a numeric sort field with the row id as a tiebreak.
-// Over-fetches a small buffer and finalizes the cursor boundary in code so
-// equal-timestamp rows page correctly. `descending` is the default because every
-// ledger view is newest-first; the orders worklist also needs oldest-first, where
-// the most overdue order belongs at the top.
+// The store limit for a `keep` page. A page that reaches it short of `limit` ends
+// without a cursor: the only row left to build one from would be another tenant's.
+export const TENANT_SCAN_LIMIT = 10 * MAX_LIMIT;
+
+// Keyset pagination over a numeric sort field with the row id as tiebreak. The store
+// orders by (sortField, id) and the cursor condition excludes everything up to and
+// including the cursor row, so a tie group of any size pages without a read-ahead.
+// `keep` is the tenant check for a query that leaves shopId out (see listEvents).
 async function keysetPage(
 	table: QueryTable,
 	baseConditions: QuerySpec['conditions'],
@@ -55,73 +64,54 @@ async function keysetPage(
 	cursorRaw: string | undefined,
 	limitRaw: unknown,
 	descending = true,
+	keep?: (row: Record<string, unknown>) => boolean,
 ): Promise<Page> {
 	const limit = clampLimit(limitRaw);
 	const cursor = decodeCursor(cursorRaw);
 	const conditions = [...baseConditions];
 	if (cursor) {
+		// Harper rejects an `or` over fewer than two conditions; this one has exactly two.
 		conditions.push({
-			attribute: sortField,
-			value: cursor.sortValue,
-			comparator: descending ? 'less_than_equal' : 'greater_than_equal',
+			operator: 'or',
+			conditions: [
+				{ attribute: sortField, value: cursor.sortValue, comparator: descending ? 'less_than' : 'greater_than' },
+				{
+					operator: 'and',
+					conditions: [
+						{ attribute: sortField, value: cursor.sortValue, comparator: 'equals' },
+						{ attribute: idField, value: cursor.id, comparator: descending ? 'less_than' : 'greater_than' },
+					],
+				},
+			],
 		});
 	}
 
-	const rows: Array<Record<string, unknown>> = [];
+	const page: Array<Record<string, unknown>> = [];
 	for await (const row of table.search({
 		conditions,
 		operator: 'and',
-		sort: { attribute: sortField, descending },
-		limit: limit + 25,
+		sort: { attribute: sortField, descending, next: { attribute: idField, descending } },
+		limit: keep ? TENANT_SCAN_LIMIT : limit,
 	})) {
-		rows.push(row);
+		if (keep && !keep(row)) continue;
+		page.push(row);
+		if (page.length === limit) break;
 	}
-	rows.sort((a, b) => {
-		const av = Number(a[sortField]);
-		const bv = Number(b[sortField]);
-		if (av !== bv) return descending ? bv - av : av - bv;
-		const aid = String(a[idField]);
-		const bid = String(b[idField]);
-		return descending ? bid.localeCompare(aid) : aid.localeCompare(bid);
-	});
-
-	let start = 0;
-	if (cursor) {
-		start = rows.findIndex((r) => {
-			const v = Number(r[sortField]);
-			const id = String(r[idField]);
-			return descending
-				? v < cursor.sortValue || (v === cursor.sortValue && id < cursor.id)
-				: v > cursor.sortValue || (v === cursor.sortValue && id > cursor.id);
-		});
-		if (start < 0) start = rows.length;
-	}
-	const page = rows.slice(start, start + limit);
 	const items = page.map((r) => pick(r, fields));
 	let nextCursor: string | undefined;
 	if (page.length === limit && page.length > 0) {
 		const last = page[page.length - 1];
 		const sortValue = Number(last[sortField]);
-		// NEVER emit a cursor this module cannot decode. decodeCursor rejects a
-		// non-finite sort value, so a row whose sort field is absent encodes to
-		// "NaN|<id>" and decodes back to `undefined` — the next page then runs with
-		// NO boundary condition, returns this same page again, and pages forever
-		// (an export of such a list accumulated 5000 duplicate rows). Ending the
-		// list is the only safe answer: a cursor that cannot be honoured is worse
-		// than no cursor. Callers keep the sort field non-nullable so this is
-		// insurance, not the normal path.
+		// A cursor must be one decodeCursor accepts: a row with no sort value would encode
+		// "NaN|<id>", decode to no boundary, and page the same rows forever. End the list instead.
 		if (Number.isFinite(sortValue)) nextCursor = encodeCursor(sortValue, String(last[idField]));
 	}
 	return { items, nextCursor };
 }
 
-// Attach each event's full SKU list. `skus` is not a column on OperationalEvent —
-// an order has many and the row holds one scalar, deliberately set only when there
-// is exactly one — so the list is assembled from the EventSku index.
-//
-// One OR query per PAGE, not per row: a keyed query per event would be up to
-// MAX_LIMIT round trips to paint one screen. The tenant is re-checked on every
-// index row because this query is keyed by event id, not by shop.
+// `skus` is not a column (an order has many; the row holds one scalar only for a
+// single-SKU event), so the list is assembled from the EventSku index with one OR
+// query per page. The tenant is re-checked per index row because the query keys on event id.
 export async function hydrateSkus(
 	eventSkus: QueryTable,
 	shopId: string,
@@ -133,13 +123,7 @@ export async function hydrateSkus(
 	const byEvent = new Map<string, string[]>();
 	for await (const row of eventSkus.search({
 		conditions: ids.map((id) => ({ attribute: 'eventId', value: id })),
-		// Harper REJECTS an `or` over fewer than two conditions rather than treating
-		// it as a degenerate single match (resources/Table.ts, prepareConditions), so
-		// a one-event hydrate must be an ordinary `and` over its single condition.
-		// Sending `or` unconditionally 500'd every event-detail request — which always
-		// hydrates exactly one event — plus any list page or CSV export that happened
-		// to contain exactly one event. FakeTable now enforces the same rule, so this
-		// cannot regress silently again.
+		// Harper rejects an `or` over fewer than two conditions, so a single id uses `and`.
 		operator: ids.length > 1 ? 'or' : 'and',
 		select: ['eventId', 'sku', 'shopId'],
 	})) {
@@ -152,7 +136,7 @@ export async function hydrateSkus(
 
 	return items.map((item) => {
 		const skus = byEvent.get(String(item.eventId));
-		// Sorted so a rebuild or a different index scan order cannot reorder a cell.
+		// Sorted so index scan order cannot reorder a cell.
 		return skus && skus.length > 0 ? { ...item, skus: [...skus].sort() } : item;
 	});
 }
@@ -163,9 +147,7 @@ export interface EventQueryParams {
 	resourceId?: string;
 	sku?: string;
 	source?: string;
-	// Fulfillment state ('error' | 'failure' | 'success' | …), so a failed attempt
-	// recorded by Shopify can be found directly among the raw events, not just via
-	// the finding it produced.
+	// Fulfillment state ('error' | 'failure' | 'success' | ...), searchable among raw events.
 	state?: string;
 	since?: number;
 	until?: number;
@@ -173,30 +155,12 @@ export interface EventQueryParams {
 	limit?: unknown;
 }
 
-// GET /events — the searchable 7-day operational ledger, tenant-scoped, filtered,
-// cursor-paginated. The window floor is max(caller since, now − 7 days).
+// GET /events: the 7-day tenant-scoped ledger, cursor-paginated; the window floor is
+// max(caller since, now - 7 days).
 //
-// A `sku` filter takes a different path: SKUs live in the EventSku index (one row
-// per event/SKU) because an order has many and the event row holds one scalar.
-// The index carries the other filterable fields, so the SKU path is an ordinary
-// keyset page over EventSku followed by a keyed hydrate.
-//
-// ONE EXCEPTION: `state` is not an EventSku column, so on the SKU path it is
-// applied AFTER hydration, from the event row itself. Spreading the full
-// condition list into the index query (which is what happened when `state` was
-// added later) meant `sku` and `state` together matched nothing at all: each
-// filter worked alone, and the pair — two controls sitting side by side in the
-// same filter bar — silently returned an empty page.
-//
-// Denormalizing `state` into EventSku was the alternative and is worse: index
-// rows written before the column existed would not carry it, so the combination
-// would UNDER-return for every historical row while looking like it worked. That
-// is exactly the legacy-column failure C1 just demonstrated on the projection
-// table, and it fails silently in the merchant's disfavour.
-//
-// The cost is that this one path can return a SHORT page — fewer items than the
-// limit while `nextCursor` is still set. Not a new property: the hydration loop
-// already skips index rows whose event has been purged.
+// A `sku` filter pages the EventSku index (an order has many SKUs) and then hydrates
+// the events. `state` is not an EventSku column, so on that path it is applied after
+// hydration from the event row, which can return a short page with `nextCursor` set.
 export async function listEvents(
 	events: QueryTable,
 	shopId: string,
@@ -205,19 +169,18 @@ export async function listEvents(
 	eventSkus?: QueryTable,
 ): Promise<Page> {
 	const windowStart = Math.max(params.since ?? 0, now - WINDOW_MS);
-	const conditions: QuerySpec['conditions'] = [
-		{ attribute: 'shopId', value: shopId },
-		{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
-	];
+	// A resourceId filter is highly selective, but Harper's `and` would still walk the shop's whole
+	// shopId index, so that query drops shopId and `keep` filters the rows instead.
+	const conditions: QuerySpec['conditions'] = [{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' }];
+	if (!params.resourceId) conditions.unshift({ attribute: 'shopId', value: shopId });
+	const keep = params.resourceId ? (row: Record<string, unknown>) => row.shopId === shopId : undefined;
 	if (params.until !== undefined) conditions.push({ attribute: 'occurredAt', value: params.until, comparator: 'less_than_equal' });
-	// Conditions every EventSku row also carries, so they are safe to push into
-	// either query. `state` is deliberately NOT here — see below.
+	// Conditions every EventSku row also carries; `state` is not one of them.
 	for (const [attr, val] of [
 		['domain', params.domain],
 		['topic', params.topic],
 		['resourceId', params.resourceId],
-		// `source` distinguishes webhook-observed from reconciliation-recovered
-		// evidence (screen spec §3 "evidence source" filter).
+		// webhook-observed versus reconciliation-recovered evidence.
 		['source', params.source],
 	] as const) {
 		if (val) conditions.push({ attribute: attr, value: val });
@@ -232,40 +195,32 @@ export async function listEvents(
 			['eventId'],
 			params.cursor,
 			params.limit,
+			true,
+			keep,
 		);
-		// One get per index row, but ISSUED TOGETHER: awaiting inside the loop meant an
-		// export of a SKU-filtered list serialized up to MAX_EXPORT_ROWS round trips
-		// inside one request. The tenant re-check below stays per-row.
 		const fetched = await Promise.all(indexPage.items.map((row) => events.get(String(row.eventId))));
 		const hydrated: Array<Record<string, unknown>> = [];
 		for (const event of fetched) {
-			// An index row whose event is gone (purged mid-page, or written before its
-			// event landed) is skipped rather than surfaced as a phantom result.
+			// Skip an index row whose event was purged or has not landed.
 			if (!event || event.shopId !== shopId) continue;
-			// `state` lives on the event, not on the index, so it is applied here.
 			if (params.state && event.state !== params.state) continue;
 			hydrated.push(pick(event, EVENT_FIELDS));
 		}
 		return { items: await hydrateSkus(eventSkus, shopId, hydrated), nextCursor: indexPage.nextCursor };
 	}
 
-	// Off the index path `state` IS a column on the event row, so it filters in the
-	// database like every other condition.
+	// Off the index path `state` is a column on the event row.
 	if (params.state) conditions.push({ attribute: 'state', value: params.state });
 
-	// No EventSku table wired (or no sku filter requested): fall back to the
-	// scalar `sku` column directly. That column is only ever populated for a
-	// single-SKU event, so this path still answers a single-SKU query correctly
-	// when a caller hasn't (or can't) supply the index table.
+	// No EventSku table wired or no sku filter: fall back to the scalar `sku` column,
+	// which is only set for a single-SKU event.
 	if (params.sku) conditions.push({ attribute: 'sku', value: params.sku });
 
-	const page = await keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit);
+	const page = await keysetPage(events, conditions, 'occurredAt', 'eventId', EVENT_FIELDS, params.cursor, params.limit, true, keep);
 	return { items: eventSkus ? await hydrateSkus(eventSkus, shopId, page.items) : page.items, nextCursor: page.nextCursor };
 }
 
-// GET /events/:id — one event plus lightweight relations. Cross-tenant safe: an
-// event whose shopId differs from the principal returns null (not another
-// tenant's data), regardless of the id supplied.
+// GET /events/:id: one event plus relations; an event of another tenant returns null.
 export async function getEventDetail(
 	events: QueryTable,
 	projections: QueryTable,
@@ -276,31 +231,28 @@ export async function getEventDetail(
 	locations?: QueryTable,
 	eventSkus?: QueryTable,
 ): Promise<Record<string, unknown> | null> {
-	const row = (await events.get(eventId)) as OperationalEvent | undefined;
+	const row = ((await events.get(eventId)) ?? undefined) as OperationalEvent | undefined;
 	if (!row || row.shopId !== shopId) return null;
 
 	const relatedEventIds: string[] = [];
 	if (row.resourceId) {
 		for await (const r of events.search({
-			conditions: [
-				{ attribute: 'shopId', value: shopId },
-				{ attribute: 'resourceId', value: row.resourceId },
-			],
+			conditions: [{ attribute: 'resourceId', value: row.resourceId }],
 			operator: 'and',
-			select: ['eventId'],
-			limit: 50,
+			select: ['eventId', 'shopId'],
 		})) {
+			// shopId is filtered here, not queried (see listEvents); the cap is applied to this shop's rows.
+			if ((r as { shopId?: unknown }).shopId !== shopId) continue;
 			const id = (r as { eventId?: unknown }).eventId;
 			if (typeof id === 'string' && id !== eventId) relatedEventIds.push(id);
+			if (relatedEventIds.length >= 50) break;
 		}
 	}
 	const orderId = row.resourceId;
 	const affectedProjection = orderId ? Boolean(await projections.get(`${shopId}:${orderId}`)) : false;
 	const affectedFinding = orderId ? Boolean(await findings.get(detectorKey(shopId, orderId))) : false;
 
-	// Human-readable context for the opaque ids on an inventory event. Both are
-	// keyed gets against this shop's own cache rows; a cache miss simply omits the
-	// field rather than blocking the detail view.
+	// Keyed gets on this shop's own cache rows; a miss omits the field.
 	let inventorySku: string | undefined;
 	let productTitle: string | undefined;
 	if (row.domain === 'inventory' && row.resourceId && inventoryItems) {
@@ -327,8 +279,7 @@ export async function getEventDetail(
 		...(productTitle ? { productTitle } : {}),
 		...(locationName ? { locationName } : {}),
 	};
-	// Hydrated the same way as the list, so detail and list agree on a multi-SKU
-	// event's SKUs rather than the list showing them and the detail not.
+	// Hydrated like the list so detail and list agree on a multi-SKU event.
 	if (!eventSkus) return base;
 	const [hydrated] = await hydrateSkus(eventSkus, shopId, [base]);
 	return hydrated;
@@ -341,11 +292,9 @@ export interface FindingQueryParams {
 	limit?: unknown;
 }
 
-// GET /findings — tenant-scoped finding list, filterable by status, paginated.
-// Each row is enriched with the two order facts the list columns need (paid time
-// and the expected-confirmation deadline). The expectation shares the finding's
-// key, so the join is a keyed get per row — bounded by the page limit — and both
-// sources are tenant-checked before any field is copied.
+// GET /findings: tenant-scoped, filterable by status. Each row gets the order's paid
+// time and the confirmation deadline via a keyed get on the expectation (same key as
+// the finding), tenant-checked before any field is copied.
 export async function listFindings(
 	findings: QueryTable,
 	expectations: QueryTable,
@@ -372,8 +321,7 @@ export async function listFindings(
 	return { items, nextCursor: page.nextCursor };
 }
 
-// GET /findings/:id — a finding with its detector expectation, order facts, and
-// non-accusatory description. Cross-tenant safe.
+// GET /findings/:id: a finding with its expectation and order facts. Cross-tenant safe.
 export async function getFindingDetail(
 	findings: QueryTable,
 	expectations: QueryTable,
@@ -381,10 +329,10 @@ export async function getFindingDetail(
 	shopId: string,
 	id: string,
 ): Promise<Record<string, unknown> | null> {
-	const finding = (await findings.get(id)) as GapFinding | undefined;
+	const finding = ((await findings.get(id)) ?? undefined) as GapFinding | undefined;
 	if (!finding || finding.shopId !== shopId) return null;
-	const expectation = (await expectations.get(id)) as Expectation | undefined;
-	const projection = (await projections.get(`${shopId}:${finding.orderId}`)) as OrderProjection | undefined;
+	const expectation = ((await expectations.get(id)) ?? undefined) as Expectation | undefined;
+	const projection = ((await projections.get(`${shopId}:${finding.orderId}`)) ?? undefined) as OrderProjection | undefined;
 	return {
 		...pick(finding as unknown as Record<string, unknown>, FINDING_FIELDS),
 		description: describeFinding(finding),
@@ -397,52 +345,30 @@ export async function getFindingDetail(
 export interface OrderQueryParams {
 	state?: string;
 	minAgeHours?: number;
-	// Upper bound on age, so an aging BUCKET link can reproduce the bucket rather
-	// than an open-ended threshold. The buckets are half-open intervals; without
-	// this, "Under 24h: 1" opened the entire awaiting list.
+	// Upper age bound, so an aging bucket link reproduces its half-open interval.
 	maxAgeHours?: number;
 	sort?: 'oldest' | 'newest';
 	cursor?: string;
 	limit?: unknown;
 }
 
-// GET /orders — the operational worklist the Overview's counts drill into.
+// GET /orders: the worklist the Overview counts drill into. Sorted and filtered in
+// the database; post-filtering would return short pages and a misleading `nextCursor`.
 //
-// Sorted and filtered in the DATABASE on the indexed `lastEventAt`, `paidAt` and
-// `state` columns. Post-filtering in code was the alternative and is wrong here:
-// it returns short pages and a `nextCursor` that implies more matches than exist.
-//
-// The SORT KEY is `lastEventAt`, which the projection reducer always writes —
-// never `paidAt`, which is nullable. `orders/create` is subscribed and `paidAt`
-// is only latched on payment, so every pending, authorized-not-captured, COD or
-// draft order sits in this table with no `paidAt` at all; keysetting on it made
-// the cursor for such a row undecodable and the worklist paged the same rows
-// forever (C3). `sort` therefore means order of LAST OBSERVED ACTIVITY —
-// 'newest' = most recent activity first, 'oldest' = least recent first, which is
-// still what triage wants, because a quiet awaiting order's last activity IS its
-// payment. The UI names the column it sorts on.
-//
-// `paidAt` remains a pure FILTER (minAgeHours), and `ageHours` stays derived from
-// it per row rather than stored, because it changes every hour and a stored copy
-// would be stale the moment it was written.
+// The sort key is `lastEventAt`, which the reducer always writes, never the nullable
+// `paidAt` (a null sort value makes the cursor undecodable). `sort` therefore means
+// order of last observed activity. `paidAt` is only a filter (minAgeHours), and
+// `ageHours` is derived per row because a stored value goes stale hourly.
 export async function listOrders(projections: QueryTable, shopId: string, now: number, params: OrderQueryParams): Promise<Page> {
 	const windowStart = now - WINDOW_MS;
 	const conditions: QuerySpec['conditions'] = [
 		{ attribute: 'shopId', value: shopId },
-		// Same window bound the flow lanes and the Overview tiles use (windowCondition),
-		// so the worklist and the lane counts describe the same set of orders.
+		// Same window bound as the flow lanes and Overview tiles.
 		windowCondition(windowStart),
 	];
 	if (params.state) conditions.push({ attribute: 'state', value: params.state });
-	// Age bounds. `ageHours` floors, so the pair is exactly the half-open interval
-	// [min, max) the aging buckets use, and the four buckets partition the awaiting
-	// set with no gap and no double-count:
-	//   "at least N hours old"      → paid at or before now − N hours
-	//   "less than N hours old"     → paid strictly after   now − N hours
-	// At the boundary paidAt = now − 48h: minAgeHours=48 includes it (<=),
-	// maxAgeHours=48 excludes it (>), so it lands in exactly one bucket. Both are
-	// filters on this shop's own rows, never a scope — shopId still comes from the
-	// authenticated principal above.
+	// `ageHours` floors, so minAgeHours (<=) and maxAgeHours (>) form the half-open
+	// interval [min, max) the aging buckets use: a boundary order lands in exactly one bucket.
 	if (params.minAgeHours !== undefined && Number.isFinite(params.minAgeHours)) {
 		conditions.push({ attribute: 'paidAt', value: now - params.minAgeHours * 3_600_000, comparator: 'less_than_equal' });
 	}
@@ -469,10 +395,8 @@ export async function listOrders(projections: QueryTable, shopId: string, now: n
 	};
 }
 
-// GET /orders/:orderId — one order's latched facts, its normalized events in the
-// window (newest first, bounded), and any findings about it. This is the
-// order-centric forensics view: everything Sightline observed about one order,
-// without needing a finding to exist first.
+// GET /orders/:orderId: the order's latched facts, its events in the window
+// (newest first, bounded), and any findings about it.
 export async function getOrderDetail(
 	projections: QueryTable,
 	events: QueryTable,
@@ -481,41 +405,37 @@ export async function getOrderDetail(
 	now: number,
 	orderId: string,
 ): Promise<Record<string, unknown> | null> {
-	// Keyed by `${shopId}:${orderId}`, so a manipulated orderId can only ever miss.
+	// Keyed by shopId, so a manipulated orderId can only miss.
 	const projection = await projections.get(`${shopId}:${orderId}`);
 	if (!projection || projection.shopId !== shopId) return null;
 
 	const windowStart = now - WINDOW_MS;
 	const eventRows: Array<Record<string, unknown>> = [];
 	for await (const row of events.search({
+		// resourceId alone, shopId filtered below (see listEvents); an order's events are few.
 		conditions: [
-			{ attribute: 'shopId', value: shopId },
 			{ attribute: 'resourceId', value: orderId },
-			// Same window bound every other ledger view honors — retention purge lag
-			// can otherwise leave older rows queryable after the window they belong to.
+			// Same window bound as every other ledger view; purge lag can leave older rows queryable.
 			{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
 		sort: { attribute: 'occurredAt', descending: true },
-		limit: MAX_LIMIT,
 	})) {
+		if (row.shopId !== shopId) continue;
 		eventRows.push(pick(row, EVENT_FIELDS));
+		if (eventRows.length >= MAX_LIMIT) break;
 	}
 
+	// By key, not by a search: GapFinding.orderId is not indexed, and the shopId index
+	// walks every finding the shop has.
+	const found = await Promise.all(DETECTOR_RULES.map((rule) => findings.get(detectorKey(shopId, orderId, rule))));
 	const findingRows: Array<Record<string, unknown>> = [];
-	for await (const row of findings.search({
-		conditions: [
-			{ attribute: 'shopId', value: shopId },
-			{ attribute: 'orderId', value: orderId },
-		],
-		operator: 'and',
-	})) {
+	for (const row of found) {
+		if (!row || row.shopId !== shopId) continue;
 		findingRows.push({ ...pick(row, FINDING_FIELDS), description: describeFinding(row as unknown as GapFinding) });
 	}
 
-	// ageHours is computed per request, same as listOrders — it changes every
-	// hour and a stored copy would be stale the moment it was written. Omitted
-	// entirely (not zero) for an order that was never paid.
+	// Computed per request like listOrders; omitted (not zero) for an order never paid.
 	const hours = ageHours(projection.paidAt as number | undefined, now);
 	return {
 		...pick(projection, ORDER_FIELDS),
@@ -527,19 +447,27 @@ export async function getOrderDetail(
 
 async function countWhere(table: QueryTable, conditions: QuerySpec['conditions']): Promise<number> {
 	let n = 0;
-	for await (const _r of table.search({ conditions, operator: 'and', select: conditions.length ? [conditions[0].attribute] : undefined }))
+	const first = conditions[0];
+	for await (const _r of table.search({
+		conditions,
+		operator: 'and',
+		select: first && 'attribute' in first ? [first.attribute] : undefined,
+	}))
 		n++;
 	return n;
+}
+
+// The resources pass a per-shop cache (src/api/readCache.ts); the digest and tests call
+// without one and always scan.
+function cachedScan<T>(cache: ReadCache<T> | undefined, shopId: string, scan: () => Promise<T>): Promise<T> {
+	return cache ? cache.get(shopId, scan) : scan();
 }
 
 const DAY_MS = 86_400_000;
 export const ACTIVITY_DOMAINS = ['order', 'fulfillment', 'inventory', 'refund'] as const;
 
-// Reconciliation freshness for one shop, from the durable Shop record written by
-// the reconcile sweep. `stale` uses the same threshold the operator-side health
-// check uses, so the merchant-visible banner and the ops alert agree. A shop that
-// has never completed a sweep is stale with a null age — the UI must not render
-// that as "reconciled just now".
+// Reconciliation freshness from the Shop record. `stale` uses the operator health
+// threshold; a shop that never completed a sweep is stale with a null age.
 export interface ReconciliationView {
 	lastReconciledAt?: number;
 	ageMs: number | null;
@@ -557,10 +485,8 @@ export function reconciliationView(shop: Shop | undefined, now: number): Reconci
 	};
 }
 
-// Per-day event counts by domain across the read window — the Overview's
-// "activity over time" (screen spec §2). Bounded to WINDOW_DAYS buckets, and
-// derived from the same single event scan that produces the window total, so it
-// adds no extra pass over the ledger. Buckets are ascending (oldest first).
+// Per-day event counts by domain across the read window (WINDOW_DAYS buckets,
+// ascending), derived from the same event scan as the window total.
 function emptyBuckets(windowStart: number): Array<Record<string, number>> {
 	return Array.from({ length: WINDOW_DAYS }, (_unused, i) => {
 		const bucket: Record<string, number> = { startAt: windowStart + i * DAY_MS, total: 0 };
@@ -569,93 +495,63 @@ function emptyBuckets(windowStart: number): Array<Record<string, number>> {
 	});
 }
 
-// One definition of "in the read window" for every order-derived count, so the
-// Overview's tiles, the flow lanes, and the worklist can never describe different
-// sets of orders. Retention usually keeps expired projections out of the table
-// anyway, but "usually" is not a guarantee: a purge run capped at
-// MAX_DELETES_PER_RUN leaves residue behind, and that residue must not surface in
-// one panel and not another.
-//
-// The same predicate is available as an INDEXABLE condition, and the two order
-// scans below push it into the search (windowCondition) as well as keeping this
-// code-side check as a belt. Without it, getSummary — which runs on every screen
-// load behind a 15s cache — scanned every projection the shop had ever stored and
-// filtered in code.
+// One definition of "in the read window" for every order-derived count. Retention
+// usually keeps expired projections out, but purge residue must not surface in one
+// panel and not another. The scans also push the predicate into the search
+// (windowCondition) and keep this code-side check as a belt.
 function inWindow(p: OrderProjection, windowStart: number): boolean {
 	return (p.lastEventAt ?? 0) >= windowStart;
 }
 
-// listOrders uses the identical condition, so all three surfaces bound the set the
-// same way, in the database. `lastEventAt` is @indexed for exactly this.
+// Identical to listOrders' condition; `lastEventAt` is @indexed for it.
 function windowCondition(windowStart: number): QuerySpec['conditions'][number] {
 	return { attribute: 'lastEventAt', value: windowStart, comparator: 'greater_than_equal' };
 }
 
-// GET /summary — the Overview screen's counts. Recorder health is separate from
-// the finding count: an unhealthy recorder cannot claim "no gaps" (screen spec).
+// GET /summary: the Overview counts. Recorder health is separate from the finding
+// count so an unhealthy recorder cannot claim "no gaps".
 export async function getSummary(
 	tables: { events: QueryTable; projections: QueryTable; findings: QueryTable; deliveries: QueryTable; shops: QueryTable },
+	shopId: string,
+	now: number,
+	cache?: ReadCache<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+	const counts = await cachedScan(cache, shopId, () => summaryCounts(tables, shopId, now));
+	// A keyed read, so per request: a finished reconcile shows without waiting out the cache.
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
+	return { ...counts, reconciliation: reconciliationView(shop, now) };
+}
+
+// Everything in the summary that scans the shop's rows; cached per shop (src/api/readCache.ts).
+async function summaryCounts(
+	tables: { events: QueryTable; projections: QueryTable; findings: QueryTable; deliveries: QueryTable },
 	shopId: string,
 	now: number,
 ): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
 	const buckets = emptyBuckets(windowStart);
 	let eventsTotal = 0;
-	// Capture-integrity tally. `webhookEvents` is a plain source tally — every row
-	// whose `source` is not 'reconciliation' — and is evidence about what arrived.
-	// `reconciliationOnlyEvents` used to be the mirror-image tally (every row WITH
-	// source 'reconciliation'), but that is not evidence a webhook failed: the
-	// reconcile sweep (jobs.ts reconcileShopWithToken) is a rolling resync that
-	// writes a synthesized event for every order it touches unconditionally, so a
-	// healthy webhook delivery is routinely followed by a reconciliation event for
-	// the SAME change on the next sweep — both rows persist (their event ids can
-	// never collide) and the old tally counted that as a capture gap every time.
-	// `reconciliationOnlyEvents` now counts only a reconciliation event whose
-	// (resourceId, kind) has NO webhook-sourced counterpart in this same window —
-	// see src/domain/eventKind.ts for how "kind" is derived and why that comparison is
-	// the safe one.
+	// `webhookEvents` is a tally of rows whose `source` is not 'reconciliation' (a
+	// catch-all, not a test for 'webhook'; add that branch if it ever links to a list).
+	// `reconciliationOnlyEvents` counts a reconciliation event only when no webhook event
+	// with the same (resourceId, kind) exists in the window (src/domain/eventKind.ts),
+	// because the sweep rewrites every order it touches and a webhook twin is normal.
 	//
-	// Matching is BEST-EFFORT, not a guarantee. The two paths read `occurredAt`
-	// from DIFFERENT fields for every one of the four kinds — webhook
-	// `paid`/`cancelled` from the order's updated_at against reconciliation's
-	// createdAt and cancelledAt, webhook `fulfilled` from the fulfillment's
-	// updated_at against the order's fulfilledAt, webhook `refunded` from the
-	// refund's processed_at against the order's updatedAt (src/ingest/normalize.ts vs
-	// src/shopify/reconcile.ts). So one real change is observed at two different instants,
-	// and a pair whose two timestamps straddle `windowStart` would otherwise not be
-	// found: the in-window reconciliation row would be counted as a gap even
-	// though its webhook twin exists, just outside.
+	// Matching is best-effort: the two paths take `occurredAt` from different fields
+	// (src/ingest/normalize.ts vs src/shopify/reconcile.ts), so a twin can straddle
+	// `windowStart`. The query is widened by MATCH_MARGIN_MS and only `webhookKeys`
+	// sees the margin rows; every tally is gated back to `occurredAt >= windowStart`.
+	// There is no upper margin because the window's upper edge is `now`.
 	//
-	// The fix is the same one src/digest/digestData.ts already uses: widen the QUERY below
-	// windowStart by MATCH_MARGIN_MS, so a webhook row just outside the window is
-	// still fetched and can still populate `webhookKeys`. That set exists ONLY to
-	// recognise a twin — a margin row must never be counted as an event that
-	// happened in this window. So every tally below (`eventsTotal`, `webhookEvents`,
-	// the activity buckets, and `reconciliationCandidates`) is gated back to
-	// `occurredAt >= windowStart` before it runs; only `webhookKeys` sees the full
-	// widened fetch. Unlike src/digest/digestData.ts, there is no upper-edge margin here:
-	// this window's upper edge is `now`, not a fixed boundary in the past, so there
-	// is no future-dated twin to widen for.
-	//
-	// Consequence: `webhookEvents` and `reconciliationOnlyEvents` no longer sum to
-	// `eventsTotal` — a matched reconciliation event is counted in neither. That
-	// is intentional: it is real evidence the webhook path DID work, so it must
-	// not inflate the gap count, and it is not itself a webhook-sourced row, so it
-	// must not inflate that count either. `webhookEvents` remains a CATCH-ALL over
-	// `source` (anything not 'reconciliation'), not a test for the literal
-	// 'webhook' value, for the same reason as before: EventSource has exactly two
-	// values today, so it is a harmless simplification while this number links
-	// nowhere. Give it a link into a filtered event list and this becomes a real
-	// defect — add the explicit `=== 'webhook'` branch and a third bucket then.
+	// A matched reconciliation event is counted in neither tally, so the two no longer
+	// sum to `eventsTotal`.
 	let webhookEvents = 0;
 	const webhookKeys = new Set<string>();
 	const reconciliationCandidates: Array<{ resourceId: string; kind: ReturnType<typeof eventKind> }> = [];
 	for await (const e of tables.events.search({
 		conditions: [
 			{ attribute: 'shopId', value: shopId },
-			// Widened below windowStart by MATCH_MARGIN_MS (src/domain/eventKind.ts, imported
-			// rather than redeclared) — see the comment above for why, and why every
-			// tally but `webhookKeys` below still gates back to the real windowStart.
+			// Widened below windowStart by MATCH_MARGIN_MS; see above.
 			{ attribute: 'occurredAt', value: windowStart - MATCH_MARGIN_MS, comparator: 'greater_than_equal' },
 		],
 		operator: 'and',
@@ -665,19 +561,13 @@ export async function getSummary(
 		const resourceId = typeof e.resourceId === 'string' ? e.resourceId : undefined;
 		const kind = eventKind({ domain: e.domain as EventDomain, state: e.state as string | undefined, topic: e.topic as string | undefined });
 		const isReconciliation = String(e.source) === 'reconciliation';
-		// Built from the FULL widened fetch, margin rows included: recognising a twin
-		// just outside the window is the entire reason for widening the query. This
-		// set is a recognise-only index, never a tally — nothing below adds to it.
+		// Recognise-only index of webhook twins, built from the widened fetch; never a tally.
 		if (!isReconciliation && resourceId !== undefined && kind !== undefined) webhookKeys.add(`${resourceId}:${kind}`);
-		// Everything from here down IS a tally, so a margin row (occurredAt before
-		// the real windowStart) is skipped rather than counted as this window's
-		// activity — it was fetched only to be recognisable above, not to be part of
-		// eventsTotal, webhookEvents, or a bucket it does not actually belong to.
+		// Margin rows are fetched only for `webhookKeys`, not counted.
 		if (occurredAt < windowStart) continue;
 		eventsTotal++;
 		if (isReconciliation) {
-			// Safety bias: a reconciliation event whose kind cannot be determined is
-			// never treated as a capture gap candidate — see eventKind.ts.
+			// A reconciliation event of unknown kind is never a gap candidate (eventKind.ts).
 			if (resourceId !== undefined && kind !== undefined) reconciliationCandidates.push({ resourceId, kind });
 		} else {
 			webhookEvents++;
@@ -688,8 +578,7 @@ export async function getSummary(
 		const domain = String(e.domain);
 		if (domain in bucket) bucket[domain]++;
 	}
-	// Second pass over the already-fetched candidates, not a second query: counts
-	// only a reconciliation kind absent from the webhook set built above.
+	// Counts reconciliation kinds absent from the webhook set; no second query.
 	let reconciliationOnlyEvents = 0;
 	for (const c of reconciliationCandidates) {
 		if (!webhookKeys.has(`${c.resourceId}:${c.kind}`)) reconciliationOnlyEvents++;
@@ -698,15 +587,12 @@ export async function getSummary(
 		{ attribute: 'shopId', value: shopId },
 		{ attribute: 'status', value: 'dead_letter' },
 	]);
-	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
 
 	let ordersTracked = 0;
 	let paid = 0;
 	let fulfilled = 0;
 	let awaitingConfirmation = 0;
-	// Aging of the awaiting set, so the Overview can show what is heading for the
-	// 72-hour deadline while it can still be acted on — not just what already
-	// blew it. Zero-filled so every bucket renders.
+	// Aging of the awaiting set, zero-filled so every bucket renders.
 	const agingCounts: Record<string, number> = Object.fromEntries(AGE_BUCKETS.map((b) => [b.key, 0]));
 	for await (const p of tables.projections.search({
 		conditions: [{ attribute: 'shopId', value: shopId }, windowCondition(windowStart)],
@@ -716,11 +602,8 @@ export async function getSummary(
 		if (!inWindow(proj, windowStart)) continue;
 		ordersTracked++;
 		if (proj.paidAt !== undefined) paid++;
-		// "Fulfilled" here means the lane, not just "has a fulfilledAt" — an order
-		// fulfilled and then cancelled or fully refunded must not count as both.
-		// deriveOrderLane is the same finality-ordered definition computeFlows and
-		// listOrders' state column use, so this tile and those two can never
-		// disagree about the same order.
+		// The lane, not just "has a fulfilledAt": an order fulfilled then cancelled or
+		// refunded must not count as both. deriveOrderLane is shared with computeFlows and listOrders.
 		if (deriveOrderLane(proj) === 'fulfilled') fulfilled++;
 		if (isAwaitingConfirmation(proj)) {
 			awaitingConfirmation++;
@@ -730,11 +613,8 @@ export async function getSummary(
 	}
 
 	const findingCounts: Record<string, number> = { unconfirmed: 0, resolved: 0, suppressed: 0 };
-	// Failed attempts are counted separately as well as inside `unconfirmed`: they
-	// are DIRECT evidence (Shopify recorded an attempt that did not succeed) rather
-	// than an inference from absence, so they deserve their own headline — but they
-	// are still unconfirmed findings, so removing them from that count would make
-	// the two numbers contradict each other.
+	// Counted inside `unconfirmed` as well as on their own: direct evidence of a failed
+	// attempt, but still unconfirmed findings.
 	let failedAttempts = 0;
 	for await (const f of tables.findings.search({ conditions: [{ attribute: 'shopId', value: shopId }] })) {
 		const finding = f as unknown as GapFinding;
@@ -750,17 +630,23 @@ export async function getSummary(
 		aging: { buckets: AGE_BUCKETS.map((b) => ({ key: b.key, label: b.label, count: agingCounts[b.key] })) },
 		findings: { ...findingCounts, failedAttempts },
 		recorder: { healthy: deadLettered === 0, deadLetteredDeliveries: deadLettered },
-		reconciliation: reconciliationView(shop, now),
 		activity: { days: WINDOW_DAYS, domains: [...ACTIVITY_DOMAINS], buckets },
 		integrity: { webhookEvents, reconciliationOnlyEvents },
 	};
 }
 
-// GET /flows — bounded lane counts derived from order projections in the window.
-// A pure function of the projections, so it reconciles to fixtures and rebuilds.
-// Lanes come from deriveOrderLane, the same definition the worklist and the
-// summary use, so the three views cannot disagree.
-export async function computeFlows(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
+// GET /flows: lane counts from the window's projections, via deriveOrderLane (the
+// same definition as the worklist and summary).
+export async function computeFlows(
+	projections: QueryTable,
+	shopId: string,
+	now: number,
+	cache?: ReadCache<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+	return cachedScan(cache, shopId, () => flowCounts(projections, shopId, now));
+}
+
+async function flowCounts(projections: QueryTable, shopId: string, now: number): Promise<Record<string, unknown>> {
 	const windowStart = now - WINDOW_MS;
 	const lanes = { paid: 0, fulfilled: 0, awaitingConfirmation: 0, noFulfillmentExpected: 0, cancelled: 0, refunded: 0 };
 	for await (const p of projections.search({
@@ -774,11 +660,7 @@ export async function computeFlows(projections: QueryTable, shopId: string, now:
 			case 'fulfilled':
 				lanes.fulfilled++;
 				break;
-			// Paid, live, no fulfillment observed and none expected (a digital order).
-			// It gets its own lane rather than being folded into 'fulfilled', which
-			// would assert a fulfillment nobody observed, or left out of the breakdown
-			// entirely, which would make a digital-only store's flow panel read as all
-			// zeroes beside a non-zero Paid count.
+			// Paid, live, nothing expected (a digital order): its own lane, not 'fulfilled'.
 			case 'no_fulfillment_expected':
 				lanes.noFulfillmentExpected++;
 				break;
@@ -798,16 +680,11 @@ export async function computeFlows(projections: QueryTable, shopId: string, now:
 	return { shop: shopId, windowDays: WINDOW_DAYS, lanes };
 }
 
-// Customer fields Sightline deliberately never records. Stated positively on the
-// Privacy screen so a merchant (and an app reviewer) can see the exclusion list,
-// not just the inclusion list (screen spec §5).
+// Customer fields Sightline never records, stated on the Privacy screen.
 export const EXCLUDED_CUSTOMER_FIELDS = ['customer name', 'customer email', 'customer phone', 'shipping & billing address'] as const;
 
-// GET /privacy — the app's data-handling contract, this shop's footprint, and the
-// capture/reconciliation health that makes the zero-configuration service
-// auditable (screen spec §5). Deliberately returns NO secrets, token material,
-// internal host/cluster names, or cross-tenant metrics: scopes are the granted
-// OAuth scope strings, and every count is constrained to this shop.
+// GET /privacy: the data-handling contract and this shop's footprint. Returns no
+// secrets, token material, host names or cross-tenant metrics; counts are shop-scoped.
 export async function getPrivacy(
 	tables: {
 		events: QueryTable;
@@ -819,18 +696,13 @@ export async function getPrivacy(
 	},
 	shopId: string,
 	now: number,
+	cache?: ReadCache<PrivacyCounts>,
 ): Promise<Record<string, unknown>> {
-	const footprint = {
-		events: await countWhere(tables.events, [{ attribute: 'shopId', value: shopId }]),
-		orders: await countWhere(tables.projections, [{ attribute: 'shopId', value: shopId }]),
-		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
-	};
-	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+	const { footprint, webhooks } = await cachedScan(cache, shopId, () => privacyCounts(tables, shopId));
+	// Keyed reads stay per request: a merchant who just saved digest settings sees them here.
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 
-	// Whether a notification address is on file for this shop — stated, never
-	// echoed. The address is the merchant's own and is shown on the Notifications
-	// screen; repeating it here would make an audit endpoint into a second place it
-	// can leak from.
+	// Stated, never echoed: the address is shown on the Notifications screen only.
 	const subscription = tables.digestSubscriptions ? await tables.digestSubscriptions.get(shopId) : undefined;
 	const notifications = {
 		emailStored: Boolean(subscription && subscription.shopId === shopId && subscription.email),
@@ -840,6 +712,63 @@ export async function getPrivacy(
 		status: subscription && subscription.shopId === shopId && subscription.status === 'active' ? 'active' : 'paused',
 	};
 
+	return {
+		shop: shopId,
+		retentionDays: WINDOW_DAYS,
+		storesCustomerPii: false,
+		scopes: (shop?.scopes ?? '')
+			.split(',')
+			.map((s) => s.trim())
+			.filter(Boolean),
+		// Exactly what the pipeline stores, read by merchants and App Store reviewers: a
+		// stale entry is a compliance defect.
+		dataCategories: [
+			'order status & timestamps',
+			'order name (e.g. #1001)',
+			'order value & currency',
+			'fulfillment status, location, tracking presence & carrier',
+			'inventory levels',
+			'refund status',
+			'SKUs, product & variant titles & quantities',
+			'notification email you supply for digests (merchant contact, not customer data)',
+			// The DigestOutbox record (no body column), distinct from the address; counts and
+			// subject line only, which is why it can outlive the seven-day ledger.
+			'digest record: counts and subject line only, kept 30 days (no order names or customer data)',
+		],
+		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
+		deletion: {
+			onUninstall: 'shop data erased',
+			onRequest: 'shop/customer redaction (targeted delete)',
+			// Two windows: the ledger's seven-day purge and the outbox's 30-day purge
+			// (docs/data-inventory.md).
+			automatic: `${WINDOW_DAYS}-day retention purge; digest records (counts and subject line only, no order names or customer data) are kept separately for ${OUTBOX_RETENTION_DAYS} days, then removed`,
+		},
+		notifications,
+		footprint,
+		webhooks,
+		reconciliation: reconciliationView(shop, now),
+	};
+}
+
+export interface PrivacyCounts {
+	footprint: { events: number; orders: number; findings: number };
+	webhooks: { received: number; processed: number; deadLettered: number; healthy: boolean; lastReceivedAt?: number };
+}
+
+// The privacy screen's scans; cached per shop (src/api/readCache.ts).
+async function privacyCounts(
+	tables: { events: QueryTable; findings: QueryTable; projections: QueryTable; deliveries: QueryTable },
+	shopId: string,
+): Promise<PrivacyCounts> {
+	const footprint = {
+		events: await countWhere(tables.events, [{ attribute: 'shopId', value: shopId }]),
+		orders: await countWhere(tables.projections, [{ attribute: 'shopId', value: shopId }]),
+		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
+	};
+
+	// One pass over the shop's deliveries: the exact `received` count walks every matching
+	// row anyway, so separate indexed counts cost no less (DESIGN.md, Measured costs). The
+	// per-shop cache is what bounds it.
 	let received = 0;
 	let processed = 0;
 	let deadLettered = 0;
@@ -855,46 +784,7 @@ export async function getPrivacy(
 		const at = Number(d.receivedAt);
 		if (Number.isFinite(at) && (lastReceivedAt === undefined || at > lastReceivedAt)) lastReceivedAt = at;
 	}
-
 	return {
-		shop: shopId,
-		retentionDays: WINDOW_DAYS,
-		storesCustomerPii: false,
-		// Shopify returns granted scopes as a comma-separated string.
-		scopes: (shop?.scopes ?? '')
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean),
-		// Exactly what the pipeline stores, in merchant language. Every entry here
-		// must be true of the current schema — this list is read by merchants and by
-		// App Store reviewers, so a stale entry is a compliance defect, not cosmetics.
-		dataCategories: [
-			'order status & timestamps',
-			'order name (e.g. #1001)',
-			'order value & currency',
-			'fulfillment status, location, tracking presence & carrier',
-			'inventory levels',
-			'refund status',
-			'SKUs, product & variant titles & quantities',
-			'notification email you supply for digests (merchant contact, not customer data)',
-			// A separate, real category from the email above: the record kept once a
-			// digest is built (DigestOutbox, which has no bodyText/bodyHtml column), not
-			// the address used to prepare it. It carries only the period's counts and
-			// its subject line, so it can be stated as holding no order and no
-			// customer data — the reason it can outlive the seven-day ledger.
-			'digest record: counts and subject line only, kept 30 days (no order names or customer data)',
-		],
-		excludedFields: [...EXCLUDED_CUSTOMER_FIELDS],
-		deletion: {
-			onUninstall: 'shop data erased',
-			onRequest: 'shop/customer redaction (targeted delete)',
-			// Two separate windows, both real: the ledger's seven-day purge, and the
-			// digest outbox's own, independently-tracked 30-day purge (it outlives the
-			// ledger on purpose — see DigestOutbox in docs/data-inventory.md). Stating
-			// only one would understate retention for the other.
-			automatic: `${WINDOW_DAYS}-day retention purge; digest records (counts and subject line only, no order names or customer data) are kept separately for ${OUTBOX_RETENTION_DAYS} days, then removed`,
-		},
-		notifications,
 		footprint,
 		webhooks: {
 			received,
@@ -903,22 +793,18 @@ export async function getPrivacy(
 			healthy: deadLettered === 0,
 			...(lastReceivedAt === undefined ? {} : { lastReceivedAt }),
 		},
-		reconciliation: reconciliationView(shop, now),
 	};
 }
 
-// GET /setup — the first-open screen's progress (screen spec §1). Every step is
-// derived from DURABLE backend state, never a client timer: the shop record for
-// install, an observed delivery for capture, and the reconcile sweep's own
-// completion marker for the initial check. `action` names the one safe recovery a
-// merchant can take when a step is stuck — reauthorization is surfaced only from
-// the credential's own status, and no token material is read or returned.
+// GET /setup: first-open progress, derived from durable backend state (shop record,
+// an observed delivery, the reconcile completion marker). `action` names the one
+// safe recovery for a stuck step; no token material is read or returned.
 export async function getSetup(
 	tables: { shops: QueryTable; deliveries: QueryTable; credentials: QueryTable },
 	shopId: string,
 	now: number,
 ): Promise<Record<string, unknown>> {
-	const shop = (await tables.shops.get(shopId)) as Shop | undefined;
+	const shop = ((await tables.shops.get(shopId)) ?? undefined) as Shop | undefined;
 	const credential = (await tables.credentials.get(shopId)) as { status?: string } | undefined;
 	const reconciliation = reconciliationView(shop, now);
 
@@ -929,14 +815,9 @@ export async function getSetup(
 
 	const installed = shop?.status === 'active' && shop.installedAt !== undefined;
 	const reauthNeeded = credential?.status === 'reauthorization_required' || shop?.status === 'reauthorization_required';
-	// "Connected" is the credential, not a delivery. Shopify registers the declared
-	// subscriptions during install, so a usable credential IS the durable proof the
-	// subscriptions are in place. Deliveries are the 7-day ledger and get purged —
-	// keying this step on them would flip a perfectly healthy but QUIET store back
-	// to "not set up" a week after install. Whether anything has actually arrived is
-	// reported separately as `eventsObserved`, so the UI can say "connected, no
-	// events yet" without ever claiming capture it has not seen.
-	const connected = credential !== undefined && !reauthNeeded;
+	// "Connected" is the credential, not a delivery: deliveries are purged after a week
+	// and would flip a quiet store back to "not set up". `eventsObserved` is separate.
+	const connected = credential != null && !reauthNeeded;
 	const initialCheckDone = reconciliation.state === 'ready' && reconciliation.lastReconciledAt !== undefined;
 
 	const steps = [

@@ -7,19 +7,11 @@ export type ShopStatus = 'active' | 'reauthorization_required' | 'uninstalled';
 export type DeliveryStatus = 'accepted' | 'processed' | 'dead_letter';
 export type EventDomain = 'order' | 'fulfillment' | 'inventory' | 'refund';
 export type EventSource = 'webhook' | 'reconciliation';
-// The order's lane, derived from the latches by src/domain/orders.ts. An ALIAS, never a
-// second copy of the union: the stored column and the derived lane are the same
-// value set by construction (projection.ts writes deriveOrderLane's result into
-// it), and two hand-maintained lists would let the two drift apart silently.
-// NOTE: this replaces an earlier value set ('pending' | 'awaiting_window' |
-// 'confirmed' | 'unconfirmed') that was declared but never written by any code
-// path — no stored row has ever carried it, so redefining the column's meaning is
-// safe.
+// The order's lane, derived by src/domain/orders.ts. An alias, never a second copy
+// of the union, so the stored column and the derived lane cannot drift.
 export type ProjectionState = OrderLane;
 export type ExpectationState = 'pending' | 'resolved' | 'suppressed' | 'expired';
 export type FindingStatus = 'pending' | 'unconfirmed' | 'resolved' | 'suppressed';
-
-// ─── sightline_core ───────────────────────────────────────────────────────────
 
 export interface Shop {
 	shopId: string;
@@ -64,13 +56,9 @@ export interface DigestSubscription {
 	lastBuiltAt?: number;
 }
 
-// No `email`, `bodyText`, or `bodyHtml` field, deliberately — see schema.graphql's
-// DigestOutbox comment. This is a durable RECORD of a period (subject + counts),
-// not the message: the address lives on DigestSubscription only, so clearing it
-// or uninstalling really does erase it, as the policy and the Notifications
-// screen both promise, and the body is rendered fresh by a future sender
-// (digestText/digestHtml in src/digest/digest.ts) rather than read back from a row that
-// outlives the ledger for 30 days.
+// No `email`, `bodyText` or `bodyHtml`, deliberately (schema.graphql's DigestOutbox
+// comment): a durable record of a period (subject + counts), not the message. The
+// address lives on DigestSubscription only, so clearing it or uninstalling erases it.
 export interface DigestOutbox {
 	id: string; // `${shopId}:${periodStart}`
 	shopId: string;
@@ -78,18 +66,12 @@ export interface DigestOutbox {
 	periodStart: number;
 	periodEnd?: number;
 	subject?: string;
-	// Current-state, and a count of ORDERS: how many were awaiting fulfillment
-	// confirmation when the digest was built (isAwaitingConfirmation, src/domain/orders.ts —
-	// the Overview's awaiting tile, same population). Not period-scoped, and not a
-	// findings tally: the name is deliberately not `unconfirmed`, which in this
-	// codebase means a GapFinding STATUS (see FindingStatus above, and
-	// getSummary's findings.unconfirmed) — a different population in a different
-	// tense, and one order can produce two findings.
+	// Current-state count of ORDERS awaiting fulfillment confirmation when built
+	// (isAwaitingConfirmation, src/domain/orders.ts). Not period-scoped and not named
+	// `unconfirmed`, which means a GapFinding status (FindingStatus above).
 	ordersAwaiting?: number;
-	// Scoped to this row's period, [periodStart, periodEnd) — the name says so because
-	// getSummary's `findings.failedAttempts` counts the same findings with no time
-	// bound at all. Also a count of ORDERS, not attempts: DETECTOR_FAILED writes one
-	// finding per (order, ruleVersion), so two failed attempts on one order are one.
+	// Scoped to [periodStart, periodEnd), unlike getSummary's `findings.failedAttempts`.
+	// Counts ORDERS (one finding per order and ruleVersion).
 	failedAttemptsInPeriod?: number;
 	deliveryGaps?: number;
 	// Recorder health at build time, current-state like ordersAwaiting.
@@ -97,8 +79,6 @@ export interface DigestOutbox {
 	status: DigestStatus;
 	createdAt: number;
 }
-
-// ─── sightline_ledger ─────────────────────────────────────────────────────────
 
 export interface WebhookDelivery {
 	id: string; // `${shopId}:${webhookId}`
@@ -109,7 +89,8 @@ export interface WebhookDelivery {
 	status: DeliveryStatus;
 	attempts?: number;
 	hmacVerified?: boolean;
-	payload?: string; // PII-stripped JSON body, for the worker to normalize (#10)
+	payload?: string; // allowlisted JSON body (src/privacy/pii.ts), cleared once processed (7-day purge)
+	pendingKey?: string; // computed by Harper while accepted (processor.ts pendingKey); never written
 }
 
 export interface OperationalEvent {
@@ -120,7 +101,7 @@ export interface OperationalEvent {
 	resourceId?: string;
 	sku?: string;
 	quantity?: number;
-	fulfillableItemCount?: number; // order events: units still requiring fulfillment (#12)
+	fulfillableItemCount?: number; // order events: units still requiring fulfillment
 	orderName?: string;
 	totalPrice?: number;
 	currency?: string;
@@ -156,6 +137,8 @@ export interface OrderProjection {
 	state?: ProjectionState;
 	deadline?: number;
 	lastEventAt?: number;
+	firstEventAt?: number;
+	eventCount?: number;
 	lastSourceVersion?: number;
 }
 
@@ -230,4 +213,11 @@ export interface ShopLocation {
 	locationId: string;
 	name?: string;
 	updatedAt?: number;
+}
+
+export interface RedactionTombstone {
+	id: string; // `${shopId}:${orderId}`, or `${shopId}:*` for a whole shop
+	shopId: string;
+	orderId?: string;
+	redactedAt: number;
 }

@@ -1,7 +1,7 @@
-// Shopify token exchange + refresh for expiring OFFLINE access tokens
-// (ADR-001, contract §2). Promoted from Spike A. The offline token is obtained
-// by exchanging a verified session token; expiring tokens are later renewed via
-// the refresh token.
+import { ADMIN_TIMEOUT_MS } from './adminApi.ts';
+
+// Token exchange and refresh for expiring offline access tokens (ADR-001): the
+// offline token comes from a verified session token and is renewed via the refresh token.
 
 export interface OfflineToken {
 	accessToken: string;
@@ -30,7 +30,6 @@ function mapError(status: number, op: string): Error & { statusCode: number } {
 	return e;
 }
 
-// Exchange a verified session token for an expiring offline access token.
 export async function exchangeOfflineToken(args: {
 	shop: string;
 	sessionToken: string;
@@ -51,14 +50,14 @@ export async function exchangeOfflineToken(args: {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
 		body,
+		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) throw mapError(res.status, 'token exchange');
 	return parse((await res.json()) as Record<string, unknown>);
 }
 
-// Renew an expiring offline token using its refresh token.
-// NOTE: confirm the exact refresh grant params against Shopify's offline-access-
-// tokens docs at real-install time; the request shape is unit-tested here.
+// Renews an expiring offline token. Confirm the refresh grant params against
+// Shopify's docs at real-install time; the request shape is unit-tested here.
 export async function refreshOfflineToken(args: {
 	shop: string;
 	refreshToken: string;
@@ -75,6 +74,7 @@ export async function refreshOfflineToken(args: {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
 		body,
+		signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
 	});
 	if (!res.ok) throw mapError(res.status, 'token refresh');
 	return parse((await res.json()) as Record<string, unknown>);

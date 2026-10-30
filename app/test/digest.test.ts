@@ -211,11 +211,8 @@ test('the html body escapes hostile order names', () => {
 	assert.match(html, /&lt;script&gt;/);
 });
 
-// Previously asserted bodyText/bodyHtml were non-empty. The row no longer
-// renders a body at all — subject and counts are the whole row, kept
-// for 30 days as a record of what the period looked like, never the message —
-// so the assertions below are inverted: absence of the columns is now the
-// correct shape, not a value inside them.
+// The row renders no body: subject and counts are the whole row, a 30-day record of
+// the period, never the message. Absence of the columns is the correct shape.
 test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
 	const row = outboxRow(
 		input({
@@ -235,19 +232,13 @@ test('an outbox row is keyed by shop and period so a rebuild upserts', () => {
 	assert.ok((row.subject ?? '').length > 0);
 	assert.equal(Object.hasOwn(row, 'bodyText'), false);
 	assert.equal(Object.hasOwn(row, 'bodyHtml'), false);
-	// The row previously carried the order name inside bodyText/bodyHtml. Guard
-	// the serialized row directly — the same shape of guard used below for the
-	// removed `email` field — so a body sneaking back in by any route is caught
-	// even where it would not show up as a `bodyText`/`bodyHtml` key.
+	// Guard the serialized row directly so a body sneaking back in by any route is caught.
 	assert.doesNotMatch(JSON.stringify(row), /#1001/);
 });
 
-// The row previously carried an `email` column, and this test previously asserted
-// its value. That copy is what made the privacy policy's and the Notifications
-// screen's "deleted as soon as you clear it or uninstall" untrue: uninstallShop
-// deletes only DigestSubscriptions, so every outbox row's copy survived until the
-// 30-day purge. The assertion is now the opposite one — no key, not merely an
-// empty value — because a row shape is the only thing that can guarantee it.
+// The row must carry no address: uninstallShop deletes only DigestSubscriptions, so
+// a copy on outbox rows would survive the "deleted when you clear it or uninstall"
+// promise. Asserts no key, not an empty value.
 test('an outbox row carries no address anywhere in it, so clearing or uninstalling really does erase it', () => {
 	const row = outboxRow(input({ ordersAwaiting: 2, topAwaiting: [{ orderName: '#1001', orderId: 'o1', ageHours: 30 }] }), NOW);
 	assert.equal(Object.hasOwn(row, 'email'), false);
