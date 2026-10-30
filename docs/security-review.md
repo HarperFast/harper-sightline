@@ -167,7 +167,7 @@ Sightline is one shared multi-tenant deployment; every privacy/correctness guara
 ## 4. Encryption evidence
 
 - **At rest — tokens:** Shopify offline/refresh tokens are stored only as AES-256-GCM envelopes (`crypto.ts`, versioned key, per-record IV, GCM auth tag). Plaintext tokens are never persisted, logged, or returned. The key comes from `SIGHTLINE_TOKEN_KEY`, read as a scoped Harper secret with `process.env` as the dev/CI fallback; there is no weak default — an absent or wrong-shaped key throws (F2, closed). Rotation is not yet supported: the envelope's `v` field exists for it, but with no dual-key decrypt path a key change invalidates every stored token.
-- **At rest — ledger:** operational data is Level-1 PCD only (ids, statuses, timestamps, SKU/qty, tracking presence) — **no customer name/email/phone/address** (`pii.ts` strips at ingress; `data-inventory.md`). Physical deletion at 7 days via `DELETE`-by-age (ADR-003), not TTL.
+- **At rest — ledger:** operational data is Level-1 PCD only (ids, statuses, timestamps, SKU/qty, tracking presence) — **no customer name/email/phone/address** (`privacy/pii.ts` stores only an allowlist of fields at ingress; `data-inventory.md`). Physical deletion at 7 days via `DELETE`-by-age (ADR-003), not TTL.
 - **In transit:** Shopify → ingress and Harper → Shopify Admin API are HTTPS; the embedded app is served over HTTPS inside Shopify Admin. HMAC over the raw body authenticates every webhook.
 - **Backups:** encrypted backup + tested restore is a Fabric-deployment concern owned by **#24** (reliability/backup/restore) and **#25** (staged deploy); this review records the requirement and the at-rest guarantees the backups inherit.
 

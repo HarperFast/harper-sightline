@@ -1,30 +1,93 @@
-// Shopify payload keys that carry customer PII. They are dropped at every nesting
-// level, so no PII is persisted even if an `include_fields` whitelist is
-// misconfigured (shopify-contract §5, defense in depth). `name` is omitted on
-// purpose: order `name` and line-item `title`/`sku` are Level-1 evidence, not PII.
-// Everything else is preserved by a structural deep copy.
-const PII_KEYS = new Set([
-	'customer',
-	'billing_address',
-	'shipping_address',
-	'destination',
-	'client_details',
-	'email',
-	'contact_email',
-	'phone',
-	'note',
-	'note_attributes',
-	'customer_locale',
-]);
+// What of a webhook body is stored for the worker to normalize later. An allowlist, so a
+// field Shopify adds, or a subscription that drifts from its include_fields, is never
+// stored by default (shopify-contract §5, defense in depth).
 
-// Deep copy with every PII container key removed at all levels; non-objects pass through.
-export function stripPii(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(stripPii);
-	if (value === null || typeof value !== 'object') return value;
+const ORDER_FIELDS = [
+	'id',
+	'admin_graphql_api_id',
+	'name',
+	'order_number',
+	'created_at',
+	'updated_at',
+	'processed_at',
+	'cancelled_at',
+	'closed_at',
+	'confirmed',
+	'financial_status',
+	'fulfillment_status',
+	'currency',
+	'total_price',
+	'current_total_price',
+	'line_items',
+];
+const FULFILLMENT_FIELDS = [
+	'id',
+	'admin_graphql_api_id',
+	'order_id',
+	'status',
+	'shipment_status',
+	'location_id',
+	'created_at',
+	'updated_at',
+	'tracking_company',
+	'tracking_numbers',
+	'line_items',
+];
+
+// The include_fields each topic is registered with in shopify.app.toml; a test fails if
+// the two differ. A topic not listed stores nothing.
+export const INCLUDE_FIELDS: Record<string, readonly string[]> = {
+	'orders/create': ORDER_FIELDS,
+	'orders/paid': ORDER_FIELDS,
+	'orders/updated': ORDER_FIELDS,
+	'orders/cancelled': ORDER_FIELDS,
+	'fulfillments/create': FULFILLMENT_FIELDS,
+	'fulfillments/update': FULFILLMENT_FIELDS,
+	'refunds/create': ['id', 'admin_graphql_api_id', 'order_id', 'created_at', 'processed_at', 'refund_line_items', 'transactions'],
+	'inventory_levels/update': ['inventory_item_id', 'location_id', 'available', 'updated_at'],
+	'app/uninstalled': [],
+};
+
+// `true` keeps a scalar or a list of scalars; a nested shape keeps an object, or each
+// object of a list, filtered by it.
+type Shape = { [key: string]: true | Shape };
+
+// Inside the list fields, only what src/ingest/normalize.ts reads: a line item's
+// `properties` holds whatever the customer typed, and a transaction nothing we use.
+const LINE_ITEM: Shape = { sku: true, quantity: true, fulfillable_quantity: true, requires_shipping: true };
+const NESTED: Record<string, Shape> = {
+	line_items: LINE_ITEM,
+	refund_line_items: { quantity: true, line_item: { sku: true } },
+	transactions: {},
+};
+
+type Scalar = string | number | boolean | null;
+const isScalar = (value: unknown): value is Scalar => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function keep(value: unknown, rule: true | Shape): unknown {
+	if (rule === true) {
+		if (isScalar(value)) return value;
+		return Array.isArray(value) && value.every(isScalar) ? [...value] : undefined;
+	}
+	if (Array.isArray(value)) return value.filter(isObject).map((item) => filter(item, rule));
+	return isObject(value) ? filter(value, rule) : undefined;
+}
+
+function filter(value: Record<string, unknown>, shape: Shape): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
-	for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-		if (PII_KEYS.has(key)) continue;
-		out[key] = stripPii(child);
+	for (const [key, rule] of Object.entries(shape)) {
+		if (!Object.hasOwn(value, key)) continue;
+		const kept = keep(value[key], rule);
+		if (kept !== undefined) out[key] = kept;
 	}
 	return out;
+}
+
+// A new object holding only the allowed fields; null for a body that is not an object.
+export function storedBody(topic: string, body: unknown): Record<string, unknown> | null {
+	if (!isObject(body)) return null;
+	const shape: Shape = {};
+	for (const field of INCLUDE_FIELDS[topic] ?? []) shape[field] = NESTED[field] ?? true;
+	return filter(body, shape);
 }

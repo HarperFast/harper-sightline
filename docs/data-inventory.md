@@ -4,7 +4,7 @@ Maps every stored table/field to its **data-subject-request**, **export**, and *
 
 ## Headline
 
-**Sightline stores no customer PII** — no customer name, email, phone, or address (PCD Level 1 only; `include_fields` + PII stripping enforce this). Therefore `customers/data_request` has **nothing to export**. Data is keyed by `shopId` (tenant) and, for order-linked rows, by `orderId` — the only customer-scoped key we hold.
+**Sightline stores no customer PII** — no customer name, email, phone, or address (PCD Level 1 only; `include_fields` and an ingress allowlist of the same fields enforce this). Therefore `customers/data_request` has **nothing to export**. Data is keyed by `shopId` (tenant) and, for order-linked rows, by `orderId` — the only customer-scoped key we hold.
 
 No field added in Plan A is a customer identifier. Money amounts, SKUs, product & variant titles, locations, and tracking presence & carrier are Level 1 order facts; the customer-field exclusion list is unchanged.
 
@@ -24,7 +24,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 | `Shop` | No | — | none | — (not customer-linked) | delete by `shopId` |
 | `ShopCredential` | No (encrypted app token) | — | none | — | delete by `shopId` |
 | `AppAuditEvent` | No | — | none | — | delete by `shopId` |
-| `WebhookDelivery` | No (PII-stripped body, 7-day) | body's order id (not a column) | none | clear `payload` of deliveries about `orders_to_redact` (see Redaction tombstones) | delete by `shopId` |
+| `WebhookDelivery` | No (allowlisted body, 7-day) | body's order id (not a column) | none | clear `payload` of deliveries about `orders_to_redact` (see Redaction tombstones) | delete by `shopId` |
 | `OperationalEvent` | No | `resourceId` (=orderId) | none | delete where `resourceId ∈ orders_to_redact` | delete by `shopId` |
 | `EventSku` | No | `resourceId` (=orderId) | none | delete where `resourceId ∈ orders_to_redact` | delete by `shopId` |
 | `OrderProjection` | No | `orderId` | none | delete where `orderId ∈ orders_to_redact` | delete by `shopId` |

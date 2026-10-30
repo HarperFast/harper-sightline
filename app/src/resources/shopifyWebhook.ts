@@ -4,7 +4,7 @@ import { readShopifySecret } from '../secrets/readSecret.ts';
 import { acceptDelivery } from '../ingest/webhookIngress.ts';
 import { checkWebhookShop } from '../ingest/webhookShop.ts';
 import { Shops } from '../db.ts';
-import { stripPii } from '../privacy/pii.ts';
+import { storedBody } from '../privacy/pii.ts';
 import { log, metrics, M } from '../observability/observe.ts';
 import { httpError } from './http.ts';
 
@@ -65,11 +65,11 @@ export class ShopifyWebhook extends Resource {
 			throw httpError(verdict.reason, verdict.status);
 		}
 
-		// Persist the PII-stripped body so the worker can normalize it later (ADR-002).
+		// Persist the allowlisted body so the worker can normalize it later (ADR-002).
 		let payload: string | undefined;
 		if (parsed !== undefined) {
 			try {
-				payload = JSON.stringify(stripPii(parsed));
+				payload = JSON.stringify(storedBody(topic, parsed));
 			} catch {
 				// Unstorable body — store nothing, as for a non-JSON one.
 			}

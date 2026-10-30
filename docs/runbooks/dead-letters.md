@@ -27,7 +27,7 @@ the ledger/detector, so a real gap could go unrecorded.
    `status="dead_letter"` (via Harper Studio / operations API — see
    `fabric-investigation` skill). Note `topic`, `attempts`, and the row id
    (`shopId:webhookId`); **do not** dump the stored `payload` into shared logs
-   (PII-stripped, but still merchant data).
+   (allowlisted fields only, but still merchant data).
 2. Classify:
    - **Permanent** (dead-lettered on attempt 1): unsupported/broken payload shape.
      A new Shopify API version or an un-handled topic variant is the usual cause.

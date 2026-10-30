@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { stripPii } from '../src/privacy/pii.ts';
+import { storedBody } from '../src/privacy/pii.ts';
 import {
 	normalizeDelivery,
 	isOperationalTopic,
@@ -115,8 +115,9 @@ const CASES: Case[] = [
 for (const c of CASES) {
 	test(`normalizes ${c.topic} into a single approved-field event`, () => {
 		const raw = fixture(c.file) as Record<string, unknown>;
-		const stripped = stripPii(raw);
+		const stripped = storedBody(c.topic, raw);
 		const events = normalizeDelivery(meta(c.topic), stripped);
+		assert.deepEqual(events, normalizeDelivery(meta(c.topic), raw), 'the stored body normalizes like the full one');
 
 		assert.equal(events.length, 1, 'one event per operational delivery');
 		const ev = events[0];
@@ -144,7 +145,7 @@ for (const c of CASES) {
 
 test('order events carry fulfillment eligibility from line_items (#12)', () => {
 	// orders_paid: two shippable lines, fulfillable_quantity 2 + 1.
-	const paid = normalizeDelivery(meta('orders/paid'), stripPii(fixture('orders_paid')))[0];
+	const paid = normalizeDelivery(meta('orders/paid'), storedBody('orders/paid', fixture('orders_paid')))[0];
 	assert.equal(paid.fulfillableItemCount, 3);
 	// A digital order (no line requires shipping) yields 0, not undefined.
 	const digital = normalizeDelivery(meta('orders/paid'), {
@@ -162,13 +163,13 @@ test('order events carry fulfillment eligibility from line_items (#12)', () => {
 test('additive unknown payload fields do not break normalization or leak', () => {
 	const raw = fixture('orders_paid') as Record<string, unknown>;
 	assert.ok('__future_additive_field__' in raw, 'fixture carries an additive field');
-	const events = normalizeDelivery(meta('orders/paid'), stripPii(raw));
+	const events = normalizeDelivery(meta('orders/paid'), storedBody('orders/paid', raw));
 	assert.equal(events.length, 1);
 	assert.ok(!('__future_additive_field__' in events[0]));
 });
 
 test('stored (stripped) payload retains no PII containers', () => {
-	const stripped = stripPii(fixture('orders_paid')) as Record<string, unknown>;
+	const stripped = storedBody('orders/paid', fixture('orders_paid')) as Record<string, unknown>;
 	for (const key of ['customer', 'email', 'phone', 'billing_address', 'shipping_address', 'note', 'contact_email', 'customer_locale']) {
 		assert.ok(!(key in stripped), `stripped payload still has "${key}"`);
 	}

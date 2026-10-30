@@ -1,87 +1,137 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripPii } from '../src/privacy/pii.ts';
+import { readFileSync } from 'node:fs';
+import { storedBody, INCLUDE_FIELDS } from '../src/privacy/pii.ts';
+import { normalizeDelivery } from '../src/ingest/normalize.ts';
 
-test('removes every PII container key', () => {
-	const payload = {
-		id: 1,
-		name: '#1001',
-		order_number: 1001,
-		financial_status: 'paid',
-		line_items: [{ sku: 'A', quantity: 1 }],
-		customer: { first_name: 'Jane' },
-		billing_address: { zip: '00000' },
-		shipping_address: { zip: '00000' },
-		destination: { zip: '00000' },
-		client_details: { browser_ip: '1.2.3.4' },
-		email: 'a@b.com',
-		contact_email: 'a@b.com',
-		phone: '+1-555',
-		note: 'secret',
-		note_attributes: [{ name: 'x', value: 'y' }],
-		customer_locale: 'en',
-	};
-	const result = stripPii(payload) as Record<string, unknown>;
-	for (const key of [
-		'customer',
-		'billing_address',
-		'shipping_address',
-		'destination',
-		'client_details',
-		'email',
-		'contact_email',
-		'phone',
-		'note',
-		'note_attributes',
-		'customer_locale',
-	]) {
-		assert.ok(!(key in result), `still has ${key}`);
+const meta = (topic: string) => ({ shopId: 's.myshopify.com', topic, webhookId: 'w1', receivedAt: 1_700_000_000_000 });
+
+const order = {
+	id: 1,
+	admin_graphql_api_id: 'gid://shopify/Order/1',
+	name: '#1001',
+	order_number: 1001,
+	created_at: '2026-10-01T00:00:00Z',
+	updated_at: '2026-10-01T01:00:00Z',
+	financial_status: 'paid',
+	fulfillment_status: null,
+	currency: 'USD',
+	total_price: '20.00',
+	current_total_price: '18.00',
+	line_items: [
+		{
+			sku: 'A',
+			quantity: 2,
+			fulfillable_quantity: 2,
+			requires_shipping: true,
+			title: 'Engraved mug',
+			price: '9.00',
+			properties: [{ name: 'Engraving', value: 'For Jane Doe' }],
+		},
+	],
+	// Customer-linked fields a drifted subscription could send.
+	browser_ip: '203.0.113.7',
+	customer_id: 42,
+	landing_site: '/?ref=jane',
+	order_status_url: 'https://shop.example/orders/abc/authenticate?key=secret',
+	customer: { first_name: 'Jane' },
+	email: 'jane@example.com',
+	note: 'gift for Jane',
+	shipping_address: { address1: '1 Main St' },
+	some_field_shopify_adds_next_year: 'unknown',
+};
+
+test('an order body keeps only its include_fields and the line-item fields the normalizer reads', () => {
+	const kept = storedBody('orders/paid', order) as Record<string, unknown>;
+	assert.deepEqual(Object.keys(kept).sort(), [...INCLUDE_FIELDS['orders/paid']].filter((key) => key in order).sort());
+	assert.deepEqual(kept.line_items, [{ sku: 'A', quantity: 2, fulfillable_quantity: 2, requires_shipping: true }]);
+	const text = JSON.stringify(kept);
+	for (const marker of ['Jane', '203.0.113.7', 'ref=', 'key=secret', '1 Main St', 'unknown', '"customer_id"']) {
+		assert.ok(!text.includes(marker), `${marker} survived`);
 	}
-	// Non-PII evidence is preserved (order name is NOT customer name).
-	assert.equal(result.name, '#1001');
-	assert.equal(result.order_number, 1001);
-	assert.equal(result.financial_status, 'paid');
-	assert.deepEqual(result.line_items, [{ sku: 'A', quantity: 1 }]);
+});
+
+test('a field Shopify adds later is not stored', () => {
+	assert.deepEqual(storedBody('inventory_levels/update', { inventory_item_id: 5, location_id: 6, available: 1, brand_new: 'x' }), {
+		inventory_item_id: 5,
+		location_id: 6,
+		available: 1,
+	});
+});
+
+test('a field that should be a scalar but arrives as an object is not stored', () => {
+	assert.deepEqual(storedBody('fulfillments/create', { id: 9, order_id: 1, status: { nested: 'x' }, tracking_numbers: ['1Z', '2Z'] }), {
+		id: 9,
+		order_id: 1,
+		tracking_numbers: ['1Z', '2Z'],
+	});
+});
+
+test('a refund keeps its line quantities and the nested SKU, and no transaction detail', () => {
+	const kept = storedBody('refunds/create', {
+		id: 3,
+		order_id: 1,
+		processed_at: '2026-10-02T00:00:00Z',
+		note: 'Jane changed her mind',
+		refund_line_items: [{ quantity: 1, line_item: { sku: 'A', title: 'Mug', properties: [{ name: 'n', value: 'Jane' }] } }],
+		transactions: [{ amount: '5.00', gateway: 'card', receipt: { card: '4242' } }],
+	});
+	assert.deepEqual(kept, {
+		id: 3,
+		order_id: 1,
+		processed_at: '2026-10-02T00:00:00Z',
+		refund_line_items: [{ quantity: 1, line_item: { sku: 'A' } }],
+		transactions: [{}],
+	});
+});
+
+test('a topic with no include_fields stores nothing, and a non-object body is stored as null', () => {
+	assert.deepEqual(storedBody('app/uninstalled', { id: 1, myshopify_domain: 's.myshopify.com', email: 'owner@example.com' }), {});
+	assert.equal(storedBody('orders/paid', 'text'), null);
+	assert.equal(storedBody('orders/paid', [order]), null);
+	assert.equal(storedBody('orders/paid', null), null);
 });
 
 test('does not mutate the input', () => {
-	const payload = { id: 1, email: 'a@b.com', customer: { first_name: 'Jane' } };
-	stripPii(payload);
-	assert.equal(payload.email, 'a@b.com');
-	assert.deepEqual(payload.customer, { first_name: 'Jane' });
+	const body = structuredClone(order);
+	storedBody('orders/paid', body);
+	assert.deepEqual(body, order);
 });
 
-test('passes through non-objects unchanged', () => {
-	assert.equal(stripPii(null), null);
-	assert.equal(stripPii(undefined), undefined);
-	assert.equal(stripPii('text'), 'text');
-	assert.equal(stripPii(42), 42);
-	assert.deepEqual(stripPii([1, 2, 3]), [1, 2, 3]);
-});
-
-test('removes PII nested inside arrays and objects, keeping evidence', () => {
-	const payload = {
-		id: 1,
-		name: '#1001',
-		fulfillments: [
-			{
-				id: 9,
-				status: 'success',
-				destination: { address1: '1 Main St', name: 'Jane Doe' },
-				line_items: [{ sku: 'A', quantity: 1, title: 'Widget' }],
-			},
-		],
-		refunds: [{ id: 3, transactions: [{ amount: '5.00' }], note: 'gift receipt' }],
+test('the normalizer reads the same event from the stored body as from the full one', () => {
+	const bodies: Record<string, unknown> = {
+		'orders/paid': order,
+		'fulfillments/create': {
+			id: 9,
+			order_id: 1,
+			status: 'success',
+			location_id: 6,
+			tracking_company: 'UPS',
+			tracking_numbers: ['1Z'],
+			line_items: order.line_items,
+			destination: { zip: '0' },
+		},
+		'refunds/create': {
+			id: 3,
+			order_id: 1,
+			processed_at: '2026-10-02T00:00:00Z',
+			refund_line_items: [{ quantity: 1, line_item: { sku: 'A' } }],
+		},
+		'inventory_levels/update': { inventory_item_id: 5, location_id: 6, available: 1, updated_at: '2026-10-02T00:00:00Z' },
 	};
-	const result = stripPii(payload) as Record<string, unknown>;
-	const serialized = JSON.stringify(result);
-	for (const marker of ['Main St', 'Jane Doe', 'gift receipt']) {
-		assert.ok(!serialized.includes(marker), `nested PII "${marker}" survived`);
+	for (const [topic, body] of Object.entries(bodies)) {
+		assert.deepEqual(normalizeDelivery(meta(topic), storedBody(topic, body)), normalizeDelivery(meta(topic), body), topic);
 	}
-	// Nested Level-1 evidence is preserved.
-	const fulfillment = (result.fulfillments as Record<string, unknown>[])[0];
-	assert.equal(fulfillment.status, 'success');
-	assert.ok(!('destination' in fulfillment));
-	assert.deepEqual(fulfillment.line_items, [{ sku: 'A', quantity: 1, title: 'Widget' }]);
-	assert.equal(result.name, '#1001');
+});
+
+// The allowlist must not drift from what the app subscribes to.
+test('INCLUDE_FIELDS matches the include_fields registered in shopify.app.toml', () => {
+	const toml = readFileSync(new URL('../../shopify.app.toml', import.meta.url), 'utf8');
+	const registered: Record<string, string[]> = {};
+	for (const block of toml.split('[[webhooks.subscriptions]]').slice(1)) {
+		const list = (name: string) =>
+			[...(block.match(new RegExp(`${name} = \\[([^\\]]*)\\]`))?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+		for (const topic of list('topics')) registered[topic] = list('include_fields');
+	}
+	assert.deepEqual(Object.fromEntries(Object.entries(INCLUDE_FIELDS).map(([topic, fields]) => [topic, [...fields]])), registered);
 });

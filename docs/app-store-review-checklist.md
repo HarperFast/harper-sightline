@@ -41,7 +41,7 @@ A production install cannot even start without real secrets now — the fallback
 | Item | Status | Evidence |
 |---|---|---|
 | PCD Level 1 approval | ✅ | **Granted 2026-08-04.** Protected `orders/*`, `fulfillments/*`, `refunds/create` subscriptions deploy without rejection |
-| Level 2 fields not requested | ✅ | `include_fields` whitelists exclude all PII; `src/pii.ts` strips at ingress before storage |
+| Level 2 fields not requested | ✅ | `include_fields` whitelists exclude all PII; `src/privacy/pii.ts` stores only those fields (and the line-item fields the normalizer reads) at ingress |
 | Data minimisation documented | ✅ | `docs/shopify-contract.md` §3/§5, `docs/data-inventory.md` |
 | Encryption at rest / in transit | ✅ | AES-256-GCM token envelopes (`src/crypto.ts`); HTTPS throughout (`docs/security-review.md` §4) |
 | Retention + real deletion | ✅ | 7-day DELETE-based purge, verified by re-query (ADR-003) |

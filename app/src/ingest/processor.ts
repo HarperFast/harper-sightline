@@ -9,7 +9,7 @@ export interface DeliveryRow {
 	attempts?: number;
 	webhookId?: string;
 	receivedAt?: number;
-	payload?: string; // PII-stripped JSON body to normalize
+	payload?: string; // allowlisted JSON body to normalize (src/privacy/pii.ts)
 }
 
 // Permanent means re-running can never succeed; duck-typed so the processor stays

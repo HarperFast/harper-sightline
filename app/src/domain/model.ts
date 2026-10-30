@@ -89,7 +89,7 @@ export interface WebhookDelivery {
 	status: DeliveryStatus;
 	attempts?: number;
 	hmacVerified?: boolean;
-	payload?: string; // PII-stripped JSON body, for the worker to normalize
+	payload?: string; // allowlisted JSON body (src/privacy/pii.ts), for the worker to normalize
 	pendingKey?: string; // computed by Harper while accepted (processor.ts pendingKey); never written
 }
 
