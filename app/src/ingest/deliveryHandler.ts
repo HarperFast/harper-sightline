@@ -40,10 +40,29 @@ export function deliveryMarks(
 		await patchDelivery(table, row, partial);
 		if (await isRedacted(tombstones, row.shopId, undefined, row.receivedAt ?? 0)) await table.delete(row.id);
 	};
+	// A delivery about a redacted order dead-letters when its erase keeps failing, after
+	// customers/redact's scrub has run, so nothing else would clear its body.
+	const aboutRedactedOrder = async (row: DeliveryRow) => {
+		if (typeof row.payload !== 'string' || !row.topic || !row.webhookId || row.receivedAt == null) return false;
+		try {
+			const meta = { shopId: row.shopId, topic: row.topic, webhookId: row.webhookId, receivedAt: row.receivedAt };
+			for (const event of normalizeDelivery(meta, JSON.parse(row.payload))) {
+				if (isOrderLinked(event) && (await isRedacted(tombstones, row.shopId, event.resourceId, row.receivedAt))) return true;
+			}
+		} catch {
+			// an unreadable body is what dead-lettered it; the operator needs it
+		}
+		return false;
+	};
 	return {
 		// A processed body is not needed again; a dead letter keeps its body for the operator until the purge.
 		markProcessed: (row) => mark(row, { status: 'processed', payload: null }),
-		markFailed: (row, attempts, dead) => mark(row, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
+		markFailed: async (row, attempts, dead) =>
+			mark(row, {
+				attempts,
+				status: dead ? 'dead_letter' : 'accepted',
+				...(dead && (await aboutRedactedOrder(row)) ? { payload: null } : {}),
+			}),
 	};
 }
 

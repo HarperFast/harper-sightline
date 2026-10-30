@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
-import { drainAccepted, pendingKey, type ProcessDeps, type PendingRow } from '../src/ingest/processor.ts';
+import { drainAccepted, pendingKey, MAX_ATTEMPTS, type ProcessDeps, type PendingRow } from '../src/ingest/processor.ts';
 import { createDeliveryHandler, deliveryMarks, type DeliveryHandlerDeps } from '../src/ingest/deliveryHandler.ts';
 import { handleCompliance, type ComplianceDeps } from '../src/privacy/compliance.ts';
 import {
@@ -525,6 +525,32 @@ test('a retry after an attempt that wrote rows and then failed erases them, not 
 	await w.drain();
 	assert.deepEqual(w.ledger(A, '703'), NONE);
 	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'processed');
+});
+
+test("a redacted order's delivery whose erase keeps failing dead-letters without its body", async () => {
+	const w = world();
+	await w.accept(A, 'p-703', 'orders/paid', paid(703));
+	const put = w.projections.put.bind(w.projections);
+	let failed = false;
+	w.projections.put = async (row) => {
+		if (!failed) {
+			failed = true;
+			await w.tombstones.put({ id: tombstoneId(A, '703'), shopId: A, orderId: '703', redactedAt: NOW });
+			throw new Error('projection write failed');
+		}
+		await put(row);
+	};
+	await w.drain();
+	w.events.delete = async () => {
+		throw new Error('table unavailable');
+	};
+	for (let attempt = 2; attempt <= MAX_ATTEMPTS; attempt++) {
+		w.advance(1);
+		await w.drain();
+	}
+	const row = w.deliveries.rows.get(`${A}:p-703`);
+	assert.equal(row?.status, 'dead_letter');
+	assert.equal(row?.payload, null);
 });
 
 test('an erase that reports failures leaves the delivery to retry rather than marking it processed', async () => {
