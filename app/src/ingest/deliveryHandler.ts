@@ -12,6 +12,10 @@ export interface DeliveryPatchTable {
 	patch(id: string, partial: Record<string, unknown>): Promise<void>;
 }
 
+export interface DeliveryMarkTable extends DeliveryPatchTable {
+	delete(id: string): Promise<unknown>;
+}
+
 // shop/redact can delete a delivery while the drain holds it, on this node or by
 // replication, and Harper turns a patch on a missing key into a row of only the patched
 // fields, not even the key attribute unless patched. With id, shopId and receivedAt in
@@ -25,10 +29,20 @@ function patchDelivery(table: DeliveryPatchTable, row: DeliveryRow, partial: Rec
 	});
 }
 
-export function deliveryMarks(table: DeliveryPatchTable): Pick<ProcessDeps, 'markProcessed' | 'markFailed'> {
+// A mark that lands after shop/redact deleted the row would write it back, so a
+// redacted shop's row is deleted once marked. The erase deletes the shop's tombstone
+// and rewrites it, so a check between those two writes still misses.
+export function deliveryMarks(
+	table: DeliveryMarkTable,
+	tombstones: Pick<TombstoneTable, 'get'>,
+): Pick<ProcessDeps, 'markProcessed' | 'markFailed'> {
+	const mark = async (row: DeliveryRow, partial: Record<string, unknown>) => {
+		await patchDelivery(table, row, partial);
+		if (await isRedacted(tombstones, row.shopId, undefined, row.receivedAt ?? 0)) await table.delete(row.id);
+	};
 	return {
-		markProcessed: (row) => patchDelivery(table, row, { status: 'processed' }),
-		markFailed: (row, attempts, dead) => patchDelivery(table, row, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
+		markProcessed: (row) => mark(row, { status: 'processed' }),
+		markFailed: (row, attempts, dead) => mark(row, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
 	};
 }
 

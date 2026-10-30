@@ -92,7 +92,7 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 				rows.push(r as unknown as PendingRow);
 			return rows;
 		},
-		...deliveryMarks(deliveries),
+		...deliveryMarks(deliveries, tombstones),
 		handle,
 	};
 	const scrubTables = { deliveries, events } as unknown as ScrubTables;
@@ -129,13 +129,7 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 	return {
 		deliveries,
 		events,
-		// Rows the drain (by id), a redaction (by shopId) or the purge (by receivedAt) could not find.
-		strandedDeliveries: (shopId: string) =>
-			[...deliveries.rows]
-				.filter(
-					([id, row]) => id.startsWith(`${shopId}:`) && (row.id !== id || row.shopId !== shopId || typeof row.receivedAt !== 'number'),
-				)
-				.map(([id]) => id),
+		shopDeliveries: (shopId: string) => [...deliveries.rows.keys()].filter((id) => id.startsWith(`${shopId}:`)),
 		eventSkus,
 		inventoryItems,
 		written,
@@ -338,7 +332,7 @@ test('shop/redact drops what the drain holds, but a reinstalled shop records aga
 	assert.equal(w.ledger(B, '703').projections, 1, 'another shop is untouched');
 	assert.equal(w.ledger(A, '5').events, 0, 'the inventory event is dropped too');
 	assert.deepEqual([...w.tombstones.rows.keys()], [tombstoneId(A)]);
-	assert.deepEqual(w.strandedDeliveries(A), [], 'no delivery the redaction deleted is written back');
+	assert.deepEqual(w.shopDeliveries(A), [], 'no delivery the redaction deleted is written back');
 	w.advance(DAY_MS);
 	await w.accept(A, 'p-705', 'orders/paid', paid(705));
 	await w.drain();
@@ -361,10 +355,10 @@ test('a shop/redact that lands between an inventory event and its SKU index row 
 	await w.drain();
 	assert.ok(raced, 'the event was indexed from the cached item');
 	assert.deepEqual(w.ledger(A, '5'), NONE);
-	assert.deepEqual(w.strandedDeliveries(A), []);
+	assert.deepEqual(w.shopDeliveries(A), []);
 });
 
-test('a shop/redact during a handler that then fails leaves no delivery row it cannot find', async () => {
+test('a shop/redact during a handler that then fails leaves no delivery row behind', async () => {
 	const w = world();
 	await w.accept(A, 'p-703', 'orders/paid', paid(703));
 	const put = w.events.put.bind(w.events);
@@ -375,10 +369,10 @@ test('a shop/redact during a handler that then fails leaves no delivery row it c
 	};
 	const r = await w.drain();
 	assert.equal(r.failed, 1);
-	assert.deepEqual(w.strandedDeliveries(A), []);
+	assert.deepEqual(w.shopDeliveries(A), []);
 });
 
-test('a shop/redact delete that lands just before the status patch leaves a row the next redaction finds', async () => {
+test('a shop/redact delete that lands just before the status patch leaves no row of the shop', async () => {
 	const w = world();
 	await w.accept(A, 'p-703', 'orders/paid', paid(703));
 	const patch = w.deliveries.patch.bind(w.deliveries);
@@ -392,13 +386,10 @@ test('a shop/redact delete that lands just before the status patch leaves a row 
 	};
 	await w.drain();
 	assert.ok(raced);
-	assert.deepEqual(w.strandedDeliveries(A), []);
-	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'processed', 'a recreated row is not pending');
-	await w.redactShop(A);
-	assert.equal(w.deliveries.rows.size, 0);
+	assert.deepEqual(w.shopDeliveries(A), []);
 });
 
-test('a recreated delivery left accepted dead-letters through the drain and stays findable', async () => {
+test('a handler that fails after a shop/redact leaves no accepted row to dead-letter later', async () => {
 	const w = world();
 	await w.accept(A, 'p-703', 'orders/paid', paid(703));
 	const put = w.events.put.bind(w.events);
@@ -412,8 +403,7 @@ test('a recreated delivery left accepted dead-letters through the drain and stay
 		}
 	};
 	await w.drain();
-	await w.drain();
-	const row = w.deliveries.rows.get(`${A}:p-703`);
-	assert.equal(row?.status, 'dead_letter');
-	assert.deepEqual(w.strandedDeliveries(A), []);
+	const second = await w.drain();
+	assert.equal(second.deadLettered, 0);
+	assert.deepEqual(w.shopDeliveries(A), []);
 });

@@ -23,7 +23,7 @@ import {
 	type ProcessDeps,
 	type PendingRow,
 } from './src/ingest/processor.ts';
-import { createDeliveryHandler, deliveryMarks, type DeliveryPatchTable } from './src/ingest/deliveryHandler.ts';
+import { createDeliveryHandler, deliveryMarks, type DeliveryMarkTable, type DeliveryPatchTable } from './src/ingest/deliveryHandler.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
@@ -130,7 +130,7 @@ const deps: ProcessDeps = {
 		}
 		return rows;
 	},
-	...deliveryMarks(Deliveries as unknown as DeliveryPatchTable),
+	...deliveryMarks(Deliveries as unknown as DeliveryMarkTable, RedactionTombstones),
 	handle: createDeliveryHandler({
 		events: Events,
 		eventSkus: EventSkus,
