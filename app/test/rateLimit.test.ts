@@ -83,7 +83,7 @@ test('unbounded distinct keys within one window degrade into a shared bucket, no
 
 test('the shipped limits are the ones the review and the docs quote', () => {
 	assert.equal(RATE_WINDOW_MS, 60_000);
-	assert.equal(API_REQUESTS_PER_MINUTE, 600);
+	assert.equal(API_REQUESTS_PER_MINUTE, 200);
 	assert.equal(EXPORTS_PER_MINUTE, 10);
 	// 429, not 401: the SPA renders a 401 as "your session expired, reauthorize",
 	// which would be a lie — and would send a throttled merchant into a

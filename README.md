@@ -94,7 +94,7 @@ flowchart LR
 | Webhook delivery | Direct HTTPS, raw-body HMAC verified **before** parsing, idempotent on `(shopId, webhookId)` |
 | API surface | Purpose-built custom resources under `/api/v1`; no table is `@export`ed, so there is no automatic REST/GraphQL surface at all |
 | Tenant isolation | Every query derives `shopId` from the verified principal, never from caller input; an adversarial suite attacks every endpoint |
-| Rate limiting | Per shop, counted per worker thread (effective bound: limit × threads × nodes): 600 requests/min and 10 CSV exports/min, refused with HTTP 429 and a wait time. A soft abuse damper, not a quota or a security boundary |
+| Rate limiting | Per shop, counted per worker thread (effective bound: limit × threads × nodes): 200 requests/min and 10 CSV exports/min, refused with HTTP 429 and a wait time. A soft abuse damper, not a quota or a security boundary |
 | Data model | Sealed GraphQL schemas, tenant-namespaced keys, PCD Level 1 data only, 7-day retention by physical delete ([ADR-003](docs/adr/ADR-003-retention-deletion.md)) |
 | Correctness | Deduplication, source timestamps, out-of-order-safe projections, and reconciliation against current Shopify state |
 | Future identity | A normalized principal boundary can accept Harper OAuth/OIDC later for standalone agency access, without touching resource logic |

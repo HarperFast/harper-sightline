@@ -103,7 +103,7 @@ shipped:
   and excess keys collapse into a shared bucket that throttles sooner, never later).
   Wired in two places:
 
-  - **Per shop, every authenticated read:** 600/min, enforced inside
+  - **Per shop, every authenticated read:** 200/min, enforced inside
     `identity.authenticate()` — the one line every resource already shares, so a new
     resource cannot forget it. Counted AFTER verification and keyed by the **verified**
     shop: a key taken from unverified input would let a caller both choose their own

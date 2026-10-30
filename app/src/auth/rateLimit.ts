@@ -7,9 +7,11 @@
 // 60s, so a limit reads as "per minute".
 export const RATE_WINDOW_MS = 60_000;
 
-// Per verified shop across all reads. The SPA issues ~5 requests per screen, so
-// this bounds scripted reuse of a token, not a human.
-export const API_REQUESTS_PER_MINUTE = 600;
+// Per verified shop across all reads. It bounds scripted reuse of a token and stays
+// well above a person's use: a screen costs 1-4 requests and the SPA does not poll.
+// Counters are per worker thread, so the effective ceiling is higher. A non-zero
+// `rate_limit.requests` metric in normal use means this is too low.
+export const API_REQUESTS_PER_MINUTE = 200;
 
 // Per verified shop for CSV export, whose cost is not proportional to the request:
 // each call pages until MAX_EXPORT_ROWS.
