@@ -82,6 +82,14 @@ Questions for review:
 - Is dropping without a per-delivery audit row enough evidence of compliance?
 - The public policy (`app/src/privacy/privacyPolicy.ts`) says shop erasure deletes every record and verifies none remain. It does not mention the tombstones and has not been changed.
 
+### Proposed public-policy wording — DRAFT, needs legal review, not published
+
+Not in `privacyPolicy.ts`, which is the live public page. If approved, these would replace the shop- and customer-erasure bullets under "Deletion and your rights":
+
+> **Shop erasure:** on Shopify's `shop/redact` request we delete every record belonging to your shop and verify that none remain. To make sure a webhook already in flight cannot restore deleted data, we keep a minimal marker — your shop's domain and the time of the request — for up to 7 days, solely to complete the erasure. It is then deleted.
+>
+> **Customer erasure:** on Shopify's `customers/redact` request we delete the records linked to the identified orders. Because we hold no customer personal data, there is no customer profile to erase — only the operational records for those orders. To make sure a webhook already in flight cannot restore them, we keep the identified Shopify order IDs, with your shop's domain and the time of the request, for up to 7 days, solely to complete the erasure. They are then deleted.
+
 ## Guarantees
 
 - **`shop/redact`** erases every `shopId`-scoped row (ledger + core) via targeted DELETE, then re-queries to verify zero residue (`redactShop`).
