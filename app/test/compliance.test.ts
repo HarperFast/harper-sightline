@@ -59,6 +59,19 @@ test('customers/redact deletes order-linked rows from orders_to_redact', async (
 	assert.equal((calls[3].args[2] as Record<string, unknown>).scrubbed, 2);
 });
 
+test('customers/redact still erases the orders when the delivery scrub fails, and reports it', async () => {
+	const { deps, calls } = spyDeps();
+	deps.scrubDeliveries = async () => {
+		throw new Error('ReadSnapshotExpiredError');
+	};
+	const r = await handleCompliance('customers/redact', 's1', { orders_to_redact: [111] }, deps);
+	assert.equal(r.deleted, 1);
+	assert.ok(calls.some((c) => c.fn === 'redactOrders'));
+	assert.deepEqual(r.failures, ['scrub: ReadSnapshotExpiredError']);
+	const audit = calls.find((c) => c.fn === 'audit')!;
+	assert.deepEqual((audit.args[2] as Record<string, unknown>).failures, ['scrub: ReadSnapshotExpiredError']);
+});
+
 test('customers/redact with no orders is a safe no-op delete', async () => {
 	const { deps, calls } = spyDeps();
 	const r = await handleCompliance('customers/redact', 's1', {}, deps);
