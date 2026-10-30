@@ -521,4 +521,36 @@ test('an erase that reports failures leaves the delivery to retry rather than ma
 	const r = await w.drain();
 	assert.equal(r.failed, 1);
 	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'accepted');
+	// The scrub had already cleared its body, so the retry treats it as handled rather than dead-lettering it.
+	const retry = await w.drain();
+	assert.equal(retry.deadLettered, 0);
+	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'processed');
+});
+
+test('a processed mark whose tombstone check fails is retried as handled, not dead-lettered for its cleared body', async () => {
+	const w = world();
+	await w.accept(A, 'p-704', 'orders/paid', paid(704));
+	const patch = w.deliveries.patch.bind(w.deliveries);
+	let failNextGet = false;
+	w.deliveries.patch = async (id, partial) => {
+		await patch(id, partial);
+		if (partial.status === 'processed' && !w.deliveries.rows.get(id)?.marked) failNextGet = true;
+	};
+	const get = w.tombstones.get.bind(w.tombstones);
+	w.tombstones.get = async (id) => {
+		if (failNextGet) {
+			failNextGet = false;
+			await patch(`${A}:p-704`, { marked: true });
+			throw new Error('tombstone read failed');
+		}
+		return get(id);
+	};
+	const first = await w.drain();
+	assert.equal(first.failed, 1);
+	assert.equal(w.deliveries.rows.get(`${A}:p-704`)?.status, 'accepted');
+	assert.equal(w.deliveries.rows.get(`${A}:p-704`)?.payload, null);
+	const second = await w.drain();
+	assert.equal(second.deadLettered, 0);
+	assert.equal(w.deliveries.rows.get(`${A}:p-704`)?.status, 'processed');
+	assert.equal(w.ledger(A, '704').projections, 1);
 });

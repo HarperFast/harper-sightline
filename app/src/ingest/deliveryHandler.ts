@@ -86,6 +86,9 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 			if (row.topic === 'app/uninstalled') await deps.uninstall(row.shopId);
 			return;
 		}
+		// Only the processed mark and the redaction scrub write a null body. An accepted row
+		// holding one was set back by a mark that failed after its patch, so it is done.
+		if (row.payload === null) return;
 		// Transient, not permanent: a payload column missing after a redeploy heals,
 		// and a truly body-less delivery dead-letters at MAX_ATTEMPTS.
 		if (row.payload === undefined) {
