@@ -189,6 +189,22 @@ test('the cursor carries across occurrences, so a lap longer than one budget sti
 	assert.ok(!(await run()).has('d.myshopify.com'), 'without a carried cursor every occurrence restarts at the first shop');
 });
 
+test('a budget stop keeps what is left of the shop turn, so the next occurrence moves on after it', async () => {
+	const { deps, handled } = memDeps([...accepted(10, 'a', 'a.myshopify.com'), ...accepted(1, 'b', 'b.myshopify.com')]);
+	let clock = 0;
+	const handle = deps.handle;
+	deps.handle = async (row) => {
+		clock += 1;
+		await handle(row);
+	};
+	const cursor: DrainCursor = { after: '' };
+	for (let occurrence = 0; occurrence < 2; occurrence++) {
+		clock = 0;
+		await drainAccepted(deps, { budgetMs: 2, slice: 3, now: () => clock, cursor });
+	}
+	assert.deepEqual(handled, ['a0', 'a1', 'a2', 'b0']);
+});
+
 test('a lap in which every row has already failed ends the drain', async () => {
 	const rows = [...accepted(30, 'x', 'x.myshopify.com'), ...accepted(30, 'y', 'y.myshopify.com')];
 	const { deps, handled } = memDeps(rows, new Set(rows.map((r) => r.id)));

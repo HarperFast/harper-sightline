@@ -75,6 +75,9 @@ export function partitionOf(id: string, slots: number): number {
 // so a lap longer than one budget resumes at the next shop rather than the first.
 export interface DrainCursor {
 	after: string;
+	// The shop `after` is inside and the rows it may still start this lap, so a drain
+	// that stops mid-turn does not hand that shop a fresh turn next occurrence.
+	turn?: { shop: string; left: number };
 }
 
 export interface DrainOptions {
@@ -118,31 +121,29 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 	const skip = new Set<string>();
 	let wholeLap = cursor.after === ''; // this lap began at the first key
 	let lapStarted = false; // this lap started a row
-	let shop: string | undefined; // the shop the cursor is inside, if any
-	let turnLeft = slice; // rows `shop` may still start this lap
 	for (;;) {
-		if (shop !== undefined && turnLeft === 0) {
-			cursor.after = pastShop(shop);
-			shop = undefined;
+		if (cursor.turn?.left === 0) {
+			cursor.after = pastShop(cursor.turn.shop);
+			cursor.turn = undefined;
 		}
-		const rows = await deps.listPending(cursor.after, shop === undefined ? slice : turnLeft);
+		const rows = await deps.listPending(cursor.after, cursor.turn?.left ?? slice);
 		if (rows.length === 0) {
 			if (wholeLap && !lapStarted) return result;
 			cursor.after = '';
 			wholeLap = true;
 			lapStarted = false;
-			shop = undefined;
+			cursor.turn = undefined;
 			continue;
 		}
 		for (const row of rows) {
-			if (row.shopId !== shop) {
+			let turn = cursor.turn;
+			if (turn?.shop !== row.shopId) {
 				if (partitionOf(row.shopId, partition.slots) !== partition.slot) {
 					cursor.after = pastShop(row.shopId);
-					shop = undefined;
+					cursor.turn = undefined;
 					break;
 				}
-				shop = row.shopId;
-				turnLeft = slice;
+				turn = cursor.turn = { shop: row.shopId, left: slice };
 			}
 			if (now() - startedAt >= budgetMs) {
 				result.stoppedBy = 'budget';
@@ -150,7 +151,7 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 			}
 			cursor.after = row.pendingKey;
 			if (skip.has(row.id)) continue;
-			turnLeft -= 1;
+			turn.left -= 1;
 			lapStarted = true;
 			try {
 				await deps.handle(row);

@@ -113,9 +113,9 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
   drain reads the computed `WebhookDelivery.pendingKey` index (shop, receivedAt, id),
   which holds only `accepted` rows. A lap walks it once: each shop starts at most
   `SHOP_SLICE` (250) of its oldest rows, then the cursor seeks past that shop, so a
-  big shop's backlog cannot hold back a small one. The cursor carries across
-  occurrences on the leader, so a lap longer than one budget resumes at the next
-  shop. A read never asks for more than the current shop's remaining turn. A read
+  big shop's backlog cannot hold back a small one. The cursor, with what is left of
+  the current shop's turn, carries across occurrences on the leader, so a lap longer
+  than one budget resumes at the next shop. A read never asks for more than the current shop's remaining turn. A read
   from the start of a lap still steps over the deleted index entries of rows
   processed since the last compaction (1.7 ms at 30,000, live), which is why a turn
   is 250 rows: at 25 a lone big shop lost about 25% of its drain rate.
