@@ -86,6 +86,7 @@ Status legend: **M** = mitigation established by a Phase 0 ADR/contract; **S** =
 |---|---|---|
 | Data retained past 7 days / "deleted" but physically present | Explicit `DELETE`-by-age purge (removes data + index); **TTL not relied on** (ADR-003, proven) | M |
 | Redaction request not honored / not idempotent | Targeted `DELETE WHERE shopId/customer`, idempotent; mandatory privacy webhooks wired (ADR-003, contract §4) | M/S |
+| Redaction undone by a delivery still in flight (accepted before the request, written after it) | 7-day redaction tombstone checked by the worker before and after it writes, and by the reconcile sweep; matching deliveries dropped silently with a counter (`docs/data-inventory.md`, Redaction tombstones). **Needs compliance review before release.** Not closed across nodes (async replication) | M |
 | Purge silently fails | Purge-lag/failure metrics + alerts; verify-by-re-query (ADR-003 → #10/#21) | S |
 
 ### 3.8 Deployment, ops & supply chain

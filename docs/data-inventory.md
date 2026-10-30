@@ -12,7 +12,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 
 ## Retention
 
-- **`sightline_ledger.*`** (WebhookDelivery, OperationalEvent, EventSku, OrderProjection, Expectation, GapFinding, FlowAggregate): purged after **7 days** by the explicit-DELETE retention job (ADR-003). `EventSku` shares its retention key (`receivedAt`) with the `OperationalEvent` it indexes.
+- **`sightline_ledger.*`** (WebhookDelivery, OperationalEvent, EventSku, OrderProjection, Expectation, GapFinding, FlowAggregate, RedactionTombstone): purged after **7 days** by the explicit-DELETE retention job (ADR-003). `EventSku` shares its retention key (`receivedAt`) with the `OperationalEvent` it indexes.
 - **`sightline_core.*`** (Shop, ShopCredential, AppAuditEvent) and `WorkerCheckpoint`: install-time / operational state, retained while installed; erased on `shop/redact`.
 - **Admin API reference caches** (`InventoryItem`, `ShopLocation`): deliberately NOT part of the 7-day ledger purge — they carry no order or customer linkage and are useless once the shop is gone, so they are retained while installed and erased only on `shop/redact` (re-fetching them on a schedule would be pointless Admin API traffic).
 - **`sightline_core.DigestOutbox`**: a **separate, 30-day** purge, longer than the 7-day ledger cutoff on purpose — a row is a record of what a period looked like (its counts and subject line, never the message), worth keeping after the events it describes have already aged out of the ledger. It holds no order name and no customer data (the row has no `bodyText`/`bodyHtml` column — there is no rendered message to remove it from). `DigestSubscription` (the address itself) is not aged out at all; it is deleted only on clear, uninstall, or `shop/redact`. Both are erased by `shop/redact` regardless of age. See "Plan C additions" below.
@@ -24,7 +24,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 | `Shop` | No | — | none | — (not customer-linked) | delete by `shopId` |
 | `ShopCredential` | No (encrypted app token) | — | none | — | delete by `shopId` |
 | `AppAuditEvent` | No | — | none | — | delete by `shopId` |
-| `WebhookDelivery` | No (PII-stripped body, 7-day) | — | none | — | delete by `shopId` |
+| `WebhookDelivery` | No (PII-stripped body, 7-day) | body's order id (not a column) | none | clear `payload` of deliveries about `orders_to_redact` (see Redaction tombstones) | delete by `shopId` |
 | `OperationalEvent` | No | `resourceId` (=orderId) | none | delete where `resourceId ∈ orders_to_redact` | delete by `shopId` |
 | `EventSku` | No | `resourceId` (=orderId) | none | delete where `resourceId ∈ orders_to_redact` | delete by `shopId` |
 | `OrderProjection` | No | `orderId` | none | delete where `orderId ∈ orders_to_redact` | delete by `shopId` |
@@ -36,6 +36,7 @@ The notification address is merchant contact data, disclosed on the Privacy scre
 | `ShopLocation` | No (reference cache) | — (not order-linked) | none | — (not order-linked) | delete by `shopId` |
 | `DigestSubscription` | No (merchant's own contact address, not customer PII) | — (not order-linked) | none | — (not customer-linked) | delete by `shopId` |
 | `DigestOutbox` | No (counts and a subject line only — no order names, no message body) | — (not order-linked; a digest spans a whole period, not one order) | none | — (not customer-linked) | delete by `shopId` |
+| `RedactionTombstone` | No (shop domain and order id only) | `orderId` | none | **written** for each id in `orders_to_redact`; kept 7 days | delete by `shopId`, then one whole-shop tombstone written; kept 7 days |
 
 ## Plan A additions (2026-08-07)
 
@@ -62,9 +63,28 @@ The operations digest (build-only; there is no sender yet — see the "digest-no
 
 Two retention windows now apply, and both are disclosed everywhere retention is mentioned (the Privacy screen, the public policy, and this document): the ledger's 7-day purge, and the digest outbox's separate 30-day purge. The outbox deliberately outlives the ledger — a digest row is a record of what a period looked like, worth keeping after the events it describes have aged out, not a copy of the message that would have been sent.
 
+## Redaction tombstones (2026-10-30) — NEEDS COMPLIANCE REVIEW BEFORE RELEASE
+
+A redaction deletes what is stored when the request arrives. Before this, a delivery accepted earlier but not yet processed was written on the next drain, re-creating the order (live: `customers/redact` deleted 0 rows, then the drain wrote 1 event and 1 projection).
+
+- **What is stored.** On `customers/redact`, one `RedactionTombstone` row per id in `orders_to_redact`: `{shopId, orderId, redactedAt}`. On `shop/redact`, one row `{shopId, redactedAt}`. Nothing else: the request's customer id, email and phone are not stored.
+- **Retention.** 7 days by `redactedAt`, purged by the ledger job like every ledger table. A retried request rewrites the same row and restarts its 7 days. `shop/redact` deletes the shop's order tombstones with the rest of the shop.
+- **Why 7 days.** It matches the ledger: every delivery received before the request is purged within 7 days, and the reconcile sweep reads back at most 7 days.
+- **Silent drop.** While a tombstone exists, the worker does not write events, SKU rows, projections or findings for a matching delivery. It clears the delivery's stored body, marks it processed (no retry, no dead letter), and increments `process.redacted_dropped`. No log line and no audit row per delivery. The reconcile sweep skips a tombstoned order the same way (`reconcile.redacted_skipped`).
+- **Order tombstones** match every delivery about the order for 7 days, including ones received after the request.
+- **Shop tombstones** match only deliveries received before the request (plus 5 minutes of clock skew between nodes), so a shop that reinstalls within the 7 days records normally.
+- **Delivery bodies.** `customers/redact` also clears the stored body of the shop's deliveries about the redacted orders: processed ones found through the order's events, queued ones read from the shop's queue up to 10,000 rows. Rows past that limit are cleared when the worker drops them. Dead-lettered deliveries keep their body until the 7-day purge; a replay of one is dropped by the tombstone.
+- **Not covered.** Redaction and processing on different nodes: the tombstone replicates asynchronously, so a delivery processed on another node before the tombstone arrives there can still be written. The 7-day purge removes it.
+
+Questions for review:
+
+- Is keeping the redacted order ids, and after `shop/redact` the shop domain, for 7 days after the request acceptable?
+- Is dropping without a per-delivery audit row enough evidence of compliance?
+- The public policy (`app/src/privacy/privacyPolicy.ts`) says shop erasure deletes every record and verifies none remain. It does not mention the tombstones and has not been changed.
+
 ## Guarantees
 
 - **`shop/redact`** erases every `shopId`-scoped row (ledger + core) via targeted DELETE, then re-queries to verify zero residue (`redactShop`).
-- **`customers/redact`** removes rows linked to the `orders_to_redact` order ids for the shop, verified (`redactOrders`). Inventory events (keyed by `inventory_item_id`, not an order) are correctly untouched.
+- **`customers/redact`** removes rows linked to the `orders_to_redact` order ids for the shop, verified (`redactOrders`), clears the stored bodies of their deliveries, and tombstones the orders so a delivery still in flight is dropped (see Redaction tombstones). Inventory events (keyed by `inventory_item_id`, not an order) are correctly untouched.
 - **Retry-safe:** redaction is idempotent (delete-by-condition); each compliance action writes an audit event keyed by the webhook id, so a Shopify retry upserts rather than duplicates.
 - **Invalid HMAC → 401 with no mutation** (verification precedes dispatch).
