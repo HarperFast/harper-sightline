@@ -84,7 +84,7 @@ export const SCRUB_YIELD_EVERY = 500;
 
 export interface ScrubResult {
 	scrubbed: number;
-	capped: boolean; // the queue read hit SCRUB_SCAN_LIMIT; the tombstone covers the rest
+	capped: boolean; // the queue or dead-letter read hit its limit; rows past it keep their body
 }
 
 // What a scrub patch carries besides its change: a patch on a key a delete just removed
@@ -149,8 +149,8 @@ export async function scrubDeliveries(
 		const orderId = deliveryOrderId(row);
 		if (orderId !== undefined && wanted.has(orderId)) queued.push(keyFields(row));
 	}
-	// Dead letters of the shop: few, and the status or shop index serves the read.
 	const deadLettered: Row[] = [];
+	let deadScanned = 0;
 	for await (const row of tables.deliveries.search({
 		conditions: [
 			{ attribute: 'status', value: 'dead_letter' },
@@ -159,6 +159,7 @@ export async function scrubDeliveries(
 		operator: 'and',
 		limit,
 	})) {
+		if (++deadScanned % SCRUB_YIELD_EVERY === 0) await yieldToEventLoop();
 		const orderId = deliveryOrderId(row);
 		if (orderId !== undefined && wanted.has(orderId)) deadLettered.push(keyFields(row));
 	}
@@ -177,5 +178,5 @@ export async function scrubDeliveries(
 		await tables.deliveries.patch(key.id as string, { payload: null, ...key });
 		scrubbed++;
 	}
-	return { scrubbed, capped: scanned === limit };
+	return { scrubbed, capped: scanned === limit || deadScanned === limit };
 }

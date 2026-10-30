@@ -288,6 +288,30 @@ test("a tombstone for one shop's order does not touch another shop's order with 
 	assert.equal(w.deliveries.rows.get(`${B}:p-703`)?.status, 'processed');
 });
 
+test('the dead-letter scrub stops at its limit and says so', async () => {
+	const w = world();
+	for (const [webhookId, order] of [
+		['d-801', 801],
+		['d-802', 802],
+		['d-703', 703],
+	] as const) {
+		await w.deliveries.put({
+			id: `${A}:${webhookId}`,
+			shopId: A,
+			webhookId,
+			topic: 'orders/paid',
+			receivedAt: NOW,
+			status: 'dead_letter',
+			attempts: 5,
+			payload: JSON.stringify(paid(order)),
+		});
+	}
+	const scrubTables = { deliveries: w.deliveries, events: w.events } as unknown as ScrubTables;
+	assert.deepEqual(await scrubDeliveries(scrubTables, A, ['703'], 2), { scrubbed: 0, capped: true });
+	assert.deepEqual(await scrubDeliveries(scrubTables, A, ['703'], 3), { scrubbed: 1, capped: true });
+	assert.deepEqual(await scrubDeliveries(scrubTables, A, ['703'], 4), { scrubbed: 0, capped: false });
+});
+
 test("customers/redact clears the bodies of the shop's dead-lettered deliveries for the order, and only those", async () => {
 	const w = world();
 	const dead = (shopId: string, webhookId: string, body: unknown) =>
