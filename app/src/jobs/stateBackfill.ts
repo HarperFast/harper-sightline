@@ -1,5 +1,6 @@
 import type { OrderProjection, WorkerCheckpoint } from '../domain/model.ts';
 import { deriveOrderLane } from '../domain/orders.ts';
+import { isRedacted, type TombstoneTable } from '../privacy/tombstone.ts';
 
 // Backfills the derived `state` column on projections written before it existed.
 // `state` is written only when an event rebuilds a projection, and listOrders filters
@@ -37,8 +38,12 @@ export interface BackfillReadTable {
 // Injected side effects. `patch` writes the derived column and the row's identity fields only, so a
 // concurrent event write cannot lose another field.
 export interface BackfillDeps {
-	projections: BackfillReadTable & { patch(id: string, partial: Record<string, unknown>): Promise<void> };
+	projections: BackfillReadTable & {
+		patch(id: string, partial: Record<string, unknown>): Promise<void>;
+		delete(id: string): Promise<unknown>;
+	};
 	checkpoints: BackfillReadTable & { put(row: WorkerCheckpoint): Promise<void> };
+	tombstones: Pick<TombstoneTable, 'get'>;
 }
 
 export interface BackfillResult {
@@ -83,10 +88,18 @@ export async function runStateBackfill(now: number, deps: BackfillDeps): Promise
 		// overwrite an event-driven rebuild's correct `state`.
 		const fresh = ((await deps.projections.get(id)) ?? undefined) as OrderProjection | undefined;
 		if (!fresh || (fresh.state !== undefined && fresh.state !== null)) continue;
-		// The key, shop and lastEventAt ride along: if a purge or redaction deletes the row
-		// before this lands, Harper recreates it from the patch alone, and those are what
-		// the purge and a redaction find it by.
-		await deps.projections.patch(id, { state: deriveOrderLane(fresh), id, shopId: fresh.shopId, lastEventAt: fresh.lastEventAt });
+		// The key, shop, order and lastEventAt ride along: if a purge or redaction deletes
+		// the row before this lands, Harper recreates it from the patch alone, and those are
+		// what the purge and a redaction find it by. A redaction that landed meanwhile has
+		// its row deleted again here.
+		await deps.projections.patch(id, {
+			state: deriveOrderLane(fresh),
+			id,
+			shopId: fresh.shopId,
+			orderId: fresh.orderId,
+			lastEventAt: fresh.lastEventAt,
+		});
+		if (await isRedacted(deps.tombstones, fresh.shopId, fresh.orderId, fresh.lastEventAt ?? 0)) await deps.projections.delete(id);
 		fixed++;
 	}
 

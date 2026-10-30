@@ -1446,6 +1446,7 @@ test('orders filter by maximum age, so an aging bucket link opens the bucket', a
 	await runStateBackfill(NOW, {
 		projections: projections as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	const bucketed = async (min: number, max?: number) =>
 		(await listOrders(projections, 's1', NOW, { state: 'awaiting', minAgeHours: min, maxAgeHours: max })).items
@@ -1466,6 +1467,7 @@ test('the age bounds partition: no awaiting order lands in two buckets or in non
 	await runStateBackfill(NOW, {
 		projections: projections as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	// An order paid EXACTLY on a boundary is the case a `<=`/`<=` pair would
 	// double-count and a `<`/`<` pair would drop. The query pairs `<=` with `>`.

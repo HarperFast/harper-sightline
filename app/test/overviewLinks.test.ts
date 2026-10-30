@@ -273,6 +273,7 @@ test('every linked count on the Overview equals the length of the list it links 
 	await runStateBackfill(NOW, {
 		projections: tables.projections as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	const html = await renderOverview(tables);
 	const linked = [...linkedTiles(html), ...linkedRows(html)];
@@ -357,6 +358,7 @@ test('the linked lists a merchant lands on are tenant-scoped, not just the count
 	await runStateBackfill(NOW, {
 		projections: tables.projections as unknown as BackfillDeps['projections'],
 		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+		tombstones: new FakeTable('id', []),
 	});
 	const html = await renderOverview(tables);
 	for (const link of [...linkedTiles(html), ...linkedRows(html)]) {

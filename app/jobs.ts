@@ -357,6 +357,7 @@ const backfillTicker = ticker('state.backfill', 10 * 60_000);
 const backfillDeps: BackfillDeps = {
 	projections: Projections as unknown as BackfillDeps['projections'],
 	checkpoints: Checkpoints as unknown as BackfillDeps['checkpoints'],
+	tombstones: RedactionTombstones,
 };
 
 function runProjectionStateBackfill(now = Date.now()): Promise<BackfillResult> {
