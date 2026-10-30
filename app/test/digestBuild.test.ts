@@ -228,6 +228,28 @@ test('a failure building one subscription does not starve subscriptions after it
 	assert.doesNotMatch(lines[0], /bad@b\.example/);
 });
 
+test('a subscription that fails with a non-Error value is counted like any other failure', async () => {
+	const { deps } = buildDeps({
+		subscriptions: new FakeTable('shopId', [{ shopId: 's1', email: 'a@b.example', status: 'active' }]),
+		findings: new FakeTable('id', [unconfirmedFinding('s1', 'o1')]),
+		projections: new FakeTable('id', [awaitingOrder('s1', 'o1')]),
+	});
+	deps.outboxes = {
+		async put() {
+			throw undefined;
+		},
+		async get() {
+			return null;
+		},
+	} as unknown as DigestBuildDeps['outboxes'];
+	setLogSink(() => {});
+	try {
+		assert.equal((await runDigestBuild(NOW, deps)).failed, 1);
+	} finally {
+		setLogSink(null);
+	}
+});
+
 // scrubKnownAddress: used where the address at risk is already in hand (the
 // per-subscription catch above).
 test('scrubKnownAddress removes exactly the given address, and leaves an address-free message untouched', () => {

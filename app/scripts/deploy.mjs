@@ -4,8 +4,8 @@
 //   node scripts/deploy.mjs
 // TLS is verified. Only a host with a self-signed certificate needs an explicit
 // NODE_TLS_REJECT_UNAUTHORIZED=0 on the command line.
-import { execSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,10 +42,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const appDir = fileURLToPath(new URL('..', import.meta.url));
 const files = ['config.yaml', 'schema.graphql', 'resources.ts', 'jobs.ts', 'src', 'package.json'];
 if (existsSync(join(appDir, 'web/dist/index.html'))) files.push('web/dist');
-const tarPath = join(tmpdir(), 'sightline-deploy.tar');
-execSync(`tar -cf ${tarPath} -C ${appDir} ${files.join(' ')}`, { stdio: 'ignore' });
-
+// A fresh private directory, and no shell: a predictable path in the shared tmpdir
+// could be pre-created by another user, and a checkout path may hold spaces.
+const tarDir = mkdtempSync(join(tmpdir(), 'sightline-deploy-'));
+const tarPath = join(tarDir, 'sightline.tar');
+execFileSync('tar', ['-cf', tarPath, '-C', appDir, ...files], { stdio: 'ignore' });
 const payload = readFileSync(tarPath).toString('base64');
+rmSync(tarDir, { recursive: true, force: true });
 console.log('deploy:', (await op({ operation: 'deploy_component', project: 'sightline', payload })).message ?? '(no message)');
 
 const base = process.env.SIGHTLINE_BASE ?? HARPER_OPS_URL.replace(/:9925\/?$/, '');

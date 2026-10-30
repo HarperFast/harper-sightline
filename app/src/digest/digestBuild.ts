@@ -108,7 +108,7 @@ export async function runDigestBuild(now: number, deps: DigestBuildDeps): Promis
 			// The address must never reach this line, so it is scrubbed from `message`, which is not a redacted key.
 			log('error', 'digest.build.subscription.failed', {
 				shopId: subscription.shopId,
-				message: scrubKnownAddress((e as Error).message, subscription.email),
+				message: scrubKnownAddress(e instanceof Error ? e.message : String(e), subscription.email),
 			});
 		}
 	}

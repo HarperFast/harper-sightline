@@ -33,7 +33,7 @@ export async function redactShop(targets: RedactTarget[], shopId: string): Promi
 			const residue = await countMatching(target.table, condition, undefined, target.keyField, 1);
 			if (residue > 0) failures.push(`${target.name}: shop ${shopId} records remain after redaction`);
 		} catch (err) {
-			failures.push(`${target.name}: ${(err as Error).message}`);
+			failures.push(`${target.name}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 	return { deleted, byTable, failures };
@@ -61,7 +61,7 @@ export async function redactOrders(targets: RedactTarget[], shopId: string, orde
 			byTable[target.name] = n;
 			deleted += n;
 		} catch (err) {
-			failures.push(`${target.name}: ${(err as Error).message}`);
+			failures.push(`${target.name}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 	return { deleted, byTable, failures };

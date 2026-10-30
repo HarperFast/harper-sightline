@@ -72,6 +72,16 @@ test('customers/redact still erases the orders when the delivery scrub fails, an
 	assert.deepEqual((audit.args[2] as Record<string, unknown>).failures, ['scrub: ReadSnapshotExpiredError']);
 });
 
+test('customers/redact still erases when the scrub rejects with a non-Error value', async () => {
+	const { deps, calls } = spyDeps();
+	deps.scrubDeliveries = async () => {
+		throw undefined;
+	};
+	const r = await handleCompliance('customers/redact', 's1', { orders_to_redact: [111] }, deps);
+	assert.ok(calls.some((c) => c.fn === 'redactOrders'));
+	assert.deepEqual(r.failures, ['scrub: undefined']);
+});
+
 test('customers/redact with no orders is a safe no-op delete', async () => {
 	const { deps, calls } = spyDeps();
 	const r = await handleCompliance('customers/redact', 's1', {}, deps);

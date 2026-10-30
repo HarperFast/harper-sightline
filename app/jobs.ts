@@ -403,7 +403,7 @@ export const digestJob = job('digest', digestTicker, async () => {
 			log('info', 'digest.built', { built: r.built, skippedQuiet: r.skippedQuiet, skippedNotDue: r.skippedNotDue, failed: r.failed });
 	} catch (e: unknown) {
 		// No specific address in hand here, so scrub anything email-shaped.
-		log('error', 'digest.error', { message: scrubEmailShaped((e as Error).message) });
+		log('error', 'digest.error', { message: scrubEmailShaped(e instanceof Error ? e.message : String(e)) });
 	}
 });
 

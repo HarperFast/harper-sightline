@@ -57,7 +57,7 @@ export async function handleCompliance(
 			try {
 				scrub = await deps.scrubDeliveries(shopId, ids);
 			} catch (err) {
-				scrubFailures.push(`scrub: ${(err as Error).message}`);
+				scrubFailures.push(`scrub: ${err instanceof Error ? err.message : String(err)}`);
 			}
 			const r = await deps.redactOrders(shopId, ids);
 			const failures = [...scrubFailures, ...r.failures];
