@@ -122,11 +122,10 @@ export class FakeTable implements PurgeableTable {
 		this.rows.set(String(record[this.keyField]), { ...record });
 	}
 
-	// Shallow merge into an existing row. A missing row is a no-op, matching how
-	// the production call sites treat patch (they only patch rows they just read).
+	// Shallow merge into an existing row. On a missing key Harper 5.3.3 creates a row
+	// holding only the patched fields (probed live), so the fake does too.
 	async patch(id: string, partial: Record<string, unknown>): Promise<void> {
-		const row = this.rows.get(id);
-		if (row) this.rows.set(id, { ...row, ...partial });
+		this.rows.set(id, { ...this.rows.get(id), ...partial });
 	}
 
 	async delete(id: string): Promise<void> {

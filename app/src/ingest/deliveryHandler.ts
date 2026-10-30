@@ -6,7 +6,27 @@ import { isOrderLinked } from './projection.ts';
 import { refreshOrder, type OrderTables } from './orderRefresh.ts';
 import { isRedacted, type TombstoneTable } from '../privacy/tombstone.ts';
 import { log, metrics, M } from '../observability/observe.ts';
-import type { DeliveryRow } from './processor.ts';
+import type { DeliveryRow, ProcessDeps } from './processor.ts';
+
+export interface DeliveryPatchTable {
+	get(id: string): Promise<unknown>;
+	patch(id: string, partial: Record<string, unknown>): Promise<void>;
+}
+
+// shop/redact can delete a delivery while the drain holds it, and Harper turns a patch
+// on a missing key into a row of just the patched fields: no shopId or receivedAt, so
+// neither the purge nor a later redaction finds it. A delete between the get and the
+// patch still loses that race; this narrows it to that gap.
+async function patchDelivery(table: DeliveryPatchTable, id: string, partial: Record<string, unknown>): Promise<void> {
+	if (await table.get(id)) await table.patch(id, partial);
+}
+
+export function deliveryMarks(table: DeliveryPatchTable): Pick<ProcessDeps, 'markProcessed' | 'markFailed'> {
+	return {
+		markProcessed: (id) => patchDelivery(table, id, { status: 'processed' }),
+		markFailed: (id, attempts, dead) => patchDelivery(table, id, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
+	};
+}
 
 // The drain's unit of work (ProcessDeps.handle): normalize one stored delivery and
 // write its event, SKU rows and order projection. Deps-injected and free of `../db.ts`
@@ -17,7 +37,7 @@ export interface DeliveryHandlerDeps {
 	inventoryItems: Pick<EnrichReadTable, 'get'>;
 	orders: OrderTables;
 	tombstones: Pick<TombstoneTable, 'get'>;
-	deliveries: { patch(id: string, partial: { payload: null }): Promise<void> };
+	deliveries: DeliveryPatchTable;
 	uninstall(shopId: string): Promise<void>;
 	// Erases one order's ledger rows, for a redaction that landed while this handler wrote them.
 	eraseOrder(shopId: string, orderId: string): Promise<unknown>;
@@ -30,7 +50,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 	// the order), and its stored body cleared. The drain then marks it processed.
 	const drop = async (id: string) => {
 		metrics.inc(M.processRedactedDropped);
-		await deps.deliveries.patch(id, { payload: null });
+		await patchDelivery(deps.deliveries, id, { payload: null });
 	};
 	return async (row) => {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeTable } from './fakeTable.ts';
 import { drainAccepted, pendingKey, type ProcessDeps, type PendingRow } from '../src/ingest/processor.ts';
-import { createDeliveryHandler, type DeliveryHandlerDeps } from '../src/ingest/deliveryHandler.ts';
+import { createDeliveryHandler, deliveryMarks, type DeliveryHandlerDeps } from '../src/ingest/deliveryHandler.ts';
 import { handleCompliance, type ComplianceDeps } from '../src/privacy/compliance.ts';
 import {
 	redactShop,
@@ -36,8 +36,7 @@ class DeliveryTable extends FakeTable {
 		await super.put(this.keyed(record));
 	}
 	override async patch(id: string, partial: Record<string, unknown>) {
-		const row = this.rows.get(id);
-		if (row) this.rows.set(id, this.keyed({ ...row, ...partial }));
+		this.rows.set(id, this.keyed({ ...this.rows.get(id), ...partial }));
 	}
 }
 
@@ -91,8 +90,7 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 				rows.push(r as unknown as PendingRow);
 			return rows;
 		},
-		markProcessed: (id) => deliveries.patch(id, { status: 'processed' }),
-		markFailed: (id, attempts, dead) => deliveries.patch(id, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
+		...deliveryMarks(deliveries),
 		handle,
 	};
 	const scrubTables = { deliveries, events } as unknown as ScrubTables;
@@ -129,6 +127,8 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 	return {
 		deliveries,
 		events,
+		// By key: a partial row written back by a patch has no shopId.
+		shopDeliveries: (shopId: string) => [...deliveries.rows.keys()].filter((id) => id.startsWith(`${shopId}:`)),
 		written,
 		tombstones,
 		projections,
@@ -315,8 +315,23 @@ test('shop/redact drops what the drain holds, but a reinstalled shop records aga
 	assert.equal(w.ledger(B, '703').projections, 1, 'another shop is untouched');
 	assert.equal(w.ledger(A, '5').events, 0, 'the inventory event is dropped too');
 	assert.deepEqual([...w.tombstones.rows.keys()], [tombstoneId(A)]);
+	assert.deepEqual(w.shopDeliveries(A), [], 'no delivery the redaction deleted is written back');
 	w.advance(DAY_MS);
 	await w.accept(A, 'p-705', 'orders/paid', paid(705));
 	await w.drain();
 	assert.equal(w.ledger(A, '705').projections, 1);
+});
+
+test('a shop/redact during a handler that then fails leaves no partial delivery row behind', async () => {
+	const w = world();
+	await w.accept(A, 'p-703', 'orders/paid', paid(703));
+	const put = w.events.put.bind(w.events);
+	w.events.put = async (row) => {
+		await w.redactShop(A);
+		await put(row);
+		throw new Error('write failed');
+	};
+	const r = await w.drain();
+	assert.equal(r.failed, 1);
+	assert.deepEqual(w.shopDeliveries(A), []);
 });

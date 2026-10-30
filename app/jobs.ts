@@ -23,7 +23,7 @@ import {
 	type ProcessDeps,
 	type PendingRow,
 } from './src/ingest/processor.ts';
-import { createDeliveryHandler, type DeliveryHandlerDeps } from './src/ingest/deliveryHandler.ts';
+import { createDeliveryHandler, deliveryMarks, type DeliveryPatchTable } from './src/ingest/deliveryHandler.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
@@ -132,19 +132,14 @@ const deps: ProcessDeps = {
 		}
 		return rows;
 	},
-	async markProcessed(id) {
-		await Deliveries.patch(id, { status: 'processed' });
-	},
-	async markFailed(id, attempts, dead) {
-		await Deliveries.patch(id, { attempts, status: dead ? 'dead_letter' : 'accepted' });
-	},
+	...deliveryMarks(Deliveries as unknown as DeliveryPatchTable),
 	handle: createDeliveryHandler({
 		events: Events,
 		eventSkus: EventSkus,
 		inventoryItems: InventoryItems as unknown as EnrichReadTable,
 		orders: orderTables,
 		tombstones: RedactionTombstones,
-		deliveries: Deliveries as unknown as DeliveryHandlerDeps['deliveries'],
+		deliveries: Deliveries as unknown as DeliveryPatchTable,
 		uninstall: uninstallShop,
 		eraseOrder: (shopId, orderId) => redactOrders(REDACT_TARGETS, shopId, [orderId]),
 	}),

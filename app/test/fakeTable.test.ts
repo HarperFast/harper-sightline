@@ -14,13 +14,13 @@ test('put upserts by key field and stores a copy', async () => {
 	assert.equal(table.rows.size, 1);
 });
 
-test('patch shallow-merges an existing row and ignores a missing one', async () => {
+test('patch shallow-merges an existing row and, like Harper, writes a partial row for a missing one', async () => {
 	const table = new FakeTable('id', [{ id: 'a', n: 1, keep: true }]);
 	await table.patch('a', { n: 5 });
 	assert.deepEqual(await table.get('a'), { id: 'a', n: 5, keep: true });
 
 	await table.patch('missing', { n: 1 });
-	assert.equal(await table.get('missing'), null);
+	assert.deepEqual(await table.get('missing'), { n: 1 });
 });
 
 // The fake stands in for Harper in every read-layer test, so it must refuse the
