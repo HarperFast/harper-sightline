@@ -47,9 +47,16 @@ export interface Page {
 	nextCursor?: string;
 }
 
+// Rows a `keep` page may read. Past it the page ends without a cursor: a cursor built
+// from a row `keep` dropped would hand the caller another tenant's id.
+export const TENANT_SCAN_LIMIT = 10 * MAX_LIMIT;
+
 // Keyset pagination over a numeric sort field with the row id as tiebreak. The store
 // orders by (sortField, id) and the cursor condition excludes everything up to and
 // including the cursor row, so a tie group of any size pages without a read-ahead.
+//
+// `keep` is the tenant check for a query that leaves shopId out. The store cannot
+// apply `limit` then, so rows are read until `limit` of them pass `keep`.
 async function keysetPage(
 	table: QueryTable,
 	baseConditions: QuerySpec['conditions'],
@@ -82,16 +89,21 @@ async function keysetPage(
 	}
 
 	const page: Array<Record<string, unknown>> = [];
+	let scanned = 0;
 	for await (const row of table.search({
 		conditions,
 		operator: 'and',
 		sort: { attribute: sortField, descending, next: { attribute: idField, descending } },
-		limit,
+		...(keep ? {} : { limit }),
 	})) {
+		if (keep) {
+			if (++scanned > TENANT_SCAN_LIMIT) break;
+			if (!keep(row)) continue;
+		}
 		page.push(row);
+		if (page.length === limit) break;
 	}
-	// `keep` filters after the fetch (a page can come back short); the cursor still follows the fetched rows.
-	const items = (keep ? page.filter(keep) : page).map((r) => pick(r, fields));
+	const items = page.map((r) => pick(r, fields));
 	let nextCursor: string | undefined;
 	if (page.length === limit && page.length > 0) {
 		const last = page[page.length - 1];
@@ -164,7 +176,7 @@ export async function listEvents(
 ): Promise<Page> {
 	const windowStart = Math.max(params.since ?? 0, now - WINDOW_MS);
 	// A resourceId filter is highly selective, but Harper's `and` would still walk the low-cardinality
-	// shopId index (12 ms at 160k events), so that query drops shopId and filters the rows instead.
+	// shopId index (12 ms at 160k events), so that query drops shopId and `keep` filters the rows instead.
 	const conditions: QuerySpec['conditions'] = [{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' }];
 	if (!params.resourceId) conditions.unshift({ attribute: 'shopId', value: shopId });
 	const keep = params.resourceId ? (row: Record<string, unknown>) => row.shopId === shopId : undefined;

@@ -12,9 +12,10 @@ import {
 	getSetup,
 	listOrders,
 	getOrderDetail,
+	TENANT_SCAN_LIMIT,
 } from '../src/api/queries.ts';
 import { detectorKey } from '../src/domain/detector.ts';
-import { encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/api/apiContract.ts';
+import { decodeCursor, encodeCursor, EVENT_LIST_FIELDS, FINDING_LIST_FIELDS, ORDER_LIST_FIELDS } from '../src/api/apiContract.ts';
 import { EXPORT_COLUMNS } from '../src/api/csv.ts';
 import { applySubscriptionUpdate } from '../src/digest/digestSubscription.ts';
 
@@ -216,6 +217,57 @@ test('listEvents: a cursor crafted from the attacker boundary still yields only 
 	const page = await listEvents(events, V, NOW, { cursor });
 	assert.ok(!idsOf(page).some((id) => String(id).startsWith('a:')), 'cursor cannot cross tenants');
 	assert.deepEqual(idsOf(page), ['v:e2', 'v:e1']);
+});
+
+// Every page of a listing, following nextCursor; also returns the decoded cursor ids.
+async function allPages(fetchPage: (cursor?: string) => ReturnType<typeof listEvents>) {
+	const ids: unknown[] = [];
+	const cursorIds: string[] = [];
+	let cursor: string | undefined;
+	for (let n = 0; n < 20; n++) {
+		const page = await fetchPage(cursor);
+		ids.push(...page.items.map((i) => i.eventId));
+		if (!page.nextCursor) break;
+		cursorIds.push(decodeCursor(page.nextCursor)?.id ?? '');
+		cursor = page.nextCursor;
+	}
+	return { ids, cursorIds };
+}
+
+test('listEvents by resourceId: pages hold only the caller, are never short because another shop has newer rows, and no cursor names another shop', async () => {
+	const { events } = world();
+	// Sorted newest first, o1 is a:e1, v:e2, a:e3, v:e1: an attacker row leads and sits between the victim's.
+	const { ids, cursorIds } = await allPages((cursor) => listEvents(events, V, NOW, { resourceId: 'o1', limit: 1, cursor }));
+	assert.deepEqual(ids, ['v:e2', 'v:e1']);
+	assert.ok(cursorIds.length > 0 && cursorIds.every((id) => id.startsWith('v:')), `cursors named ${cursorIds.join(', ')}`);
+
+	// A resource only the attacker has: an empty page, and no cursor to decode.
+	assert.deepEqual(await listEvents(events, V, NOW, { resourceId: 'invX', limit: 1 }), { items: [], nextCursor: undefined });
+});
+
+test('listEvents by resourceId and sku: the EventSku cursor never names another shop', async () => {
+	const { events } = world();
+	const eventSkus = new FakeTable('id', [
+		{ id: 'v:e1:SKU-1', shopId: V, eventId: 'v:e1', sku: 'SKU-1', resourceId: 'o1', occurredAt: NOW - 1000 },
+		{ id: 'a:e1:SKU-1', shopId: A, eventId: 'a:e1', sku: 'SKU-1', resourceId: 'o1', occurredAt: NOW - 100 },
+	]);
+	const { ids, cursorIds } = await allPages((cursor) =>
+		listEvents(events, V, NOW, { resourceId: 'o1', sku: 'SKU-1', limit: 1, cursor }, eventSkus),
+	);
+	assert.deepEqual(ids, ['v:e1']);
+	assert.ok(
+		cursorIds.every((id) => id.startsWith('v:')),
+		`cursors named ${cursorIds.join(', ')}`,
+	);
+});
+
+test('listEvents by resourceId: past the tenant scan cap the page ends without a cursor', async () => {
+	const { events } = world();
+	for (let i = 0; i < TENANT_SCAN_LIMIT; i++) {
+		await events.put({ eventId: `a:flood${i}`, shopId: A, domain: 'order', resourceId: 'o1', occurredAt: NOW - 50, receivedAt: NOW - 50 });
+	}
+	const page = await listEvents(events, V, NOW, { resourceId: 'o1', limit: 1 });
+	assert.deepEqual(page, { items: [], nextCursor: undefined });
 });
 
 test('getEventDetail: victim cannot read an attacker event by its real id', async () => {
