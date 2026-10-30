@@ -1,4 +1,5 @@
 import { databases, type Table } from '#harper';
+export { transaction } from '#harper';
 import type {
 	Shop,
 	ShopCredential,

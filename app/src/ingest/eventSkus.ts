@@ -33,14 +33,19 @@ export function eventSkuRows(event: NormalizedEvent): EventSku[] {
 	}));
 }
 
-// The event is written first: an index row pointing at a missing event would render
-// as a phantom result, while an event briefly missing from the index is repaired by
-// the next reprocess or reconciliation pass. The index rows, at most MAX_EVENT_SKUS,
-// are written concurrently (DESIGN.md, Measured costs).
+// Harper's transaction(): the writes inside commit together, or none do if `work` throws.
+export type Transact = <T>(work: () => Promise<T>) => Promise<T>;
+
+// The event and its index rows (at most MAX_EVENT_SKUS) commit in one transaction, so
+// a failed put leaves neither an event missing from the SKU filter nor an index row
+// pointing at no event. One commit is also faster than one per row (DESIGN.md,
+// Measured costs).
 export async function writeEventWithSkus(
-	deps: { events: WritableTable<OperationalEvent>; eventSkus: WritableTable<EventSku> },
+	deps: { events: WritableTable<OperationalEvent>; eventSkus: WritableTable<EventSku>; transaction: Transact },
 	event: NormalizedEvent,
 ): Promise<void> {
-	await deps.events.put(stripSkus(event));
-	await Promise.all(eventSkuRows(event).map((row) => deps.eventSkus.put(row)));
+	await deps.transaction(async () => {
+		await deps.events.put(stripSkus(event));
+		await Promise.all(eventSkuRows(event).map((row) => deps.eventSkus.put(row)));
+	});
 }

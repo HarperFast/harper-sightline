@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FakeTable } from './fakeTable.ts';
+import { FakeTable, fakeTransaction } from './fakeTable.ts';
 import { drainAccepted, pendingKey, MAX_ATTEMPTS, type ProcessDeps, type PendingRow } from '../src/ingest/processor.ts';
 import { createDeliveryHandler, deliveryMarks, type DeliveryHandlerDeps } from '../src/ingest/deliveryHandler.ts';
 import { handleCompliance, type ComplianceDeps } from '../src/privacy/compliance.ts';
@@ -72,6 +72,7 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 	const handle = createDeliveryHandler({
 		events: events as unknown as DeliveryHandlerDeps['events'],
 		eventSkus: eventSkus as unknown as DeliveryHandlerDeps['eventSkus'],
+		transaction: fakeTransaction(events, eventSkus),
 		inventoryItems,
 		orders,
 		tombstones,

@@ -35,3 +35,7 @@ export const databases: Record<string, object> = new Proxy(
 // The scoped-secrets accessor, mutable so tests set and clear keys to drive the real
 // read branch (see test/secretsPolicy.test.ts).
 export const secrets: Record<string, string | undefined> = {};
+
+// No isolation or rollback here; tests that need Harper's all-or-nothing commit use
+// fakeTransaction (test/fakeTable.ts).
+export const transaction = <T>(work: () => Promise<T>): Promise<T> => work();

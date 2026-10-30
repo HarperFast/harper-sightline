@@ -132,3 +132,21 @@ export class FakeTable implements PurgeableTable {
 		this.rows.delete(id);
 	}
 }
+
+// Harper's transaction(): the writes inside commit together, or none do when the work
+// throws. The fake keeps no isolation (other readers see writes before commit); it
+// restores the given tables if the work throws.
+export function fakeTransaction(...tables: FakeTable[]): <T>(work: () => Promise<T>) => Promise<T> {
+	return async (work) => {
+		const before = tables.map((table) => new Map(table.rows));
+		try {
+			return await work();
+		} catch (err) {
+			tables.forEach((table, i) => {
+				table.rows.clear();
+				for (const [key, row] of before[i]) table.rows.set(key, row);
+			});
+			throw err;
+		}
+	};
+}

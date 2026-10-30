@@ -193,7 +193,10 @@ them. A big shop is 160k events (and as many deliveries) in the window.
 - **Lookups by resourceId** (`queries.ts`, `orderRefresh.ts`): with `shopId` in the
   `and`, 12-14 ms at 160k events, against 0.4 ms on resourceId alone.
 - **EventSku writes** (`eventSkus.ts`): a 100-SKU order drained at 159-170/s with its
-  index rows written one after another, 221-238/s concurrently.
+  index rows written one after another, 221-238/s concurrently. Writing the event and
+  its rows in one transaction, two runs each against concurrent puts without one:
+  1 SKU 3,172/s (2,918-3,163), 25 SKUs 846-848/s (739), 100 SKUs 243-250/s (214-215).
+  A 500-SKU order commits in one transaction.
 - **Redaction checks in the drain** (`deliveryHandler.ts`): the tombstone reads cost
   about 1 µs per key read (2-2.75 µs for an order's two), against about 350 µs to
   drain a 1-SKU delivery. A 60k 1-SKU backlog drained at 2,756-2,846/s with the checks

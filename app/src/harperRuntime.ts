@@ -22,3 +22,8 @@ export { databases, type Table } from 'harper';
 // The accessor object is re-exported, not copies of its values, so reads stay live across a rotation.
 import * as harper from 'harper';
 export const secrets: Record<string, string | undefined> = (harper as { secrets?: Record<string, string | undefined> }).secrets ?? {};
+
+// Same namespace read for `transaction`. Without one the work runs uncommitted as a
+// unit, each write on its own, which is how the writes ran before.
+export const transaction: <T>(work: () => Promise<T>) => Promise<T> =
+	(harper as { transaction?: <T>(work: () => Promise<T>) => Promise<T> }).transaction ?? ((work) => work());

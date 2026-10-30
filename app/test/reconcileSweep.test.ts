@@ -11,7 +11,7 @@ import {
 import { synthesizeEvents } from '../src/shopify/reconcile.ts';
 import { writeEventWithSkus } from '../src/ingest/eventSkus.ts';
 import { refreshOrder, type OrderTables } from '../src/ingest/orderRefresh.ts';
-import { FakeTable } from './fakeTable.ts';
+import { FakeTable, fakeTransaction } from './fakeTable.ts';
 
 // The reconcile sweep fills gaps so the detector does not report an absence Sightline
 // caused. These cover the convergence guarantee: progress already made is always
@@ -361,7 +361,12 @@ test('re-reading the overlap window adds no events and leaves every projection a
 		},
 		async applyOrder(o) {
 			for (const event of synthesizeEvents('s', o))
-				await writeEventWithSkus(ledger as unknown as Parameters<typeof writeEventWithSkus>[0], event);
+				await writeEventWithSkus(
+					{ ...ledger, transaction: fakeTransaction(ledger.events, ledger.eventSkus) } as unknown as Parameters<
+						typeof writeEventWithSkus
+					>[0],
+					event,
+				);
 			await refreshOrder(ledger as unknown as OrderTables, 's', o.orderId, T);
 		},
 		async saveCheckpoint(cursorMs) {

@@ -1,6 +1,6 @@
 import type { EventSku, OperationalEvent } from '../domain/model.ts';
 import { normalizeDelivery, isOperationalTopic, PermanentNormalizeError } from './normalize.ts';
-import { writeEventWithSkus, type WritableTable } from './eventSkus.ts';
+import { writeEventWithSkus, type Transact, type WritableTable } from './eventSkus.ts';
 import { indexCachedInventoryEvent, type EnrichReadTable } from './inventoryEnrich.ts';
 import { isOrderLinked } from './projection.ts';
 import { refreshOrder, type OrderTables } from './orderRefresh.ts';
@@ -71,6 +71,7 @@ export function deliveryMarks(
 export interface DeliveryHandlerDeps {
 	events: WritableTable<OperationalEvent>;
 	eventSkus: WritableTable<EventSku>;
+	transaction: Transact;
 	inventoryItems: Pick<EnrichReadTable, 'get'>;
 	orders: OrderTables;
 	tombstones: Pick<TombstoneTable, 'get'>;
@@ -134,7 +135,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 					dropped: event.skusDropped,
 				});
 			}
-			await writeEventWithSkus({ events: deps.events, eventSkus: deps.eventSkus }, event);
+			await writeEventWithSkus({ events: deps.events, eventSkus: deps.eventSkus, transaction: deps.transaction }, event);
 			await indexCachedInventoryEvent({ inventoryItems: deps.inventoryItems, eventSkus: deps.eventSkus }, event);
 			if (orderId !== undefined) await refreshOrder(deps.orders, event.shopId, orderId, now());
 			// A redaction that landed during these writes may have searched before they

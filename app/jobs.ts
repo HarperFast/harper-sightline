@@ -13,6 +13,7 @@ import {
 	DigestSubscriptions,
 	DigestOutboxes,
 	RedactionTombstones,
+	transaction,
 } from './src/db.ts';
 import {
 	drainAccepted,
@@ -134,6 +135,7 @@ const deps: ProcessDeps = {
 	handle: createDeliveryHandler({
 		events: Events,
 		eventSkus: EventSkus,
+		transaction,
 		inventoryItems: InventoryItems as unknown as EnrichReadTable,
 		orders: orderTables,
 		tombstones: RedactionTombstones,
@@ -246,7 +248,7 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 					return;
 				}
 				for (const event of synthesizeEvents(shopId, order)) {
-					await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
+					await writeEventWithSkus({ events: Events, eventSkus: EventSkus, transaction }, event);
 				}
 				await refreshOrder(orderTables, shopId, order.orderId, now);
 			},
