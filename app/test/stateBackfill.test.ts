@@ -260,3 +260,23 @@ test('a tie group that spans a batch boundary is resumed after the rows already 
 	await runStateBackfill(NOW, deps(projections, checkpoints));
 	assert.equal([...projections.rows.values()].filter((r) => r.state === undefined).length, 0);
 });
+
+test('a projection deleted between the read and the patch is written back with its key, shop and lastEventAt', async () => {
+	const projections = new FakeTable('id', [legacyRow('purged', 30)]);
+	const purging = {
+		search: (spec: unknown) => projections.search(spec as never),
+		get: (id: string) => projections.get(id),
+		patch: async (id: string, partial: Record<string, unknown>) => {
+			await projections.delete(id);
+			await projections.patch(id, partial);
+		},
+	};
+	await runStateBackfill(NOW, {
+		projections: purging as unknown as BackfillDeps['projections'],
+		checkpoints: new FakeTable('id', []) as unknown as BackfillDeps['checkpoints'],
+	});
+	const row = await projections.get('s1:purged');
+	assert.equal(row?.id, 's1:purged');
+	assert.equal(row?.shopId, 's1');
+	assert.equal(row?.lastEventAt, NOW - 30 * HOUR, 'the purge finds it by lastEventAt');
+});

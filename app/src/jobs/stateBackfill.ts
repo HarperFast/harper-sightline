@@ -34,7 +34,8 @@ export interface BackfillReadTable {
 	get(id: string): Promise<Record<string, unknown> | null>;
 }
 
-// Injected side effects. `patch` writes only the derived column, so a concurrent event write cannot lose another field.
+// Injected side effects. `patch` writes the derived column and the row's identity fields only, so a
+// concurrent event write cannot lose another field.
 export interface BackfillDeps {
 	projections: BackfillReadTable & { patch(id: string, partial: Record<string, unknown>): Promise<void> };
 	checkpoints: BackfillReadTable & { put(row: WorkerCheckpoint): Promise<void> };
@@ -82,7 +83,10 @@ export async function runStateBackfill(now: number, deps: BackfillDeps): Promise
 		// overwrite an event-driven rebuild's correct `state`.
 		const fresh = ((await deps.projections.get(id)) ?? undefined) as OrderProjection | undefined;
 		if (!fresh || (fresh.state !== undefined && fresh.state !== null)) continue;
-		await deps.projections.patch(id, { state: deriveOrderLane(fresh) });
+		// The key, shop and lastEventAt ride along: if a purge or redaction deletes the row
+		// before this lands, Harper recreates it from the patch alone, and those are what
+		// the purge and a redaction find it by.
+		await deps.projections.patch(id, { state: deriveOrderLane(fresh), id, shopId: fresh.shopId, lastEventAt: fresh.lastEventAt });
 		fixed++;
 	}
 
