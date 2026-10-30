@@ -178,7 +178,7 @@ type OrderProjection @table(database: "sightline_ledger") @sealed {
 }
 
 type Expectation @table(database: "sightline_ledger") @sealed {
-	# id = `${detector}:${orderId}:${ruleVersion}` — deterministic.
+	# id = `${detector}:${shopId}:${orderId}:${ruleVersion}` (detectorKey) — deterministic.
 	id: ID! @primaryKey
 	shopId: String! @indexed
 	orderId: String!
@@ -191,7 +191,7 @@ type Expectation @table(database: "sightline_ledger") @sealed {
 }
 
 type GapFinding @table(database: "sightline_ledger") @sealed {
-	# id deterministic per (detector, order, ruleVersion).
+	# id = detectorKey: deterministic per (detector, shop, order, ruleVersion).
 	id: ID! @primaryKey
 	shopId: String! @indexed
 	orderId: String!

@@ -84,7 +84,7 @@ function ticker(name: string, stallMs: number) {
 	});
 }
 
-export interface JobContext {
+interface JobContext {
 	jobName?: string;
 	scheduledAt?: Date;
 	catchUp?: boolean;
@@ -148,7 +148,7 @@ const processTicker = ticker('process', 5 * 60_000);
 // The round-robin position, kept across occurrences on this leader; a new leader starts at the first shop.
 const drainCursor: DrainCursor = { after: '' };
 
-export function processDeliveries(into: DrainResult = emptyDrainResult()): Promise<DrainResult> {
+function processDeliveries(into: DrainResult = emptyDrainResult()): Promise<DrainResult> {
 	return drainAccepted(deps, { budgetMs: PROCESS_BUDGET_MS, cursor: drainCursor }, into);
 }
 
@@ -163,7 +163,7 @@ export function runPurge(now = Date.now()): Promise<PurgeResult> {
 }
 
 // The outbox keeps 30 days, not the ledger's 7: it records what the merchant was told.
-export function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
+function runOutboxPurge(now = Date.now()): Promise<PurgeResult> {
 	return purgeExpired(OUTBOX_RETENTION_TARGETS, now, OUTBOX_RETENTION_DAYS);
 }
 
@@ -176,7 +176,7 @@ export const purgeJob = job('purge', purgeTicker, async () => {
 
 const detectorTicker = ticker('detect', 15 * 60_000);
 
-export function runDetectorSweep(now = Date.now()): Promise<number> {
+function runDetectorSweep(now = Date.now()): Promise<number> {
 	return sweepDueExpectations(
 		{
 			expectations: Expectations as unknown as DetectorSweepDeps['expectations'],
@@ -204,7 +204,7 @@ const reconcileTicker = ticker('reconcile', 30 * 60_000);
 // A 401 mid-sweep means the token stopped being accepted after the pre-flight
 // expiry check, so rotate once and retry. Synthesized event ids are deterministic
 // and the sweep persists its cursor, so a restarted shop replays cleanly.
-export async function reconcileShop(shopId: string, now = Date.now(), deadlineMs?: number): Promise<{ orders: number } | null> {
+async function reconcileShop(shopId: string, now = Date.now(), deadlineMs?: number): Promise<{ orders: number } | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const token = await getUsableAccessToken(tokenDeps, shopId, now);
 		if (!token) return null;
@@ -288,7 +288,7 @@ function recordShopFailure(shopId: string, err: unknown): void {
 	}
 }
 
-export function runReconcileSweep(now = Date.now()): Promise<ReconcileShopsResult> {
+function runReconcileSweep(now = Date.now()): Promise<ReconcileShopsResult> {
 	const active = Shops.search({ conditions: [{ attribute: 'status', value: 'active' }] }) as AsyncIterable<{ shopId: string }>;
 	return reconcileShops(active, {
 		reconcile: (shopId, deadlineMs) => reconcileShop(shopId, now, deadlineMs),
@@ -332,7 +332,7 @@ const enrichDeps: EnrichDeps = {
 	fetchLocations: fetchLocations,
 };
 
-export function runInventoryEnrichment(now = Date.now()): Promise<{ items: number; locations: number; indexed: number }> {
+function runInventoryEnrichment(now = Date.now()): Promise<{ items: number; locations: number; indexed: number }> {
 	return runEnrichmentSweep(now, enrichDeps);
 }
 
@@ -359,7 +359,7 @@ const backfillDeps: BackfillDeps = {
 	checkpoints: Checkpoints as unknown as BackfillDeps['checkpoints'],
 };
 
-export function runProjectionStateBackfill(now = Date.now()): Promise<BackfillResult> {
+function runProjectionStateBackfill(now = Date.now()): Promise<BackfillResult> {
 	return runStateBackfill(now, backfillDeps);
 }
 
@@ -391,7 +391,7 @@ const digestBuildDeps: DigestBuildDeps = {
 	deliveries: Deliveries as unknown as QueryTable,
 };
 
-export function runDigestBuild(now = Date.now()): Promise<DigestBuildResult> {
+function runDigestBuild(now = Date.now()): Promise<DigestBuildResult> {
 	return runDigestBuildSweep(now, digestBuildDeps);
 }
 
@@ -430,7 +430,7 @@ export function getOpsHealth(now = Date.now()): Promise<OpsHealth> {
 	);
 }
 
-export async function runOpsSnapshot(now = Date.now()): Promise<void> {
+async function runOpsSnapshot(now = Date.now()): Promise<void> {
 	const health = await getOpsHealth(now);
 	log(health.healthy ? 'info' : 'warn', 'ops.snapshot', { health, metrics: metrics.snapshot() });
 }

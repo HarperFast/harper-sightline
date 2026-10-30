@@ -54,13 +54,15 @@ and detector fall behind, so the merchant UI goes stale.
   re-registers `sightline-process`. Processing is idempotent (only `accepted`
   rows are listed; downstream writes are deterministically keyed), so a restart
   cannot double-process.
-- **`process.keyless_skipped` above zero**: the drain is passing over accepted rows
+- **`process.keyless_skipped` rising**: the drain is passing over accepted rows
   that hold no `id` or `shopId`. Such a row was written by a patch over a delivery
   that `shop/redact` had just deleted, before patches carried the key (Harper stores
-  only the patched fields). It costs one read per lap and blocks nothing. It cannot
-  be removed through the ops API: SQL `DELETE` reports it as a skipped hash because
-  no key is stored (seen on Harper 5.3.3). Escalate to Harper Fabric on-call if the
-  count grows.
+  only the patched fields). The counter goes up on every lap while any such row
+  exists, so it tells you that some exist, not how many. They cost one read per
+  lap and block nothing, and nothing in the app removes them: the purge finds rows
+  by `receivedAt`, which they lack, and SQL `DELETE` reports them as skipped hashes
+  because no key is stored (seen on Harper 5.3.3). Escalate to Harper Fabric
+  on-call to remove them from the table's primary store.
 - **Persistent normalizer bug**: the offending deliveries will dead-letter after
   `MAX_ATTEMPTS`; fix forward and reprocess is out of scope for MVP (dead-letter
   is the visible terminal state). Escalate to the normalizer owner.

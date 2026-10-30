@@ -48,8 +48,7 @@ export function deliveryMarks(
 }
 
 // The drain's unit of work (ProcessDeps.handle): normalize one stored delivery and
-// write its event, SKU rows and order projection. Deps-injected and free of `../db.ts`
-// so tests can drive it with FakeTables; jobs.ts wires the real tables.
+// write its event, SKU rows and order projection.
 export interface DeliveryHandlerDeps {
 	events: WritableTable<OperationalEvent>;
 	eventSkus: WritableTable<EventSku>;
@@ -57,7 +56,7 @@ export interface DeliveryHandlerDeps {
 	orders: OrderTables;
 	tombstones: Pick<TombstoneTable, 'get'>;
 	uninstall(shopId: string): Promise<void>;
-	// Given an order id or an inventory item id.
+	// Erases what this handler may have written for a redacted resource: an order or an inventory item.
 	eraseResource(shopId: string, resourceId: string): Promise<{ failures: string[] }>;
 	now?: () => number;
 }

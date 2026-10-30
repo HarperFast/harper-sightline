@@ -206,7 +206,6 @@ test('a budget stop keeps what is left of the shop turn, so the next occurrence 
 });
 
 test('a pending row with no key or shop is passed over and counted, and the shops around it keep draining', async () => {
-	// What Harper returns for a row an older patch recreated over a deleted delivery.
 	const keyless = { status: 'accepted', attempts: 1 } as unknown as DeliveryRow;
 	const { deps, state, handled } = memDeps([...accepted(2, 'p', 'p.myshopify.com'), keyless]);
 	const marked: unknown[] = [];

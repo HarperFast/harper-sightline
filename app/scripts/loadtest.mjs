@@ -8,8 +8,8 @@
 //   node scripts/loadtest.mjs
 // TLS is verified; a self-signed host needs an explicit NODE_TLS_REJECT_UNAUTHORIZED=0.
 //
-// The drain phase exists because ack latency alone cannot fail (work is deferred,
-// ADR-002); a run once printed LOAD PASS with every delivery accepted and none processed.
+// The drain phase exists because ack latency alone cannot fail: work is deferred
+// (ADR-002).
 //
 // Gates: ack p95 < 1s, ack max < 5s (Shopify's timeout), 0 rejected deliveries,
 // the backlog returns to its pre-burst level, no new dead letters, and the

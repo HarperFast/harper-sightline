@@ -1,7 +1,7 @@
 // Component boot side effects, in order. resources.ts imports this first so the log
 // sink and raw-body handler are in place before anything logs or parses a request.
 import { contentTypes } from 'harper';
-import '../../jobs.ts'; // starts the purge's post-deploy pass; every sweep is a config.yaml scheduler job
+import '../../jobs.ts'; // starts nothing on import: every sweep is a config.yaml scheduler job
 import { log } from '../observability/observe.ts';
 import { installHarperLogSink } from '../observability/harperLogSink.ts';
 

@@ -10,7 +10,7 @@
 //
 // ./src/resources/boot.ts MUST be imported first: it installs the Harper log sink
 // and the raw-body JSON content-type handler that webhook HMAC verification
-// depends on, and starts the background job loop.
+// depends on.
 import './src/resources/boot.ts';
 
 export { PrivacyPolicy } from './src/resources/privacyPolicy.ts';
@@ -18,12 +18,8 @@ export { Health } from './src/resources/health.ts';
 export { OpsResource } from './src/resources/opsResource.ts';
 export { Session } from './src/resources/session.ts';
 
-// ── Read API (#15) ────────────────────────────────────────────────────────────
-// Every resource derives shopId from the verified principal and passes it to the
-// query layer, which constrains every search by it (tenant isolation). Responses
-// are field-allowlisted in queries.ts. Standard 7-day bounded windows + cursor
-// pagination. Classes are *Resource-suffixed to avoid colliding with the table
-// imports; routing comes from `static path`.
+// Read API: every resource derives shopId from the verified principal (tenant
+// isolation). Classes are *Resource-suffixed to avoid colliding with the table imports.
 export { SummaryResource } from './src/resources/summaryResource.ts';
 export { SetupResource } from './src/resources/setupResource.ts';
 export { EventsResource } from './src/resources/eventsResource.ts';

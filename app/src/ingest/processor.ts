@@ -35,7 +35,6 @@ export function pastShop(shopId: string): string {
 	return `${shopId}!`;
 }
 
-// Injected side effects: Harper tables in the component, an in-memory fake in tests.
 // `listPending` returns accepted rows whose pendingKey sorts after `after`, in key
 // order. `handle` is the unit of work (normalization and projection).
 export interface ProcessDeps {
@@ -136,9 +135,8 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 			continue;
 		}
 		for (const row of rows) {
-			// A row an older patch recreated over a deleted delivery holds neither its key nor its
-			// shop, and a search does not return the key, so it can be neither handled nor
-			// patched. It is passed over, and counted so an operator can remove it.
+			// A pending row with no key or shop cannot be handled or patched (a search does not
+			// return a key the row does not store), so the lap passes over it and counts it.
 			if (typeof row.id !== 'string' || typeof row.shopId !== 'string' || row.shopId === '') {
 				cursor.after = row.pendingKey;
 				result.skippedKeyless += 1;

@@ -1,7 +1,6 @@
 import type { ReconcileOrder } from './adminApi.ts';
 
-// The order-pagination half of the reconcile sweep, kept out of jobs.ts so it is
-// unit-testable without the Harper runtime.
+// The order-pagination half of the reconcile sweep.
 
 export interface ReconcileSweepDeps {
 	fetchPage(sinceMs: number, cursor?: string): Promise<{ orders: ReconcileOrder[]; nextCursor?: string }>;

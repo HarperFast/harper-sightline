@@ -29,8 +29,8 @@ is the fast-start map for anyone (human or agent) working in `app/`.
 - `resources.ts` — export layer for `src/resources/*`; nothing else belongs here.
 - `src/resources/` — one file per resource class, named after the class it exports
   (`health.ts` → `Health`, `eventsResource.ts` → `EventsResource`, …), plus six
-  shared modules: `boot.ts` (log sink + raw-JSON content type + job loop; imported
-  FIRST by `resources.ts`), `auth.ts` (the shared identity adapter, `API_KEY`,
+  shared modules: `boot.ts` (log sink + raw-JSON content type; imported FIRST by
+  `resources.ts`; jobs run only as `config.yaml` scheduler jobs), `auth.ts` (the shared identity adapter, `API_KEY`,
   `sessionPayload`), `tables.ts` (the read-only `QueryTable` casts), `http.ts`
   (`parseUrl`/`trailingId`/`numParam`/`httpError` — no `harper` import, so unit-testable),
   `assetPath.ts` (`resolveAssetUrl`, the containment boundary for the

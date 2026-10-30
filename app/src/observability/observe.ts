@@ -162,9 +162,9 @@ export const M = {
 	// Deliveries for a redacted order or shop (src/privacy/tombstone.ts), dropped
 	// unwritten and with no log line. Non-zero only around a customers/redact or shop/redact.
 	processRedactedDropped: 'process.redacted_dropped',
-	// Pending rows with no key or shop, passed over each lap (src/ingest/processor.ts).
-	// Should stay zero: one is a row an older patch wrote over a deleted delivery, and
-	// an operator removes it (docs/runbooks/webhook-backlog.md).
+	// Pending rows with no key or shop that a lap read and passed over
+	// (src/ingest/processor.ts). It grows on every lap while any exists, so a rise
+	// means some exist, not how many (docs/runbooks/webhook-backlog.md).
 	processKeylessSkipped: 'process.keyless_skipped',
 	// An order rebuild read fewer events than the stored projection was built from and
 	// was not written (src/ingest/orderRefresh.ts). Occasional counts are concurrent
