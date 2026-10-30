@@ -115,8 +115,8 @@ function deliveryOrderId(row: Row): string | undefined {
 // webhook events (an event's id is its delivery's id), so this must run before the
 // events are deleted; only one processed before the drain cleared bodies holds one. Queued ones are read from the shop's span of the pendingKey
 // index and marked processed so the drain skips them; past SCRUB_SCAN_LIMIT the
-// tombstone drops the rest when the drain reaches them. Dead-lettered deliveries are
-// not reached: the purge removes them, and the tombstone drops a replay.
+// tombstone drops the rest when the drain reaches them. Dead-lettered ones are read by
+// status and shop, and keep their status.
 export async function scrubDeliveries(
 	tables: ScrubTables,
 	shopId: string,
@@ -149,6 +149,19 @@ export async function scrubDeliveries(
 		const orderId = deliveryOrderId(row);
 		if (orderId !== undefined && wanted.has(orderId)) queued.push(keyFields(row));
 	}
+	// Dead letters of the shop: few, and the status or shop index serves the read.
+	const deadLettered: Row[] = [];
+	for await (const row of tables.deliveries.search({
+		conditions: [
+			{ attribute: 'status', value: 'dead_letter' },
+			{ attribute: 'shopId', value: shopId },
+		],
+		operator: 'and',
+		limit,
+	})) {
+		const orderId = deliveryOrderId(row);
+		if (orderId !== undefined && wanted.has(orderId)) deadLettered.push(keyFields(row));
+	}
 	let scrubbed = 0;
 	for (const id of processed) {
 		const delivery = await tables.deliveries.get(id);
@@ -158,6 +171,10 @@ export async function scrubDeliveries(
 	}
 	for (const key of queued) {
 		await tables.deliveries.patch(key.id as string, { payload: null, status: 'processed', ...key });
+		scrubbed++;
+	}
+	for (const key of deadLettered) {
+		await tables.deliveries.patch(key.id as string, { payload: null, ...key });
 		scrubbed++;
 	}
 	return { scrubbed, capped: scanned === limit };

@@ -288,6 +288,30 @@ test("a tombstone for one shop's order does not touch another shop's order with 
 	assert.equal(w.deliveries.rows.get(`${B}:p-703`)?.status, 'processed');
 });
 
+test("customers/redact clears the bodies of the shop's dead-lettered deliveries for the order, and only those", async () => {
+	const w = world();
+	const dead = (shopId: string, webhookId: string, body: unknown) =>
+		w.deliveries.put({
+			id: `${shopId}:${webhookId}`,
+			shopId,
+			webhookId,
+			topic: 'orders/paid',
+			receivedAt: NOW,
+			status: 'dead_letter',
+			attempts: 5,
+			payload: JSON.stringify(body),
+		});
+	await dead(A, 'd-703', paid(703));
+	await dead(A, 'd-704', paid(704));
+	await dead(B, 'd-703', paid(703));
+	const r = await w.redactCustomer(A, [703]);
+	assert.equal(r.scrubbed, 1);
+	assert.equal(w.deliveries.rows.get(`${A}:d-703`)?.payload, null);
+	assert.equal(w.deliveries.rows.get(`${A}:d-703`)?.status, 'dead_letter');
+	assert.equal(typeof w.deliveries.rows.get(`${A}:d-704`)?.payload, 'string');
+	assert.equal(typeof w.deliveries.rows.get(`${B}:d-703`)?.payload, 'string');
+});
+
 test('customers/redact clears the bodies a processed delivery kept from before processing cleared them', async () => {
 	const w = world();
 	await w.accept(A, 'p-701', 'orders/paid', paid(701));
