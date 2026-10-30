@@ -89,17 +89,13 @@ async function keysetPage(
 	}
 
 	const page: Array<Record<string, unknown>> = [];
-	let scanned = 0;
 	for await (const row of table.search({
 		conditions,
 		operator: 'and',
 		sort: { attribute: sortField, descending, next: { attribute: idField, descending } },
-		...(keep ? {} : { limit }),
+		limit: keep ? TENANT_SCAN_LIMIT : limit,
 	})) {
-		if (keep) {
-			if (++scanned > TENANT_SCAN_LIMIT) break;
-			if (!keep(row)) continue;
-		}
+		if (keep && !keep(row)) continue;
 		page.push(row);
 		if (page.length === limit) break;
 	}

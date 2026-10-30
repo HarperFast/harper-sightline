@@ -12,6 +12,7 @@ import {
 	getSetup,
 	listOrders,
 	getOrderDetail,
+	TENANT_SCAN_LIMIT,
 } from '../src/api/queries.ts';
 import { EVENT_FIELDS, FINDING_LIST_FIELDS, MAX_LIMIT } from '../src/api/apiContract.ts';
 import { detectorKey } from '../src/domain/detector.ts';
@@ -1743,6 +1744,10 @@ test('a resourceId lookup never walks the shopId index, and still never leaks an
 	assert.ok(!page.items.some((i) => String(i.eventId).startsWith('s2')), 'no cross-tenant leak');
 	assert.deepEqual(page.items.map((i) => i.eventId).sort(), ['s1:e1', 's1:e2']);
 	assert.ok(seen.length > 0 && seen.every((q) => !hasShopCondition(q)), 'shopId is filtered in the app, not queried');
+	assert.ok(
+		seen.every((q) => q.limit === TENANT_SCAN_LIMIT),
+		'the store is bounded by the tenant scan cap',
+	);
 });
 
 test('an event detail relates events by resourceId alone, scoped to the shop in the app', async () => {
