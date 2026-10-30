@@ -80,10 +80,16 @@ export interface ScrubTables {
 
 // Rows read per order's events, and from the shop's queue.
 export const SCRUB_SCAN_LIMIT = 10_000;
+export const SCRUB_YIELD_EVERY = 500;
 
 export interface ScrubResult {
 	scrubbed: number;
 	capped: boolean; // the queue read hit SCRUB_SCAN_LIMIT; the tombstone covers the rest
+}
+
+// A macrotask boundary: I/O callbacks (incoming requests) run before it resolves.
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 // The order a stored delivery is about, read as the worker would read it; undefined
@@ -133,7 +139,9 @@ export async function scrubDeliveries(
 		limit,
 	})) {
 		if (row.shopId !== shopId) break;
-		scanned++;
+		// The rows arrive as microtasks, so without a break the read and the parse of every
+		// body hold the thread, and the webhook acks queued behind this request with it.
+		if (++scanned % SCRUB_YIELD_EVERY === 0) await yieldToEventLoop();
 		const orderId = deliveryOrderId(row);
 		if (orderId !== undefined && wanted.has(orderId)) queued.push(row.id as string);
 	}

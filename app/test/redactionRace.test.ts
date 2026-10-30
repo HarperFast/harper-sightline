@@ -9,6 +9,7 @@ import {
 	redactOrders,
 	scrubDeliveries,
 	SCRUB_SCAN_LIMIT,
+	SCRUB_YIELD_EVERY,
 	type RedactTarget,
 	type ScrubTables,
 } from '../src/privacy/redaction.ts';
@@ -293,6 +294,20 @@ test('the queue scrub stops at its limit and says so; the tombstone drops the re
 	assert.deepEqual(w.ledger(A, '704'), NONE);
 	assert.equal(w.deliveries.rows.get(`${A}:p-704`)?.payload, null);
 	assert.equal(w.ledger(A, '801').projections, 1);
+});
+
+test('the queue scrub lets other work on the thread run while it reads a long queue', async () => {
+	const w = world();
+	for (let i = 0; i < 3 * SCRUB_YIELD_EVERY; i++) await w.accept(A, `p-${i}`, 'orders/paid', paid(10_000 + i));
+	const scrubTables = { deliveries: w.deliveries, events: w.events } as unknown as ScrubTables;
+	let finished = false;
+	let ranDuring = false;
+	setImmediate(() => {
+		ranDuring = !finished;
+	});
+	await scrubDeliveries(scrubTables, A, ['703']);
+	finished = true;
+	assert.ok(ranDuring, 'a macrotask queued before the scrub ran before it finished');
 });
 
 test('shop/redact drops what the drain holds, but a reinstalled shop records again', async () => {
