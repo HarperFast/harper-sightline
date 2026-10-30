@@ -8,7 +8,7 @@ import { isRedacted, type TombstoneTable } from '../privacy/tombstone.ts';
 import { log, metrics, M } from '../observability/observe.ts';
 import type { DeliveryRow, ProcessDeps } from './processor.ts';
 
-export interface DeliveryPatchTable {
+interface DeliveryPatchTable {
 	patch(id: string, partial: Record<string, unknown>): Promise<void>;
 }
 
@@ -95,8 +95,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 	};
 	return async (row) => {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
-			// For a redacted shop this is a row a mark wrote back over a deleted one: the mark
-			// deletes it, where a dead letter would alert for a normalizer fault for seven days.
+			// A redacted shop's row: the mark deletes it, where a dead letter would raise a normalizer alert.
 			if (await isRedacted(deps.tombstones, row.shopId, undefined, row.receivedAt ?? 0)) return;
 			throw new PermanentNormalizeError(`delivery ${row.id} missing normalization metadata`);
 		}

@@ -52,9 +52,7 @@ jobs:
       - name: Dependency audit
         working-directory: app
         run: npm audit --audit-level=high
-      # Secret scan: fail on any committed Shopify access token (shpat_*) or app secret
-      # (shpss_*). The old dev fallback secret is gone from the tree (its rotation is
-      # tracked in docs/security-review.md), so nothing but this file is excluded.
+      # Secret scan: fail on any committed Shopify access token (shpat_*) or app secret (shpss_*).
       - name: Secret scan
         run: |
           set -euo pipefail

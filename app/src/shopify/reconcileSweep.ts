@@ -1,7 +1,5 @@
 import type { ReconcileOrder } from './adminApi.ts';
 
-// The order-pagination half of the reconcile sweep.
-
 export interface ReconcileSweepDeps {
 	fetchPage(sinceMs: number, cursor?: string): Promise<{ orders: ReconcileOrder[]; nextCursor?: string }>;
 	applyOrder(order: ReconcileOrder): Promise<void>;

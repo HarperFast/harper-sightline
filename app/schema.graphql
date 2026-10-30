@@ -103,7 +103,7 @@ type WebhookDelivery @table(database: "sightline_ledger") @sealed {
 	status: String! @indexed # accepted | processed | dead_letter
 	attempts: Int
 	hmacVerified: Boolean
-	payload: String # PII-stripped JSON body, kept until the worker normalizes it (7-day purge)
+	payload: String # allowlisted JSON body (src/privacy/pii.ts), cleared once processed (7-day purge)
 	# The drain's queue order, for accepted rows only, so the index holds just the backlog:
 	# shop, then receivedAt (13-digit epoch ms, so it sorts as text), then id so no two keys
 	# tie. Harper computes it on every write and back-fills it when added; it is never

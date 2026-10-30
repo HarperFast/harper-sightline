@@ -1,6 +1,5 @@
-// What of a webhook body is stored for the worker to normalize later. An allowlist, so a
-// field Shopify adds, or a subscription that drifts from its include_fields, is never
-// stored by default (shopify-contract §5, defense in depth).
+// An allowlist, so a field Shopify adds or a subscription that drifts from its
+// include_fields is not stored (shopify-contract §5).
 
 const ORDER_FIELDS = [
 	'id',
