@@ -7,6 +7,8 @@ import type { Principal } from './principal.ts';
 
 export interface RequestLike {
 	headers: { get(name: string): string | null };
+	// Harper's response headers for this request; a thrown error's own headers are not sent.
+	responseHeaders?: { set(name: string, value: string): unknown };
 }
 
 // A future Harper OAuth adapter can implement the same contract (ADR-001).
@@ -48,6 +50,7 @@ export function createShopifyIdentityAdapter(opts: {
 				// No shop label on the metric or the log line; the count is what ops needs.
 				metrics.inc(M.rateLimitedRequests);
 				log('warn', 'api.rate_limited', { retryAfterSeconds: decision.retryAfterSeconds });
+				ctx.responseHeaders?.set('Retry-After', String(decision.retryAfterSeconds));
 				throw new RateLimitError('requests', decision.retryAfterSeconds);
 			}
 			return principal;

@@ -5,6 +5,7 @@ import { MAX_LIMIT } from '../api/apiContract.ts';
 import { createExportGate, EXPORT_BUSY_RETRY_SECONDS, exportBusyResponse, runExclusive } from '../api/exportGate.ts';
 import { createRateLimiter, EXPORTS_PER_MINUTE, RateLimitError } from '../auth/rateLimit.ts';
 import { log, M, metrics } from '../observability/observe.ts';
+import type { RequestLike } from '../auth/identity.ts';
 import { identity } from './auth.ts';
 import { httpError, parseUrl, trailingId, numParam } from './http.ts';
 import { EventsQ, FindingsQ, ExpectationsQ, ProjectionsQ, EventSkusQ } from './tables.ts';
@@ -52,6 +53,7 @@ export class ExportResource extends Resource {
 		if (!decision.allowed) {
 			metrics.inc(M.rateLimitedExports);
 			log('warn', 'export.rate_limited', { kind, retryAfterSeconds: decision.retryAfterSeconds });
+			(this.getContext() as RequestLike).responseHeaders?.set('Retry-After', String(decision.retryAfterSeconds));
 			throw new RateLimitError('exports', decision.retryAfterSeconds);
 		}
 		const p = url.searchParams;

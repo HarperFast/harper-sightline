@@ -122,6 +122,9 @@ test('an authenticated caller is limited per shop, and the refusal is a 429', as
 	const limited = logLines.filter((l) => l.includes('api.rate_limited'));
 	assert.equal(limited.length, 1);
 	assert.equal(JSON.parse(limited[0].replace('[sightline] ', '')).level, 'warn');
+	const responseHeaders = new Map<string, string>();
+	await assert.rejects(() => adapter.authenticate({ ...ctx(token), responseHeaders }));
+	assert.equal(responseHeaders.get('Retry-After'), '60', 'the 429 carries Retry-After');
 });
 
 // The limit keys on the VERIFIED shop, so a second shop's token is unaffected by
