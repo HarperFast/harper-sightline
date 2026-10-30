@@ -64,7 +64,9 @@ function loading(): void {
 // each navigation and hands it to the screen, which drops its paint when the token
 // is no longer current — otherwise a slow answer for a screen the merchant already
 // left lands after the one they moved to and paints over it. The check belongs
-// after the LAST await before each render: anything earlier still leaves a gap.
+// after the LAST await before each render: anything earlier still leaves a gap. It
+// also goes before each request a screen starts after an await, so a screen already
+// left does not spend the shop's request budget.
 let currentNav = 0;
 
 function stale(nav: number): boolean {
@@ -290,6 +292,7 @@ async function eventsList(nav: number, params: Record<string, string>): Promise<
 	eventCursor = undefined;
 	eventQueryActive = eventQuery(params, Date.now());
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const first = await apiEvents(eventQueryActive);
 	if (stale(nav)) return;
 	eventItems = first.items;
@@ -317,6 +320,7 @@ function paintEvents(nav: number, params: Record<string, string>, contextHtml: s
 async function eventDetail(nav: number, id: string): Promise<void> {
 	loading();
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const event = await apiEvent(id);
 	if (stale(nav)) return;
 	render(eventDetailView(event, contextHtml));
@@ -332,6 +336,7 @@ async function ordersList(nav: number, params: Record<string, string>): Promise<
 	orderCursor = undefined;
 	orderQueryActive = orderQuery(params);
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const first = await apiOrders(orderQueryActive);
 	if (stale(nav)) return;
 	orderItems = first.items;
@@ -367,6 +372,7 @@ function paintOrders(nav: number, params: Record<string, string>, contextHtml: s
 async function orderDetail(nav: number, orderId: string): Promise<void> {
 	loading();
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const order = await apiOrder(orderId);
 	if (stale(nav)) return;
 	render(orderDetailView(order, contextHtml));
@@ -375,6 +381,7 @@ async function orderDetail(nav: number, orderId: string): Promise<void> {
 async function findingsList(nav: number, params: Record<string, string>): Promise<void> {
 	loading();
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const listPage = await apiFindings(params);
 	if (stale(nav)) return;
 	render(findingsListView(params, listPage.items, Date.now(), contextHtml));
@@ -386,7 +393,9 @@ async function findingsList(nav: number, params: Record<string, string>): Promis
 async function findingDetail(nav: number, id: string): Promise<void> {
 	loading();
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const finding = await apiFinding(id);
+	if (stale(nav)) return;
 	// Last-reconciled is context, not evidence — a failure to read it must not
 	// break the finding.
 	let lastReconciledAt: number | undefined;
@@ -402,6 +411,7 @@ async function findingDetail(nav: number, id: string): Promise<void> {
 async function privacy(nav: number): Promise<void> {
 	loading();
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const report = await apiPrivacy();
 	if (stale(nav)) return;
 	render(privacyView(report, Date.now(), contextHtml));
@@ -410,6 +420,7 @@ async function privacy(nav: number): Promise<void> {
 async function notifications(nav: number, message?: { tone: string; text: string }): Promise<void> {
 	loading();
 	const contextHtml = await strip();
+	if (stale(nav)) return;
 	const settings = await apiDigest();
 	if (stale(nav)) return;
 	render(notificationsView(settings, Date.now(), contextHtml, message));

@@ -311,6 +311,44 @@ test('a slow response for a screen the merchant already left does not paint over
 	assert.ok(!win.document.getElementById('app')!.innerHTML.includes('EVT-SLOW'));
 });
 
+test('a screen the merchant left while its context strip loaded never requests its own data', async () => {
+	const summary = deferred();
+	const { win, calls } = await bootWith('https://sightline.test/#/events', (p) => {
+		if (p.startsWith('/api/v1/summary')) return summary.promise;
+		if (p.startsWith('/api/v1/privacy')) return jsonResponse(500, {});
+		return jsonResponse(200, { items: [] });
+	});
+	await settle();
+	navigate(win, '#/privacy');
+	await settle();
+	summary.resolve(jsonResponse(500, {}));
+	await settle();
+	assert.ok(
+		calls.some((c) => c.startsWith('/api/v1/privacy')),
+		'the screen the merchant is on loads',
+	);
+	assert.deepEqual(
+		calls.filter((c) => c.startsWith('/api/v1/events')),
+		[],
+	);
+});
+
+test('a finding the merchant left while it loaded does not go on to request the summary', async () => {
+	const finding = deferred();
+	const { win, calls } = await bootWith('https://sightline.test/#/findings/F1', (p) => {
+		if (p.startsWith('/api/v1/findings/')) return finding.promise;
+		if (p.startsWith('/api/v1/summary')) return jsonResponse(500, {});
+		return jsonResponse(200, { items: [] });
+	});
+	await settle();
+	navigate(win, '#/orders');
+	await waitFor(() => Boolean(byId(win, 'orderFilters')));
+	const summaries = calls.filter((c) => c.startsWith('/api/v1/summary')).length;
+	finding.resolve(jsonResponse(200, { id: 'F1', orderId: '1', status: 'unconfirmed' }));
+	await settle();
+	assert.equal(calls.filter((c) => c.startsWith('/api/v1/summary')).length, summaries);
+});
+
 test('a second click on "Load more" while a page is in flight fetches and appends that page once', async () => {
 	const page2 = deferred();
 	const { win, calls } = await bootWith('https://sightline.test/#/events', (p) => {
