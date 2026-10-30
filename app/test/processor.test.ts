@@ -205,18 +205,37 @@ test('a budget stop keeps what is left of the shop turn, so the next occurrence 
 	assert.deepEqual(handled, ['a0', 'a1', 'a2', 'b0']);
 });
 
-test('a pending row with no shop is dead-lettered, and the shops around it keep draining', async () => {
-	const orphan = { id: 'orphan', status: 'accepted', attempts: 1 } as unknown as DeliveryRow;
-	const { deps, state, handled } = memDeps([...accepted(2, 'p', 'p.myshopify.com'), orphan]);
+test('a pending row with no key or shop is passed over and counted, and the shops around it keep draining', async () => {
+	// What Harper returns for a row an older patch recreated over a deleted delivery.
+	const keyless = { status: 'accepted', attempts: 1 } as unknown as DeliveryRow;
+	const { deps, state, handled } = memDeps([...accepted(2, 'p', 'p.myshopify.com'), keyless]);
+	const marked: unknown[] = [];
+	const markFailed = deps.markFailed;
+	deps.markFailed = async (row, attempts, dead) => {
+		marked.push(row.id);
+		await markFailed(row, attempts, dead);
+	};
 	const cursor: DrainCursor = { after: '' };
 	const first = await drainAccepted(deps, { budgetMs: BUDGET, cursor });
-	await drainAccepted(deps, { budgetMs: BUDGET, cursor });
-	assert.equal(state.get('orphan')!.status, 'dead_letter');
-	assert.equal(first.deadLettered, 1);
+	const second = await drainAccepted(deps, { budgetMs: BUDGET, cursor });
+	assert.ok(first.skippedKeyless > 0 && second.skippedKeyless > 0, 'counted on every lap that reaches it');
 	assert.deepEqual(handled, ['p0', 'p1']);
+	assert.deepEqual(marked, [], 'a row with no key cannot be patched');
 	state.set('q0', { id: 'q0', shopId: 'q.myshopify.com', status: 'accepted', receivedAt: 2_000 });
 	await drainAccepted(deps, { budgetMs: BUDGET, cursor });
 	assert.equal(state.get('q0')!.status, 'processed');
+});
+
+test('runProcessCycle counts keyless rows only when there are some', async () => {
+	const rec = recorder();
+	await runProcessCycle({
+		drain: async (into) => {
+			into.skippedKeyless = 3;
+		},
+		log: rec.log,
+		metrics: rec.metrics,
+	});
+	assert.deepEqual(rec.counters.at(-1), { name: M.processKeylessSkipped, by: 3 });
 });
 
 test('a lap in which every row has already failed ends the drain', async () => {
@@ -390,12 +409,12 @@ test('runProcessCycle counts each outcome and traces a drain that did work', asy
 	const rec = recorder();
 	const r = await runProcessCycle({
 		drain: async (into) => {
-			Object.assign(into, { processed: 7, failed: 2, deadLettered: 1, stoppedBy: 'budget' });
+			Object.assign(into, { processed: 7, failed: 2, deadLettered: 1, skippedKeyless: 0, stoppedBy: 'budget' });
 		},
 		log: rec.log,
 		metrics: rec.metrics,
 	});
-	const drained: DrainResult = { processed: 7, failed: 2, deadLettered: 1, stoppedBy: 'budget' };
+	const drained: DrainResult = { processed: 7, failed: 2, deadLettered: 1, skippedKeyless: 0, stoppedBy: 'budget' };
 	assert.deepEqual(r, drained);
 	assert.deepEqual(rec.counters, [
 		{ name: M.processProcessed, by: 7 },
@@ -422,7 +441,7 @@ test('runProcessCycle never lets a drain failure escape to the scheduler, and ke
 		log: rec.log,
 		metrics: rec.metrics,
 	});
-	assert.deepEqual(r, { processed: 2, failed: 0, deadLettered: 0, stoppedBy: 'error' });
+	assert.deepEqual(r, { processed: 2, failed: 0, deadLettered: 0, skippedKeyless: 0, stoppedBy: 'error' });
 	assert.deepEqual(rec.counters, [
 		{ name: M.processError, by: 1 },
 		{ name: M.processProcessed, by: 2 },

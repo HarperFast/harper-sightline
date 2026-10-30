@@ -93,11 +93,12 @@ export interface DrainResult {
 	processed: number;
 	failed: number;
 	deadLettered: number;
+	skippedKeyless: number;
 	stoppedBy: 'empty' | 'budget' | 'failures' | 'error';
 }
 
 export function emptyDrainResult(): DrainResult {
-	return { processed: 0, failed: 0, deadLettered: 0, stoppedBy: 'empty' };
+	return { processed: 0, failed: 0, deadLettered: 0, skippedKeyless: 0, stoppedBy: 'empty' };
 }
 
 // Processes accepted deliveries round-robin across shops until none are left,
@@ -136,17 +137,12 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 			continue;
 		}
 		for (const row of rows) {
-			// A row with no shop (a patch, before patches carried shopId, that recreated a deleted
-			// delivery) has no turn or slot and cannot be handled; dead-letter it so it leaves the pending keys.
-			if (typeof row.shopId !== 'string' || row.shopId === '') {
+			// A row an older patch recreated over a deleted delivery holds neither its key nor its
+			// shop, and a search does not return the key, so it can be neither handled nor
+			// patched. It is passed over, and counted so an operator can remove it.
+			if (typeof row.id !== 'string' || typeof row.shopId !== 'string' || row.shopId === '') {
 				cursor.after = row.pendingKey;
-				await deps.markFailed(row, (row.attempts ?? 0) + 1, true);
-				result.failed += 1;
-				result.deadLettered += 1;
-				if (result.failed >= batch) {
-					result.stoppedBy = 'failures';
-					return result;
-				}
+				result.skippedKeyless += 1;
 				continue;
 			}
 			let turn = cursor.turn;
@@ -207,6 +203,7 @@ export async function runProcessCycle(deps: ProcessCycleDeps): Promise<DrainResu
 	deps.metrics.inc(M.processProcessed, r.processed);
 	deps.metrics.inc(M.processFailed, r.failed);
 	deps.metrics.inc(M.processDeadLettered, r.deadLettered);
+	if (r.skippedKeyless) deps.metrics.inc(M.processKeylessSkipped, r.skippedKeyless);
 	if (r.processed || r.failed) deps.log('trace', 'process.tick', { ...r });
 	return r;
 }
