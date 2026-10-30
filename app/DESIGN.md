@@ -52,9 +52,10 @@ is the fast-start map for anyone (human or agent) working in `app/`.
     `credentialStore.ts`, `rotateCredential.ts`, `lifecycle.ts` (install/uninstall),
     `webhookHmac.ts`, `reconcile.ts`, `reconcileSweep.ts` (the deps-injected order paging).
   - `ingest/` — the write path from a delivery to stored state: `webhookIngress.ts`,
-    `webhookShop.ts` (binds the header shop to the signed body or a known shop), `processor.ts`, `normalize.ts`,
-    `eventSkus.ts`, `projection.ts`, `orderRefresh.ts` (the guarded projection write, shared by ingest and
-    reconcile), `inventoryEnrich.ts`.
+    `webhookShop.ts` (binds the header shop to the signed body or a known shop), `processor.ts`,
+    `deliveryHandler.ts` (the drain's unit of work: one delivery to its event, SKU rows and projection),
+    `normalize.ts`, `eventSkus.ts`, `projection.ts`, `orderRefresh.ts` (the guarded projection write, shared
+    by ingest and reconcile), `inventoryEnrich.ts`.
   - `domain/` — the shared vocabulary the rest reads: `model.ts` (the schema.graphql
     mirror), `orders.ts` (the single lane/age definition), `eventKind.ts`, `detector.ts`.
   - `api/` — the read side: `apiContract.ts` (response allowlists), `queries.ts`, `csv.ts`,
@@ -63,7 +64,8 @@ is the fast-start map for anyone (human or agent) working in `app/`.
   - `digest/` — `digest.ts` (pure domain), `digestData.ts`, `digestBuild.ts`
     (deps-injected orchestration), `digestSubscription.ts`.
   - `privacy/` — `compliance.ts` (mandatory-webhook dispatcher), `redaction.ts`,
-    `pii.ts`, `privacyPolicy.ts`, `support.ts`.
+    `tombstone.ts` (redaction tombstones, so a delivery still queued cannot write a redacted
+    order or shop back), `pii.ts`, `privacyPolicy.ts`, `support.ts`.
   - `retention/` — `retention.ts`, `ledgerTargets.ts`, `purgeCycle.ts`.
   - `observability/` — `observe.ts`, `harperLogSink.ts`, `opsHealth.ts`.
   - `jobs/` — what `jobs.ts` runs on: `tick.ts` (the non-wedging loop guard),
@@ -211,7 +213,9 @@ dashboards/alerts under #25.
   name, never keyed by shop (plan §13).
 - **Ops health**: `src/observability/opsHealth.ts` `computeOpsHealth` derives an aggregate,
   merchant-label-free health view from tables (backlog age/count, dead letters,
-  reconciliation staleness, reauth). `jobs.ts` runs it once a minute as the
+  reconciliation staleness, reauth, and rows left past their retention window by more
+  than `RETENTION_OVERDUE_MS`). Dead letters, a stale backlog or reconcile, and overdue
+  rows turn `healthy` false; reauth does not. `jobs.ts` runs it once a minute as the
   `ops.snapshot` heartbeat (emitted at `warn` when unhealthy so alerts can key
   off it). This is distinct from the per-shop merchant-facing `getSummary`.
   The same object is served over HTTP at `/api/v1/ops`, gated by
