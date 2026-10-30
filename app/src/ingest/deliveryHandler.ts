@@ -9,22 +9,27 @@ import { log, metrics, M } from '../observability/observe.ts';
 import type { DeliveryRow, ProcessDeps } from './processor.ts';
 
 export interface DeliveryPatchTable {
-	get(id: string): Promise<unknown>;
 	patch(id: string, partial: Record<string, unknown>): Promise<void>;
 }
 
-// shop/redact can delete a delivery while the drain holds it, and Harper turns a patch
-// on a missing key into a row of just the patched fields: no shopId or receivedAt, so
-// neither the purge nor a later redaction finds it. A delete between the get and the
-// patch still loses that race; this narrows it to that gap.
-async function patchDelivery(table: DeliveryPatchTable, id: string, partial: Record<string, unknown>): Promise<void> {
-	if (await table.get(id)) await table.patch(id, partial);
+// shop/redact can delete a delivery while the drain holds it, on this node or by
+// replication, and Harper turns a patch on a missing key into a row of just the patched
+// fields, without even the key attribute unless the patch names it. Every patch carries
+// id, shopId and receivedAt, so such a row is still found by a later redaction and the
+// purge, and one left accepted dead-letters in the drain like any unreadable delivery.
+function patchDelivery(table: DeliveryPatchTable, row: DeliveryRow, partial: Record<string, unknown>): Promise<void> {
+	return table.patch(row.id, {
+		...partial,
+		id: row.id,
+		...(row.shopId ? { shopId: row.shopId } : {}),
+		...(row.receivedAt != null ? { receivedAt: row.receivedAt } : {}),
+	});
 }
 
 export function deliveryMarks(table: DeliveryPatchTable): Pick<ProcessDeps, 'markProcessed' | 'markFailed'> {
 	return {
-		markProcessed: (id) => patchDelivery(table, id, { status: 'processed' }),
-		markFailed: (id, attempts, dead) => patchDelivery(table, id, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
+		markProcessed: (row) => patchDelivery(table, row, { status: 'processed' }),
+		markFailed: (row, attempts, dead) => patchDelivery(table, row, { attempts, status: dead ? 'dead_letter' : 'accepted' }),
 	};
 }
 
@@ -49,9 +54,9 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 	const { now = Date.now } = deps;
 	// A redacted delivery is dropped silently: a counter, no log line (it would name
 	// the order), and its stored body cleared. The drain then marks it processed.
-	const drop = async (id: string) => {
+	const drop = async (row: DeliveryRow) => {
 		metrics.inc(M.processRedactedDropped);
-		await patchDelivery(deps.deliveries, id, { payload: null });
+		await patchDelivery(deps.deliveries, row, { payload: null });
 	};
 	return async (row) => {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
@@ -77,7 +82,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 		for (const event of normalizeDelivery(meta, payload)) {
 			const orderId = isOrderLinked(event) ? event.resourceId : undefined;
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
-				await drop(row.id);
+				await drop(row);
 				continue;
 			}
 			if (event.skusDropped) {
@@ -97,7 +102,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 			// the tombstone and the ledger replicate asynchronously.
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
 				if (event.resourceId) await deps.eraseResource(row.shopId, event.resourceId);
-				await drop(row.id);
+				await drop(row);
 			}
 		}
 	};

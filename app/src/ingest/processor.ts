@@ -40,8 +40,8 @@ export function pastShop(shopId: string): string {
 // order. `handle` is the unit of work (normalization and projection).
 export interface ProcessDeps {
 	listPending(after: string, limit: number): Promise<PendingRow[]>;
-	markProcessed(id: string): Promise<void>;
-	markFailed(id: string, attempts: number, dead: boolean): Promise<void>;
+	markProcessed(row: DeliveryRow): Promise<void>;
+	markFailed(row: DeliveryRow, attempts: number, dead: boolean): Promise<void>;
 	handle(row: DeliveryRow): Promise<void>;
 }
 
@@ -136,11 +136,11 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 			continue;
 		}
 		for (const row of rows) {
-			// A row with no shop (a patch that recreated a deleted delivery) has no turn or
-			// slot and cannot be handled; dead-letter it so it leaves the pending keys.
+			// A row with no shop (a patch, before patches carried shopId, that recreated a deleted
+			// delivery) has no turn or slot and cannot be handled; dead-letter it so it leaves the pending keys.
 			if (typeof row.shopId !== 'string' || row.shopId === '') {
 				cursor.after = row.pendingKey;
-				await deps.markFailed(row.id, (row.attempts ?? 0) + 1, true);
+				await deps.markFailed(row, (row.attempts ?? 0) + 1, true);
 				result.failed += 1;
 				result.deadLettered += 1;
 				if (result.failed >= batch) {
@@ -168,13 +168,13 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 			lapStarted = true;
 			try {
 				await deps.handle(row);
-				await deps.markProcessed(row.id);
+				await deps.markProcessed(row);
 				result.processed += 1;
 			} catch (err) {
 				const attempts = (row.attempts ?? 0) + 1;
 				// A broken payload can never succeed; dead-letter it now.
 				const dead = isPermanent(err) || attempts >= MAX_ATTEMPTS;
-				await deps.markFailed(row.id, attempts, dead);
+				await deps.markFailed(row, attempts, dead);
 				result.failed += 1;
 				if (dead) result.deadLettered += 1;
 				skip.add(row.id);

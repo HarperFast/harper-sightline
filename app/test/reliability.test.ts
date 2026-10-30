@@ -33,7 +33,7 @@ function durableWorld(n: number) {
 		async listPending(after, limit) {
 			return listPendingIn(inbox.values(), after, limit);
 		},
-		async markProcessed(id) {
+		async markProcessed({ id }) {
 			// Simulate a crash *between* handle and the durable status write: the
 			// effect already happened, but the row stays 'accepted' and is redelivered.
 			if (failOnceMarks.has(id)) {
@@ -42,7 +42,7 @@ function durableWorld(n: number) {
 			}
 			inbox.get(id)!.status = 'processed';
 		},
-		async markFailed(id, attempts, dead) {
+		async markFailed({ id }, attempts, dead) {
 			const r = inbox.get(id)!;
 			r.attempts = attempts;
 			r.status = dead ? 'dead_letter' : 'accepted';

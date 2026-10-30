@@ -28,10 +28,10 @@ function memDeps(rows: DeliveryRow[], failIds = new Set<string>()) {
 			listLimits.push(limit);
 			return listPendingIn(state.values(), after, limit);
 		},
-		async markProcessed(id) {
+		async markProcessed({ id }) {
 			state.get(id)!.status = 'processed';
 		},
-		async markFailed(id, attempts, dead) {
+		async markFailed({ id }, attempts, dead) {
 			const r = state.get(id)!;
 			r.attempts = attempts;
 			r.status = dead ? 'dead_letter' : 'accepted';
