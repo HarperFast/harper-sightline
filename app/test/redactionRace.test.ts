@@ -416,3 +416,19 @@ test('a metadata-less row of a redacted shop (an older write-back) is removed, n
 	assert.equal(r.deadLettered, 0);
 	assert.deepEqual(w.shopDeliveries(A), []);
 });
+
+test('the queue scrub patches with the row key, shop and receivedAt, so a row deleted under it stays findable', async () => {
+	const w = world();
+	await w.accept(A, 'p-703', 'orders/paid', paid(703));
+	const patch = w.deliveries.patch.bind(w.deliveries);
+	w.deliveries.patch = async (id, partial) => {
+		await w.deliveries.delete(id);
+		await patch(id, partial);
+	};
+	await w.redactCustomer(A, [703]);
+	const row = w.deliveries.rows.get(`${A}:p-703`);
+	assert.equal(row?.id, `${A}:p-703`);
+	assert.equal(row?.shopId, A);
+	assert.equal(row?.receivedAt, NOW);
+	assert.equal(row?.status, 'processed');
+});

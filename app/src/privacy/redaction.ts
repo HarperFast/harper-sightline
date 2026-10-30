@@ -72,7 +72,7 @@ type Row = Record<string, unknown>;
 export interface ScrubTables {
 	deliveries: {
 		get(id: string): Promise<Row | null>;
-		patch(id: string, partial: { payload: null; status?: 'processed' }): Promise<void>;
+		patch(id: string, partial: Record<string, unknown>): Promise<void>;
 		search(query: SearchQuery & { sort?: { attribute: string } }): AsyncIterable<Row>;
 	};
 	events: { search(query: SearchQuery): AsyncIterable<Row> };
@@ -85,6 +85,12 @@ export const SCRUB_YIELD_EVERY = 500;
 export interface ScrubResult {
 	scrubbed: number;
 	capped: boolean; // the queue read hit SCRUB_SCAN_LIMIT; the tombstone covers the rest
+}
+
+// What a scrub patch carries besides its change: a patch on a key a delete just removed
+// recreates the row from these alone, so the purge and a redaction must still find it.
+function keyFields(row: Row): Row {
+	return { id: row.id, shopId: row.shopId, receivedAt: row.receivedAt };
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -130,7 +136,7 @@ export async function scrubDeliveries(
 			if (event.shopId === shopId && event.source === 'webhook') processed.push(event.eventId as string);
 		}
 	}
-	const queued: string[] = [];
+	const queued: Row[] = [];
 	let scanned = 0;
 	for await (const row of tables.deliveries.search({
 		conditions: [{ attribute: 'pendingKey', comparator: 'greater_than', value: `${shopId} ` }],
@@ -141,18 +147,17 @@ export async function scrubDeliveries(
 		// Rows arrive as microtasks: without these breaks the thread's webhook acks wait out the whole read.
 		if (++scanned % SCRUB_YIELD_EVERY === 0) await yieldToEventLoop();
 		const orderId = deliveryOrderId(row);
-		if (orderId !== undefined && wanted.has(orderId)) queued.push(row.id as string);
+		if (orderId !== undefined && wanted.has(orderId)) queued.push(keyFields(row));
 	}
 	let scrubbed = 0;
 	for (const id of processed) {
-		// Only a row just read: a patch on a missing key would write a partial row.
 		const delivery = await tables.deliveries.get(id);
 		if (typeof delivery?.payload !== 'string') continue;
-		await tables.deliveries.patch(id, { payload: null });
+		await tables.deliveries.patch(id, { payload: null, ...keyFields({ ...delivery, id }) });
 		scrubbed++;
 	}
-	for (const id of queued) {
-		await tables.deliveries.patch(id, { payload: null, status: 'processed' });
+	for (const key of queued) {
+		await tables.deliveries.patch(key.id as string, { payload: null, status: 'processed', ...key });
 		scrubbed++;
 	}
 	return { scrubbed, capped: scanned === limit };
