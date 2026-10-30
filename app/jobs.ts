@@ -12,6 +12,7 @@ import {
 	ShopLocations,
 	DigestSubscriptions,
 	DigestOutboxes,
+	RedactionTombstones,
 } from './src/db.ts';
 import {
 	drainAccepted,
@@ -22,13 +23,15 @@ import {
 	type ProcessDeps,
 	type PendingRow,
 } from './src/ingest/processor.ts';
-import { createDeliveryHandler } from './src/ingest/deliveryHandler.ts';
+import { createDeliveryHandler, type DeliveryHandlerDeps } from './src/ingest/deliveryHandler.ts';
 import { writeEventWithSkus } from './src/ingest/eventSkus.ts';
 import { runDetectorSweep as sweepDueExpectations, type DetectorSweepDeps } from './src/jobs/detectorSweep.ts';
 import { refreshOrder, runDetectorForOrder, type OrderTables } from './src/ingest/orderRefresh.ts';
 import { uninstallShop } from './src/shopify/lifecycle.ts';
 import { purgeExpired, OUTBOX_RETENTION_DAYS, RETENTION_DAYS, type PurgeResult } from './src/retention/retention.ts';
-import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS } from './src/retention/ledgerTargets.ts';
+import { RETENTION_TARGETS, OUTBOX_RETENTION_TARGETS, REDACT_TARGETS } from './src/retention/ledgerTargets.ts';
+import { redactOrders } from './src/privacy/redaction.ts';
+import { isRedacted } from './src/privacy/tombstone.ts';
 import { runPurgeCycle } from './src/retention/purgeCycle.ts';
 import { getUsableAccessToken, isAuthError } from './src/shopify/accessToken.ts';
 import { tokenDeps, rotateShopCredential } from './src/shopify/tokenDeps.ts';
@@ -140,7 +143,10 @@ const deps: ProcessDeps = {
 		eventSkus: EventSkus,
 		inventoryItems: InventoryItems as unknown as EnrichReadTable,
 		orders: orderTables,
+		tombstones: RedactionTombstones,
+		deliveries: Deliveries as unknown as DeliveryHandlerDeps['deliveries'],
 		uninstall: uninstallShop,
+		eraseOrder: (shopId, orderId) => redactOrders(REDACT_TARGETS, shopId, [orderId]),
 	}),
 };
 
@@ -242,6 +248,11 @@ async function reconcileShopWithToken(shopId: string, token: string, now: number
 		{
 			fetchPage: (since, pageCursor) => fetchOrdersUpdatedSince(shopId, token, since, pageCursor),
 			async applyOrder(order) {
+				// A redacted order still exists in Shopify, and an edit brings it back into the sweep.
+				if (await isRedacted(RedactionTombstones, shopId, order.orderId, now)) {
+					metrics.inc(M.reconcileRedactedSkipped);
+					return;
+				}
 				for (const event of synthesizeEvents(shopId, order)) {
 					await writeEventWithSkus({ events: Events, eventSkus: EventSkus }, event);
 				}

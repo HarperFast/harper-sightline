@@ -214,3 +214,10 @@ export interface ShopLocation {
 	name?: string;
 	updatedAt?: number;
 }
+
+export interface RedactionTombstone {
+	id: string; // `${shopId}:${orderId}`, or `${shopId}:*` for a whole shop
+	shopId: string;
+	orderId?: string;
+	redactedAt: number;
+}

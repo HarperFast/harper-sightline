@@ -159,6 +159,9 @@ export const M = {
 	// SKUs past MAX_EVENT_SKUS (src/ingest/normalize.ts), left out of the SKU filter.
 	// Should stay zero: the cap sits at a Shopify cart's line limit.
 	processSkusDropped: 'process.skus_dropped',
+	// Deliveries for a redacted order or shop (src/privacy/tombstone.ts), dropped
+	// unwritten and with no log line. Non-zero only around a customers/redact or shop/redact.
+	processRedactedDropped: 'process.redacted_dropped',
 	// An order rebuild read fewer events than the stored projection was built from and
 	// was not written (src/ingest/orderRefresh.ts). Occasional counts are concurrent
 	// writers racing; a steady climb means the guard is starving writes. The guard
@@ -177,6 +180,8 @@ export const M = {
 	// shop's quota. Sustained non-zero with advancing cursors means shrink the page
 	// size or lengthen the interval, not look for a bug.
 	reconcileThrottled: 'reconcile.throttled',
+	// Orders the sweep fetched but did not write because a redaction tombstone covers them.
+	reconcileRedactedSkipped: 'reconcile.redacted_skipped',
 	// Retention purge. Residue and backlog are gauges from computeOpsHealth, not counters.
 	purgeDeleted: 'purge.deleted',
 	purgeFailure: 'purge.failure',

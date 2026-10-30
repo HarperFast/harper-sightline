@@ -265,3 +265,13 @@ type ShopLocation @table(database: "sightline_ledger") @sealed {
 	name: String
 	updatedAt: Float
 }
+
+type RedactionTombstone @table(database: "sightline_ledger") @sealed {
+	# A customers/redact or shop/redact request, kept for the ledger's seven days so
+	# the worker and the reconcile sweep drop data for it that was still in flight
+	# (src/privacy/tombstone.ts). Holds only ids the request carried: no customer id.
+	id: ID! @primaryKey # `${shopId}:${orderId}`, or `${shopId}:*` for a whole shop
+	shopId: String! @indexed
+	orderId: String # absent on a shop tombstone
+	redactedAt: Float! @indexed # retention key (7 days)
+}

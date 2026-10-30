@@ -5,6 +5,11 @@
 export interface ComplianceDeps {
 	redactShop(shopId: string): Promise<{ deleted: number; failures: string[] }>;
 	redactOrders(shopId: string, orderIds: string[]): Promise<{ deleted: number; failures: string[] }>;
+	// Tombstones (src/privacy/tombstone.ts) make the worker drop a delivery for the
+	// request that is still queued or mid-write, which the deletes cannot reach.
+	tombstoneOrders(shopId: string, orderIds: string[]): Promise<void>;
+	tombstoneShop(shopId: string): Promise<void>;
+	scrubDeliveries(shopId: string, orderIds: string[]): Promise<{ scrubbed: number; capped: boolean }>;
 	audit(action: string, shopId: string, detail: Record<string, unknown>): Promise<void>;
 }
 
@@ -14,6 +19,7 @@ export interface ComplianceResult {
 	topic: string;
 	action: ComplianceAction;
 	deleted?: number;
+	scrubbed?: number;
 	failures?: string[];
 }
 
@@ -31,16 +37,29 @@ export async function handleCompliance(
 ): Promise<ComplianceResult> {
 	switch (topic) {
 		case 'shop/redact': {
+			// The erase deletes the shop's tombstones too, so the shop's is written on both
+			// sides of it: before, for deliveries in flight during the erase.
+			await deps.tombstoneShop(shopId);
 			const r = await deps.redactShop(shopId);
+			await deps.tombstoneShop(shopId);
 			await deps.audit('shop_redact', shopId, { deleted: r.deleted, failures: r.failures });
 			return { topic, action: 'shop_redact', deleted: r.deleted, failures: r.failures };
 		}
 		case 'customers/redact': {
 			// No customer id is held, so `orders_to_redact` is the only key we can act on.
+			// Tombstone first, then scrub delivery bodies while the events that find them remain.
 			const ids = orderIds(payload, 'orders_to_redact');
+			await deps.tombstoneOrders(shopId, ids);
+			const s = await deps.scrubDeliveries(shopId, ids);
 			const r = await deps.redactOrders(shopId, ids);
-			await deps.audit('customer_redact', shopId, { orderIds: ids, deleted: r.deleted, failures: r.failures });
-			return { topic, action: 'customer_redact', deleted: r.deleted, failures: r.failures };
+			await deps.audit('customer_redact', shopId, {
+				orderIds: ids,
+				deleted: r.deleted,
+				scrubbed: s.scrubbed,
+				scrubCapped: s.capped,
+				failures: r.failures,
+			});
+			return { topic, action: 'customer_redact', deleted: r.deleted, scrubbed: s.scrubbed, failures: r.failures };
 		}
 		case 'customers/data_request': {
 			// No customer PII is stored, so there is nothing to export; record the request for audit.

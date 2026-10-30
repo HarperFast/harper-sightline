@@ -15,6 +15,7 @@ import type {
 	EventSku,
 	InventoryItem,
 	ShopLocation,
+	RedactionTombstone,
 } from './domain/model.ts';
 
 // Table handles, resolved from the named sightline_* databases. Centralized so
@@ -39,3 +40,4 @@ export const Checkpoints = ledger.WorkerCheckpoint as unknown as Table<WorkerChe
 export const EventSkus = ledger.EventSku as unknown as Table<EventSku>;
 export const InventoryItems = ledger.InventoryItem as unknown as Table<InventoryItem>;
 export const ShopLocations = ledger.ShopLocation as unknown as Table<ShopLocation>;
+export const RedactionTombstones = ledger.RedactionTombstone as unknown as Table<RedactionTombstone>;

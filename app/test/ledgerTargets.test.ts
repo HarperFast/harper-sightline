@@ -33,6 +33,14 @@ test('DigestSubscription and DigestOutbox are shop-redact targets with no orderF
 	assert.equal(outbox.orderField, undefined);
 });
 
+test('redaction tombstones survive customers/redact, go last in shop redaction, and age out at seven days', () => {
+	// An orderField would let customers/redact delete the tombstones it has just written.
+	assert.equal(findEntry(REDACT_TARGETS, 'RedactionTombstone').orderField, undefined);
+	// compliance.ts rewrites the shop's tombstone after the erase; last keeps the gap short.
+	assert.equal(REDACT_TARGETS.at(-1)?.name, 'RedactionTombstone');
+	assert.equal(findEntry(RETENTION_TARGETS, 'RedactionTombstone').tsField, 'redactedAt');
+});
+
 test('digest tables are absent from the seven-day RETENTION_TARGETS', () => {
 	const names = RETENTION_TARGETS.map((t) => t.name);
 	assert.ok(!names.includes('DigestSubscription'), 'the subscription is core config, not a purge target at all');

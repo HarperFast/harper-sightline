@@ -13,6 +13,7 @@ import {
 	EventSkus,
 	InventoryItems,
 	ShopLocations,
+	RedactionTombstones,
 } from '../db.ts';
 import type { RetentionTarget, PurgeableTable } from './retention.ts';
 import type { RedactTarget } from '../privacy/redaction.ts';
@@ -33,6 +34,7 @@ export const RETENTION_TARGETS: RetentionTarget[] = [
 	{ name: 'Expectation', keyField: 'id', tsField: 'createdAt', table: purgeable(Expectations) },
 	{ name: 'GapFinding', keyField: 'id', tsField: 'detectedAt', table: purgeable(Findings) },
 	{ name: 'FlowAggregate', keyField: 'id', tsField: 'bucket', table: purgeable(Aggregates) },
+	{ name: 'RedactionTombstone', keyField: 'id', tsField: 'redactedAt', table: purgeable(RedactionTombstones) },
 ];
 
 // shop/redact erases every shop-scoped table; customers/redact targets only
@@ -56,6 +58,9 @@ export const REDACT_TARGETS: RedactTarget[] = [
 	// not reach them; only uninstall and shop-redact do.
 	{ name: 'DigestSubscription', keyField: 'shopId', shopField: 'shopId', table: purgeable(DigestSubscriptions) },
 	{ name: 'DigestOutbox', keyField: 'id', shopField: 'shopId', table: purgeable(DigestOutboxes) },
+	// No orderField: customers/redact must keep the tombstones it writes. Last, so shop
+	// redaction deletes the shop's tombstone just before rewriting it (compliance.ts).
+	{ name: 'RedactionTombstone', keyField: 'id', shopField: 'shopId', table: purgeable(RedactionTombstones) },
 ];
 
 // The outbox keeps a longer history (OUTBOX_RETENTION_DAYS in retention.ts), so it
