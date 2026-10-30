@@ -104,8 +104,8 @@ export interface ReconcileShopsResult {
 // Isolates failures: one shop that keeps throwing must not starve the shops after it.
 //
 // The shop ids are read out before any network work. A live iterator holds a Harper read snapshot,
-// which expires after maxTransactionOpenTime (30 s): one slow shop made the next advance throw
-// ReadSnapshotExpiredError and the sweep never reached the shops after it.
+// which expires after maxTransactionOpenTime (30 s); the next advance would then throw
+// ReadSnapshotExpiredError and the sweep would never reach the shops after it.
 export async function reconcileShops(shopRows: AsyncIterable<{ shopId: string }>, deps: ReconcileShopsDeps): Promise<ReconcileShopsResult> {
 	const result: ReconcileShopsResult = { shops: 0, orders: 0, failed: 0 };
 	const now = deps.now ?? Date.now;

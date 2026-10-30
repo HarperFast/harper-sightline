@@ -48,9 +48,9 @@ export interface ProcessDeps {
 export const MAX_ATTEMPTS = 5;
 
 // Rows one shop may start per lap of the pending keys. Each lap re-reads from the
-// first key, and a range read walks the index entries of every row processed since
-// the last compaction (live: 1.7 ms at 30,000), so a turn must be long enough to
-// amortize that: 25 cost a lone big shop ~25% of its rate, 250 cost nothing measurable.
+// first key, and a range read steps over the index entries of every row processed
+// since the last compaction, so a turn must be long enough to amortize that
+// (DESIGN.md, Drain order).
 export const SHOP_SLICE = 250;
 
 export interface Partition {

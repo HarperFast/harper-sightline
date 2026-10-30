@@ -26,7 +26,7 @@ export interface RebuiltOrder {
 const REBUILD_GUARD_WINDOW_MS = (RETENTION_DAYS - 1) * DAY_MS;
 
 // Keys on resourceId alone: Harper's `and` walks the low-cardinality shopId index, which grows with
-// the shop's whole ledger (14 ms against 0.4 ms at 160k events). The tenant is enforced on the rows.
+// the shop's whole ledger. The tenant is enforced on the rows.
 async function orderEvents(
 	tables: OrderTables,
 	shopId: string,

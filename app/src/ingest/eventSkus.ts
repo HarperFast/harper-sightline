@@ -35,9 +35,8 @@ export function eventSkuRows(event: NormalizedEvent): EventSku[] {
 
 // The event is written first: an index row pointing at a missing event would render
 // as a phantom result, while an event briefly missing from the index is repaired by
-// the next reprocess or reconciliation pass. The index rows are written concurrently,
-// at most MAX_EVENT_SKUS of them: one after another, a 100-SKU order drained at
-// 159-170/s live, concurrently at 221-238/s.
+// the next reprocess or reconciliation pass. The index rows, at most MAX_EVENT_SKUS,
+// are written concurrently (DESIGN.md, Measured costs).
 export async function writeEventWithSkus(
 	deps: { events: WritableTable<OperationalEvent>; eventSkus: WritableTable<EventSku> },
 	event: NormalizedEvent,

@@ -89,10 +89,9 @@ export function exportFilename(kind: string, now: number): string {
 // `truncated` is true only if it holds a row. `rows.length > cap` is not enough either:
 // the cap is a multiple of the page size, so a truncated set lands on exactly `cap`.
 //
-// Each page's query resolves as microtasks, so without a break the whole export is one
-// turn of the event loop: 13 s on a 160k-event shop, with every webhook on the thread
-// unacked past Shopify's 5 s. Yielding before each page lets queued requests run, which
-// bounds the stall to one page.
+// Each page's query resolves as microtasks, so without a break the whole export holds
+// the thread, and every webhook ack queued on it, for its full length (DESIGN.md,
+// Measured costs). Yielding before each page bounds that stall to one page.
 export async function collectExportRows<T>(
 	fetchPage: (cursor: string | undefined) => Promise<{ items: T[]; nextCursor?: string }>,
 	cap: number,

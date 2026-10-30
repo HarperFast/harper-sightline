@@ -1,7 +1,6 @@
 // Per-shop single-flight cache for the reads that scan every row a shop holds in the
-// window: summary, flows and the privacy footprint (src/api/queries.ts). At 163k events
-// a summary took 1.3 s alone and saturated near 2 req/s, so ten merchants' tabs opening
-// the Overview at once queued for tens of seconds. With this, concurrent requests for one
+// window: summary, flows and the privacy footprint (src/api/queries.ts), each of which
+// takes seconds on a big shop (DESIGN.md, Measured costs). Concurrent requests for one
 // shop share one scan, and a finished scan answers that shop for READ_CACHE_TTL_MS.
 //
 // Keyed by shopId only, and each endpoint owns its own cache instance, so a key can never

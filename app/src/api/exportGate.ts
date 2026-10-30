@@ -1,8 +1,7 @@
-// One CSV export in flight per node. A big-shop export reads ~50 pages of 100 rows,
-// 7-13 s of CPU on a 160k-event shop, and two at once doubled the time every webhook
-// ack waited. A second concurrent export is refused with a 429 and Retry-After rather
-// than queued: a queued export would hold the merchant's request open for the whole of
-// the first one.
+// One CSV export in flight per node: a big-shop export holds a thread for seconds, and
+// two at once doubled the time every webhook ack waited (DESIGN.md, Measured costs).
+// A second concurrent export is refused with a 429 and Retry-After rather than queued:
+// a queued export would hold the merchant's request open for the whole of the first one.
 //
 // Harper runs each node as worker threads of one process, so module state alone would
 // be one export per thread. The slot is a lease in a buffer every thread shares
@@ -14,9 +13,9 @@
 // enough that a merchant waits a moment rather than a minute.
 export const EXPORT_BUSY_RETRY_SECONDS = 5;
 
-// Ten times the slowest big-shop export measured (13 s). An export still running past
-// it lets one more start alongside: two at once, the cost this gate exists to avoid,
-// but never a stuck slot.
+// About ten times the slowest big-shop export. An export still running past it lets one
+// more start alongside: two at once, the cost this gate exists to avoid, but never a
+// stuck slot.
 export const EXPORT_LEASE_MS = 120_000;
 
 // Low bits of the lease value, so two leases taken in the same millisecond still differ

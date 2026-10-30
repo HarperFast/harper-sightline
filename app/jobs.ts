@@ -109,8 +109,6 @@ const orderTables: OrderTables = {
 };
 
 const deps: ProcessDeps = {
-	// A range read of the computed pendingKey index, which keys accepted rows by shop,
-	// so the cursor can resume inside a shop or seek past one.
 	async listPending(after, limit) {
 		const rows: PendingRow[] = [];
 		for await (const r of Deliveries.search({

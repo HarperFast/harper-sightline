@@ -232,12 +232,9 @@ test('a path route does not get hijacked to the setup screen', async () => {
 });
 
 // ── races ────────────────────────────────────────────────────────────────────
-// Every screen awaits the network and then writes innerHTML. Nothing tied that
-// write to the navigation that asked for it, so a slow answer for a screen the
-// merchant had already left painted over the one they moved to, and a second
-// click on "Load more" while the first page was in flight appended the same page
-// twice. These boot the real main.ts and hold chosen responses open, so the
-// interleaving is fixed rather than timed.
+// Every screen awaits the network and then writes innerHTML, so each write must
+// belong to the navigation that asked for it. These boot the real main.ts and hold
+// chosen responses open, so the interleaving is fixed rather than timed.
 
 type Deferred = { promise: Promise<StubResponse>; resolve: (res: StubResponse) => void };
 

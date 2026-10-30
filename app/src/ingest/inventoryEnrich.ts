@@ -173,7 +173,7 @@ export async function runInventoryEnrichment(now: number, deps: EnrichDeps): Pro
 	let locations = 0;
 	let indexed = 0;
 	// Read out before any network work: a live iterator holds a Harper read snapshot that expires
-	// after maxTransactionOpenTime (30 s), and one slow shop made the next advance throw and skip the rest.
+	// after maxTransactionOpenTime (30 s), and the next advance would then throw and skip the rest.
 	const shopIds: string[] = [];
 	for await (const s of deps.shops.search({ conditions: [{ attribute: 'status', value: 'active' }], select: ['shopId'] })) {
 		shopIds.push((s as { shopId: string }).shopId);

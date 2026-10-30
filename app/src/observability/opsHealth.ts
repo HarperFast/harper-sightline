@@ -14,11 +14,11 @@ export const RECONCILE_STALE_MS = 30 * 60 * 1000; // no successful reconcile che
 export const RETENTION_OVERDUE_MS = 30 * 60 * 1000;
 // Overdue rows are counted up to this many per table: an index read, bounded when far behind.
 export const OVERDUE_COUNT_LIMIT = 1_000;
-// The backlog and dead-letter scans stop at this many rows and report `capped`: the
-// count is then a floor, and oldestAgeMs the oldest row read (or the stale row the
-// staleness query found). Reading every row cost ~0.5 s per call at a 57k backlog,
-// whatever the select. Health never turns on a count above 0: dead letters > 0 and
-// the backlog's age decide it, and the age check stays exact when capped.
+// The backlog and dead-letter scans stop at this many rows, since reading every row of
+// a big backlog is slow whatever the select (DESIGN.md, Measured costs), and report
+// `capped`: the count is then a floor, and oldestAgeMs the oldest row read (or the
+// stale row the staleness query found). Health never turns on a count above 0: dead
+// letters > 0 and the backlog's age decide it, and the age check stays exact when capped.
 export const BACKLOG_COUNT_LIMIT = 10_000;
 
 export interface OpsHealth {
@@ -75,8 +75,8 @@ export async function computeOpsHealth(deps: OpsHealthDeps, now: number): Promis
 	const acceptedCapped = accepted >= BACKLOG_COUNT_LIMIT;
 	// Capped, the rows read may all be fresh while a later one is stale, so ask for a
 	// stale one directly. On Harper 5.3.3 this walks the status index and checks
-	// receivedAt per row: it returns at the first stale row (5 ms at a 60k stale
-	// backlog) but reads the whole backlog when none is stale (~1 s at 60k fresh).
+	// receivedAt per row: it returns at the first stale row but reads the whole backlog
+	// when none is stale (DESIGN.md, Measured costs).
 	if (acceptedCapped && (oldestReceivedAt === null || now - oldestReceivedAt <= BACKLOG_STALE_MS)) {
 		const staleBefore = now - BACKLOG_STALE_MS;
 		await scan(

@@ -175,8 +175,8 @@ export async function listEvents(
 	eventSkus?: QueryTable,
 ): Promise<Page> {
 	const windowStart = Math.max(params.since ?? 0, now - WINDOW_MS);
-	// A resourceId filter is highly selective, but Harper's `and` would still walk the low-cardinality
-	// shopId index (12 ms at 160k events), so that query drops shopId and `keep` filters the rows instead.
+	// A resourceId filter is highly selective, but Harper's `and` would still walk the shop's whole
+	// shopId index, so that query drops shopId and `keep` filters the rows instead.
 	const conditions: QuerySpec['conditions'] = [{ attribute: 'occurredAt', value: windowStart, comparator: 'greater_than_equal' }];
 	if (!params.resourceId) conditions.unshift({ attribute: 'shopId', value: shopId });
 	const keep = params.resourceId ? (row: Record<string, unknown>) => row.shopId === shopId : undefined;
@@ -204,7 +204,6 @@ export async function listEvents(
 			true,
 			keep,
 		);
-		// Gets are issued together; awaiting inside the loop serialized up to MAX_EXPORT_ROWS round trips.
 		const fetched = await Promise.all(indexPage.items.map((row) => events.get(String(row.eventId))));
 		const hydrated: Array<Record<string, unknown>> = [];
 		for (const event of fetched) {
@@ -775,11 +774,9 @@ async function privacyCounts(
 		findings: await countWhere(tables.findings, [{ attribute: 'shopId', value: shopId }]),
 	};
 
-	// One pass over the shop's deliveries. Measured on Harper 5.3.3 at 160k deliveries,
-	// the exact `received` count alone costs what this whole pass does (~1.0 s): a count
-	// walks every matching row, by the shopId index or by an id-prefix range (2.6 s).
-	// Splitting it into a count plus indexed status counts plus a newest-first read was
-	// ~1.1 s, so the pass stays and the per-shop cache is what bounds its cost.
+	// One pass over the shop's deliveries: the exact `received` count walks every matching
+	// row anyway, so separate indexed counts cost no less (DESIGN.md, Measured costs). The
+	// per-shop cache is what bounds it.
 	let received = 0;
 	let processed = 0;
 	let deadLettered = 0;

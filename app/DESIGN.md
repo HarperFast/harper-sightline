@@ -171,6 +171,27 @@ TypeStrip TS (`.ts` imports, named exports, tabs, semicolons, `node:` prefix).
   `schema.graphql` (`scripts/schemaColumns.mjs`), so a new column is healed without a
   second list to keep in sync.
 
+## Measured costs (local Harper 5.3.3, laptop)
+
+The figures behind several limits in the code, which point here rather than carry
+them. A big shop is 160k events (and as many deliveries) in the window.
+
+- **CSV export** (`csv.ts`, `exportGate.ts`): about 50 pages of 100 rows, 7-13 s of
+  CPU on a big shop. Without a yield between pages that was one turn of the event
+  loop, so every webhook ack on the thread waited past Shopify's 5 s; two exports at
+  once doubled that wait. `EXPORT_LEASE_MS` (120 s) is about ten times the slowest.
+- **Per-shop scans** (`readCache.ts`): a summary took 1.3 s at 163k events and
+  saturated near 2 req/s. The privacy screen's delivery pass is about 1.0 s at 160k
+  deliveries; its exact count alone costs the same (2.6 s by an id-prefix range), and
+  splitting it into indexed counts plus a newest-first read was about 1.1 s.
+- **Lookups by resourceId** (`queries.ts`, `orderRefresh.ts`): with `shopId` in the
+  `and`, 12-14 ms at 160k events, against 0.4 ms on resourceId alone.
+- **EventSku writes** (`eventSkus.ts`): a 100-SKU order drained at 159-170/s with its
+  index rows written one after another, 221-238/s concurrently.
+- **Ops health** (`opsHealth.ts`): reading every row of a 57k backlog cost about
+  0.5 s per call. The capped stale-row query returns in 5 ms at a 60k stale backlog
+  and takes about 1 s when none of 60k is stale.
+
 ## Observability (#22)
 
 `src/observability/observe.ts` is the single observability primitive: a PII-safe structured
