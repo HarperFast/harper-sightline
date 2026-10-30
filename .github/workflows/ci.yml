@@ -52,11 +52,9 @@ jobs:
       - name: Dependency audit
         working-directory: app
         run: npm audit --audit-level=high
-      # Secret scan: fail on any committed Shopify access token (shpat_*, which must
-      # NEVER be committed) or an app secret (shpss_*) outside the known, tracked dev
-      # fallback in src/secrets/readSecret.ts (rotation tracked in
-      # docs/security-review.md). Keep this path in step with the file: the exclude is
-      # matched literally, so a move turns the scan red rather than silently blind.
+      # Secret scan: fail on any committed Shopify access token (shpat_*) or app secret
+      # (shpss_*). The old dev fallback secret is gone from the tree (its rotation is
+      # tracked in docs/security-review.md), so nothing but this file is excluded.
       - name: Secret scan
         run: |
           set -euo pipefail
@@ -64,11 +62,8 @@ jobs:
           if git grep -niE 'shpat_[0-9a-f]{32}' -- . ':(exclude).github/workflows/ci.yml'; then
             echo "::error::Committed Shopify access token (shpat_) found."; exit 1
           fi
-          leaked=$(git grep -liE 'shpss_[0-9a-f]{32}' -- . \
-            ':(exclude)app/src/secrets/readSecret.ts' \
-            ':(exclude)docs/security-review.md' \
-            ':(exclude).github/workflows/ci.yml' || true)
+          leaked=$(git grep -liE 'shpss_[0-9a-f]{32}' -- . ':(exclude).github/workflows/ci.yml' || true)
           if [ -n "$leaked" ]; then
-            echo "::error::Shopify app secret (shpss_) found outside the tracked dev fallback:"; echo "$leaked"; exit 1
+            echo "::error::Shopify app secret (shpss_) found:"; echo "$leaked"; exit 1
           fi
           echo "secret scan clean"
