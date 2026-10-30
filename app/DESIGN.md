@@ -196,6 +196,10 @@ them. A big shop is 160k events (and as many deliveries) in the window.
   and the patches that carry `id`/`shopId`/`receivedAt`, against 2,687-2,857/s before
   either (98970ef), three runs each. Clearing the body when a delivery is marked
   processed did not move it either: 2,706-2,848/s against 2,604-2,819/s, two runs each.
+- **Ingress allowlist** (`pii.ts`): `storedBody` costs about 1.1 µs for a 10-line
+  order (1.6 µs before its shapes were built once at load), against an ack p50 of
+  about 3.2 ms. 4,000 signed `orders/paid` webhooks, 32 in flight: 9,125-9,357 acks/s,
+  p95 4.9 ms, against 8,891-9,219/s and p95 5.0-5.3 ms before, two runs each.
 - **Ops health** (`opsHealth.ts`): reading every row of a 57k backlog cost about
   0.5 s per call. The capped stale-row query returns in 5 ms at a 60k stale backlog
   and takes about 1 s when none of 60k is stale.

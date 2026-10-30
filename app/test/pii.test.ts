@@ -98,6 +98,16 @@ test('does not mutate the input', () => {
 	assert.deepEqual(body, order);
 });
 
+test('each call returns fresh objects, so changing one stored body cannot leak into the next', () => {
+	const first = storedBody('orders/paid', order) as Record<string, unknown>;
+	(first.line_items as Array<Record<string, unknown>>)[0].sku = 'CHANGED';
+	first.injected = true;
+	const second = storedBody('orders/paid', order) as Record<string, unknown>;
+	assert.equal((second.line_items as Array<Record<string, unknown>>)[0].sku, 'A');
+	assert.ok(!('injected' in second));
+	assert.deepEqual(storedBody('orders/create', { id: 1, sku: 'x' }), { id: 1 });
+});
+
 test('the normalizer reads the same event from the stored body as from the full one', () => {
 	const bodies: Record<string, unknown> = {
 		'orders/paid': order,

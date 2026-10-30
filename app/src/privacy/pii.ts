@@ -62,7 +62,10 @@ const NESTED: Record<string, Shape> = {
 };
 
 type Scalar = string | number | boolean | null;
-const isScalar = (value: unknown): value is Scalar => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+function isScalar(value: unknown): value is Scalar {
+	const type = typeof value;
+	return value === null || type === 'string' || type === 'number' || type === 'boolean';
+}
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function keep(value: unknown, rule: true | Shape): unknown {
@@ -76,18 +79,25 @@ function keep(value: unknown, rule: true | Shape): unknown {
 
 function filter(value: Record<string, unknown>, shape: Shape): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
-	for (const [key, rule] of Object.entries(shape)) {
+	for (const key in shape) {
 		if (!Object.hasOwn(value, key)) continue;
-		const kept = keep(value[key], rule);
+		const kept = keep(value[key], shape[key]);
 		if (kept !== undefined) out[key] = kept;
 	}
 	return out;
 }
 
+// Built once: ingress runs storedBody on every webhook ack.
+const TOPIC_SHAPES = new Map<string, Shape>(
+	Object.entries(INCLUDE_FIELDS).map(([topic, fields]) => [
+		topic,
+		Object.fromEntries(fields.map((field) => [field, NESTED[field] ?? true])),
+	]),
+);
+const NOTHING: Shape = {};
+
 // A new object holding only the allowed fields; null for a body that is not an object.
 export function storedBody(topic: string, body: unknown): Record<string, unknown> | null {
 	if (!isObject(body)) return null;
-	const shape: Shape = {};
-	for (const field of INCLUDE_FIELDS[topic] ?? []) shape[field] = NESTED[field] ?? true;
-	return filter(body, shape);
+	return filter(body, TOPIC_SHAPES.get(topic) ?? NOTHING);
 }
