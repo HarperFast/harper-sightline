@@ -129,7 +129,7 @@ function world({ scrubLimit = SCRUB_SCAN_LIMIT } = {}) {
 	return {
 		deliveries,
 		events,
-		// The shop's delivery rows (by key) that the drain (by id), a redaction (by shopId) or the purge (by receivedAt) cannot find.
+		// Rows the drain (by id), a redaction (by shopId) or the purge (by receivedAt) could not find.
 		strandedDeliveries: (shopId: string) =>
 			[...deliveries.rows]
 				.filter(

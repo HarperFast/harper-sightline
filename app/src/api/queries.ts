@@ -47,16 +47,14 @@ export interface Page {
 	nextCursor?: string;
 }
 
-// Rows a `keep` page may read. Past it the page ends without a cursor: a cursor built
-// from a row `keep` dropped would hand the caller another tenant's id.
+// The store limit for a `keep` page. A page that reaches it short of `limit` ends
+// without a cursor: the only row left to build one from would be another tenant's.
 export const TENANT_SCAN_LIMIT = 10 * MAX_LIMIT;
 
 // Keyset pagination over a numeric sort field with the row id as tiebreak. The store
 // orders by (sortField, id) and the cursor condition excludes everything up to and
 // including the cursor row, so a tie group of any size pages without a read-ahead.
-//
-// `keep` is the tenant check for a query that leaves shopId out. The store cannot
-// apply `limit` then, so rows are read until `limit` of them pass `keep`.
+// `keep` is the tenant check for a query that leaves shopId out (see listEvents).
 async function keysetPage(
 	table: QueryTable,
 	baseConditions: QuerySpec['conditions'],

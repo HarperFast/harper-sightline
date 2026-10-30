@@ -75,8 +75,7 @@ export function partitionOf(id: string, slots: number): number {
 // so a lap longer than one budget resumes at the next shop rather than the first.
 export interface DrainCursor {
 	after: string;
-	// The shop `after` is inside and the rows it may still start this lap, so a drain
-	// that stops mid-turn does not hand that shop a fresh turn next occurrence.
+	// Carried so a drain that stops mid-turn does not hand that shop a fresh turn.
 	turn?: { shop: string; left: number };
 }
 

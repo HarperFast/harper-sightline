@@ -87,7 +87,6 @@ export interface ScrubResult {
 	capped: boolean; // the queue read hit SCRUB_SCAN_LIMIT; the tombstone covers the rest
 }
 
-// A macrotask boundary: I/O callbacks (incoming requests) run before it resolves.
 function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
@@ -139,8 +138,7 @@ export async function scrubDeliveries(
 		limit,
 	})) {
 		if (row.shopId !== shopId) break;
-		// The rows arrive as microtasks, so without a break the read and the parse of every
-		// body hold the thread, and the webhook acks queued behind this request with it.
+		// Rows arrive as microtasks: without these breaks the thread's webhook acks wait out the whole read.
 		if (++scanned % SCRUB_YIELD_EVERY === 0) await yieldToEventLoop();
 		const orderId = deliveryOrderId(row);
 		if (orderId !== undefined && wanted.has(orderId)) queued.push(row.id as string);

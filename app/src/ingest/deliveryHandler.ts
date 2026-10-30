@@ -13,10 +13,9 @@ export interface DeliveryPatchTable {
 }
 
 // shop/redact can delete a delivery while the drain holds it, on this node or by
-// replication, and Harper turns a patch on a missing key into a row of just the patched
-// fields, without even the key attribute unless the patch names it. Every patch carries
-// id, shopId and receivedAt, so such a row is still found by a later redaction and the
-// purge, and one left accepted dead-letters in the drain like any unreadable delivery.
+// replication, and Harper turns a patch on a missing key into a row of only the patched
+// fields, not even the key attribute unless patched. With id, shopId and receivedAt in
+// every patch, the drain, a later redaction and the purge can all still find such a row.
 function patchDelivery(table: DeliveryPatchTable, row: DeliveryRow, partial: Record<string, unknown>): Promise<void> {
 	return table.patch(row.id, {
 		...partial,
@@ -44,8 +43,7 @@ export interface DeliveryHandlerDeps {
 	tombstones: Pick<TombstoneTable, 'get'>;
 	deliveries: DeliveryPatchTable;
 	uninstall(shopId: string): Promise<void>;
-	// Erases the shop's ledger rows for one resource (an order, or an inventory item),
-	// for a redaction that landed while this handler wrote them.
+	// Given an order id or an inventory item id.
 	eraseResource(shopId: string, resourceId: string): Promise<unknown>;
 	now?: () => number;
 }

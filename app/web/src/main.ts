@@ -60,13 +60,9 @@ function loading(): void {
 	render(spinnerView());
 }
 
-// Every screen awaits the network and then paints. route() takes a new token on
-// each navigation and hands it to the screen, which drops its paint when the token
-// is no longer current — otherwise a slow answer for a screen the merchant already
-// left lands after the one they moved to and paints over it. The check belongs
-// after the LAST await before each render: anything earlier still leaves a gap. It
-// also goes before each request a screen starts after an await, so a screen already
-// left does not spend the shop's request budget.
+// route() takes a new token on each navigation. A screen checks it after every
+// await, before it paints or starts another request, so a screen the merchant
+// already left neither paints over the current one nor spends the shop's request budget.
 let currentNav = 0;
 
 function stale(nav: number): boolean {

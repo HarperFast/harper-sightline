@@ -219,7 +219,6 @@ test('listEvents: a cursor crafted from the attacker boundary still yields only 
 	assert.deepEqual(idsOf(page), ['v:e2', 'v:e1']);
 });
 
-// Every page of a listing, following nextCursor; also returns the decoded cursor ids.
 async function allPages(fetchPage: (cursor?: string) => ReturnType<typeof listEvents>) {
 	const ids: unknown[] = [];
 	const cursorIds: string[] = [];
@@ -241,7 +240,6 @@ test('listEvents by resourceId: pages hold only the caller, are never short beca
 	assert.deepEqual(ids, ['v:e2', 'v:e1']);
 	assert.ok(cursorIds.length > 0 && cursorIds.every((id) => id.startsWith('v:')), `cursors named ${cursorIds.join(', ')}`);
 
-	// A resource only the attacker has: an empty page, and no cursor to decode.
 	assert.deepEqual(await listEvents(events, V, NOW, { resourceId: 'invX', limit: 1 }), { items: [], nextCursor: undefined });
 });
 
