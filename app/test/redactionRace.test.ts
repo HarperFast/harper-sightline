@@ -456,3 +456,45 @@ test('the queue scrub patches with the row key, shop and receivedAt, so a row de
 	assert.equal(row?.receivedAt, NOW);
 	assert.equal(row?.status, 'processed');
 });
+
+test('a retry after an attempt that wrote rows and then failed erases them, not only drops the delivery', async () => {
+	const w = world();
+	await w.accept(A, 'p-703', 'orders/paid', paid(703));
+	const put = w.projections.put.bind(w.projections);
+	let failed = false;
+	w.projections.put = async (row) => {
+		if (!failed) {
+			failed = true;
+			// The redaction's search ran before the event committed, so only its tombstone lands.
+			await w.tombstones.put({ id: tombstoneId(A, '703'), shopId: A, orderId: '703', redactedAt: NOW });
+			throw new Error('projection write failed');
+		}
+		await put(row);
+	};
+	await w.drain();
+	assert.equal(w.ledger(A, '703').events, 1, 'attempt 1 left its event');
+	w.advance(1);
+	await w.drain();
+	assert.deepEqual(w.ledger(A, '703'), NONE);
+	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'processed');
+});
+
+test('an erase that reports failures leaves the delivery to retry rather than marking it processed', async () => {
+	const w = world();
+	await w.accept(A, 'p-703', 'orders/paid', paid(703));
+	const put = w.projections.put.bind(w.projections);
+	let raced = false;
+	w.projections.put = async (row) => {
+		if (!raced) {
+			raced = true;
+			await w.redactCustomer(A, [703]);
+			w.projections.delete = async () => {
+				throw new Error('table unavailable');
+			};
+		}
+		await put(row);
+	};
+	const r = await w.drain();
+	assert.equal(r.failed, 1);
+	assert.equal(w.deliveries.rows.get(`${A}:p-703`)?.status, 'accepted');
+});

@@ -58,15 +58,23 @@ export interface DeliveryHandlerDeps {
 	tombstones: Pick<TombstoneTable, 'get'>;
 	uninstall(shopId: string): Promise<void>;
 	// Given an order id or an inventory item id.
-	eraseResource(shopId: string, resourceId: string): Promise<unknown>;
+	eraseResource(shopId: string, resourceId: string): Promise<{ failures: string[] }>;
 	now?: () => number;
 }
 
 export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: DeliveryRow) => Promise<void> {
 	const { now = Date.now } = deps;
 	// A redacted delivery is dropped silently: a counter and no log line (it would name
-	// the order). The drain then marks it processed, which clears its body.
-	const drop = () => metrics.inc(M.processRedactedDropped);
+	// the order). Whatever an earlier attempt wrote for it is erased first, and an erase
+	// that leaves rows throws so the delivery is retried rather than marked processed,
+	// which also clears its body.
+	const drop = async (shopId: string, resourceId: string | undefined) => {
+		if (resourceId) {
+			const { failures } = await deps.eraseResource(shopId, resourceId);
+			if (failures.length) throw new Error(`redacted delivery not erased: ${failures.join('; ')}`);
+		}
+		metrics.inc(M.processRedactedDropped);
+	};
 	return async (row) => {
 		if (!row.topic || !row.webhookId || row.receivedAt == null) {
 			// For a redacted shop this is a row a mark wrote back over a deleted one: the mark
@@ -94,7 +102,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 		for (const event of normalizeDelivery(meta, payload)) {
 			const orderId = isOrderLinked(event) ? event.resourceId : undefined;
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
-				drop();
+				await drop(row.shopId, event.resourceId);
 				continue;
 			}
 			if (event.skusDropped) {
@@ -113,8 +121,7 @@ export function createDeliveryHandler(deps: DeliveryHandlerDeps): (row: Delivery
 			// committed, so look again and erase them here. Not closed across nodes:
 			// the tombstone and the ledger replicate asynchronously.
 			if (await isRedacted(deps.tombstones, row.shopId, orderId, meta.receivedAt)) {
-				if (event.resourceId) await deps.eraseResource(row.shopId, event.resourceId);
-				drop();
+				await drop(row.shopId, event.resourceId);
 			}
 		}
 	};
