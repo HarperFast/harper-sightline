@@ -1,7 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ReconcileOrder } from '../src/shopify/adminApi.ts';
-import { sweepOrdersSince, reconcileShops, type ReconcileSweepDeps, type ReconcileShopsDeps } from '../src/shopify/reconcileSweep.ts';
+import {
+	sweepOrdersSince,
+	reconcileShops,
+	RECONCILE_INDEX_LAG_MS,
+	type ReconcileSweepDeps,
+	type ReconcileShopsDeps,
+} from '../src/shopify/reconcileSweep.ts';
+import { synthesizeEvents } from '../src/shopify/reconcile.ts';
+import { writeEventWithSkus } from '../src/ingest/eventSkus.ts';
+import { refreshOrder, type OrderTables } from '../src/ingest/orderRefresh.ts';
+import { FakeTable } from './fakeTable.ts';
 
 // The reconcile sweep fills gaps so the detector does not report an absence Sightline
 // caused. These cover the convergence guarantee: progress already made is always
@@ -213,7 +223,8 @@ test('each shop is handed its own deadline, a fresh budget from when it starts',
 
 test('a sweep past its deadline keeps its progress, checkpoints it as partial and stops', async () => {
 	const { deps, applied, saved } = memDeps([[order('1', 1000), order('2', 2000)], [order('3', 3000)]]);
-	let now = 0;
+	// Long after the orders, so the index-lag fence is not what holds the cursor.
+	let now = 10_000_000;
 
 	const result = await sweepOrdersSince(
 		{
@@ -224,10 +235,152 @@ test('a sweep past its deadline keeps its progress, checkpoints it as partial an
 			},
 		},
 		500,
-		{ deadlineMs: 15, now: () => now },
+		{ deadlineMs: 10_000_015, now: () => now },
 	);
 
 	assert.deepEqual(applied, ['1', '2'], 'stops before the next page');
 	assert.equal(result.complete, false);
 	assert.deepEqual(saved, [{ cursorMs: 2000, complete: false }], 'the cursor keeps the progress without refreshing the completion stamp');
+});
+
+// Shopify's order search is indexed asynchronously, so an order updated just
+// before a pass can be missing from it while a later-updated order is already
+// there. Advancing the cursor to that later order then puts the first one behind
+// `updated_at:>=cursor` for good. This index serves only what is visible at the
+// pass's clock, in the caller's query shape (>= since, ascending).
+function laggingIndex(entries: Array<{ order: ReconcileOrder; visibleAt: number }>) {
+	const applied: string[] = [];
+	const saved: Array<{ cursorMs: number; complete: boolean }> = [];
+	let clock = 0;
+	const deps: ReconcileSweepDeps = {
+		async fetchPage(since) {
+			const orders = entries
+				.filter((e) => e.visibleAt <= clock && (e.order.updatedAt ?? 0) >= since)
+				.map((e) => e.order)
+				.sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
+			return { orders };
+		},
+		async applyOrder(o) {
+			applied.push(o.orderId);
+		},
+		async saveCheckpoint(cursorMs, complete) {
+			saved.push({ cursorMs, complete });
+		},
+	};
+	const pass = async (at: number, since: number) => {
+		clock = at;
+		return sweepOrdersSince(deps, since, { now: () => clock });
+	};
+	return { pass, applied, saved };
+}
+
+const T = Date.parse('2026-10-30T12:00:00Z');
+
+test('an order indexed after a later-updated one is still read by the next pass', async () => {
+	const { pass, applied, saved } = laggingIndex([
+		{ order: order('late', T - 45_000), visibleAt: T + 10_000 },
+		{ order: order('prompt', T - 30_000), visibleAt: T - 29_000 },
+	]);
+
+	await pass(T, T - 3_600_000);
+	assert.deepEqual(applied, ['prompt'], 'the first pass cannot see the late order yet');
+	await pass(T + 30 * 60_000, saved[0].cursorMs);
+
+	assert.ok(applied.includes('late'), `the second pass re-reads the lag window (cursor was ${saved[0].cursorMs - T} ms from T)`);
+});
+
+test('the checkpoint stays RECONCILE_INDEX_LAG_MS behind the pass start, and at the newest order when that is older', async () => {
+	const { pass, saved } = laggingIndex([
+		{ order: order('old', T - 10 * 60_000), visibleAt: 0 },
+		{ order: order('recent', T - 5_000), visibleAt: 0 },
+	]);
+
+	await pass(T, T - 3_600_000);
+	await pass(T + 30 * 60_000, T - 3_600_000);
+
+	assert.equal(saved[0].cursorMs, T - RECONCILE_INDEX_LAG_MS, 'the newest order is inside the lag window: stop short of it');
+	assert.equal(saved[1].cursorMs, T - 5_000, 'everything is long indexed: the newest order itself, as before');
+});
+
+test('the lag margin never moves the cursor backwards', async () => {
+	const { pass, saved } = laggingIndex([{ order: order('within', T - 20_000), visibleAt: 0 }]);
+
+	// A quiet shop (nothing new since the cursor), then a shop whose only new order
+	// sits inside the margin: both keep the cursor where it was.
+	await pass(T, T - 10_000);
+	await pass(T, T - 50_000);
+
+	assert.deepEqual(
+		saved.map((s) => s.cursorMs),
+		[T - 10_000, T - 50_000],
+	);
+});
+
+// The margin's correctness rests on re-reading an order being a no-op. This folds
+// the same orders twice through the writer jobs.ts's applyOrder uses (synthesize,
+// writeEventWithSkus, refreshOrder; its redaction-tombstone skip is not part of
+// the fold) and requires every table to come out unchanged. The detector's
+// output legitimately moves with the clock, so both folds evaluate at one `now`:
+// any difference left is drift from the re-read itself.
+test('re-reading the overlap window adds no events and leaves every projection and finding as it was', async () => {
+	const ledger = {
+		events: new FakeTable('eventId'),
+		eventSkus: new FakeTable('id'),
+		projections: new FakeTable('id'),
+		expectations: new FakeTable('id'),
+		findings: new FakeTable('id'),
+	};
+	// A webhook already recorded one of them: the re-read must merge, not double up.
+	await ledger.events.put({
+		eventId: 'wh-1',
+		shopId: 's',
+		domain: 'order',
+		topic: 'orders/paid',
+		state: 'paid',
+		resourceId: 'shipped',
+		source: 'webhook',
+		occurredAt: T - 3 * 3_600_000,
+		receivedAt: T - 3 * 3_600_000,
+		fulfillableItemCount: 1,
+	});
+	const orders: ReconcileOrder[] = [
+		{ orderId: 'waiting', financialStatus: 'PAID', createdAt: T - 2 * 3_600_000, updatedAt: T - 40_000, fulfillableUnits: 2 },
+		{
+			orderId: 'shipped',
+			financialStatus: 'PAID',
+			fulfillmentStatus: 'FULFILLED',
+			createdAt: T - 3 * 3_600_000,
+			updatedAt: T - 20_000,
+			fulfilledAt: T - 20_000,
+			fulfillableUnits: 1,
+		},
+	];
+	const deps: ReconcileSweepDeps = {
+		async fetchPage(since) {
+			return { orders: orders.filter((o) => (o.updatedAt ?? 0) >= since) };
+		},
+		async applyOrder(o) {
+			for (const event of synthesizeEvents('s', o))
+				await writeEventWithSkus(ledger as unknown as Parameters<typeof writeEventWithSkus>[0], event);
+			await refreshOrder(ledger as unknown as OrderTables, 's', o.orderId, T);
+		},
+		async saveCheckpoint(cursorMs) {
+			cursor = cursorMs;
+		},
+	};
+	const snapshot = () => Object.fromEntries(Object.entries(ledger).map(([name, table]) => [name, structuredClone([...table.rows])]));
+	let cursor = T - 3_600_000;
+
+	const first = await sweepOrdersSince(deps, cursor, { now: () => T });
+	const afterFirst = snapshot();
+	const second = await sweepOrdersSince(deps, cursor, { now: () => T + 30 * 60_000 });
+
+	assert.equal(first.orders, 2);
+	assert.equal(second.orders, 2, 'both orders sit inside the margin, so the second pass re-reads both');
+	assert.deepEqual(snapshot(), afterFirst);
+	assert.equal(ledger.events.rows.size, 1 + 1 + 2, 'the webhook event, one recon event for "waiting", two for "shipped"');
+	assert.ok(
+		ledger.projections.rows.size === 2 && ledger.expectations.rows.size > 0,
+		'the fold did write projections and expectations to compare',
+	);
 });

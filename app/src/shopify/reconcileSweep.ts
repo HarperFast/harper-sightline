@@ -22,6 +22,11 @@ export interface SweepResult {
 // the deadline between orders and pages: a pass can overrun by one call, never by the whole backlog.
 export const RECONCILE_SHOP_BUDGET_MS = 60_000;
 
+// Shopify indexes order search asynchronously: an order updated just before a pass
+// can be missing from it while a later-updated one is already there. The cursor is
+// held this far behind the pass start so the next pass re-reads that window.
+export const RECONCILE_INDEX_LAG_MS = 60_000;
+
 export interface SweepOptions {
 	deadlineMs?: number;
 	now?: () => number;
@@ -32,17 +37,26 @@ export interface SweepOptions {
 // throttle on page 3 of a backfill would discard the pages already done and the shop
 // would never converge.
 //
-// Advancing to the newest `updatedAt` applied is safe because the caller queries
-// `updated_at:>=cursor` ascending: resuming re-reads the boundary order
-// (idempotent, event ids are deterministic) instead of skipping one that shares its timestamp.
+// The cursor advances to the newest `updatedAt` applied, but never past
+// RECONCILE_INDEX_LAG_MS before the pass started, and never backwards. The caller
+// queries `updated_at:>=cursor` ascending, so resuming re-reads the boundary order
+// and the lag window rather than skipping an order that shares the timestamp or
+// was not indexed yet. Re-reading is idempotent: event ids are deterministic and
+// the projection is rebuilt from the whole ledger. The fence is on our clock and the
+// orders on Shopify's: a clock running ahead of Shopify's shrinks the overlap by
+// that skew, never below none, which is where this started.
+// A backlog older than the margin still checkpoints at its newest order, so a burst
+// larger than one pass's budget keeps advancing.
 //
 // Past `deadlineMs` the pass stops where it is and checkpoints the progress as partial, so one
 // large backlog cannot hold up the shops after it; the next sweep resumes from the cursor.
 export async function sweepOrdersSince(deps: ReconcileSweepDeps, sinceMs: number, options: SweepOptions = {}): Promise<SweepResult> {
 	const now = options.now ?? Date.now;
 	const expired = () => options.deadlineMs !== undefined && now() >= options.deadlineMs;
+	const fenceMs = now() - RECONCILE_INDEX_LAG_MS;
 	let cursor: string | undefined;
 	let latest = sinceMs;
+	const checkpointAt = () => Math.max(sinceMs, Math.min(latest, fenceMs));
 	let orders = 0;
 	try {
 		do {
@@ -55,21 +69,21 @@ export async function sweepOrdersSince(deps: ReconcileSweepDeps, sinceMs: number
 				orders += 1;
 				// Out of time with orders or pages left: stop here, partial.
 				if (expired() && (i < page.orders.length - 1 || cursor)) {
-					await deps.saveCheckpoint(latest, false);
+					await deps.saveCheckpoint(checkpointAt(), false);
 					return { orders, latest, complete: false };
 				}
 			}
 			if (cursor && expired()) {
-				await deps.saveCheckpoint(latest, false);
+				await deps.saveCheckpoint(checkpointAt(), false);
 				return { orders, latest, complete: false };
 			}
 		} while (cursor);
 	} catch (err) {
 		// A pass that failed before reconciling anything has no progress to persist.
-		if (latest > sinceMs) await deps.saveCheckpoint(latest, false);
+		if (checkpointAt() > sinceMs) await deps.saveCheckpoint(checkpointAt(), false);
 		throw err;
 	}
-	await deps.saveCheckpoint(latest, true);
+	await deps.saveCheckpoint(checkpointAt(), true);
 	return { orders, latest, complete: true };
 }
 
