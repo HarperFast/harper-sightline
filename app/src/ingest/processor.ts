@@ -145,6 +145,11 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 				result.skippedKeyless += 1;
 				continue;
 			}
+			// Before the turn changes hands, so a stop here leaves the turn naming the shop `after` is in.
+			if (now() - startedAt >= budgetMs) {
+				result.stoppedBy = 'budget';
+				return result;
+			}
 			let turn = cursor.turn;
 			if (turn?.shop !== row.shopId) {
 				if (partitionOf(row.shopId, partition.slots) !== partition.slot) {
@@ -153,10 +158,6 @@ export async function drainAccepted(deps: ProcessDeps, options: DrainOptions, re
 					break;
 				}
 				turn = cursor.turn = { shop: row.shopId, left: slice };
-			}
-			if (now() - startedAt >= budgetMs) {
-				result.stoppedBy = 'budget';
-				return result;
 			}
 			cursor.after = row.pendingKey;
 			if (skip.has(row.id)) continue;

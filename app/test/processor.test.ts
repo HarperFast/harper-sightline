@@ -238,6 +238,24 @@ test('runProcessCycle counts keyless rows only when there are some', async () =>
 	assert.deepEqual(rec.counters.at(-1), { name: M.processKeylessSkipped, by: 3 });
 });
 
+test('a budget stop at the first row of the next shop keeps the previous shop on what was left of its turn', async () => {
+	const a = accepted(5, 'a', 'a.myshopify.com');
+	const { deps, state, handled } = memDeps([...a.slice(0, 2), ...accepted(1, 'b', 'b.myshopify.com')]);
+	let clock = 0;
+	const handle = deps.handle;
+	deps.handle = async (row) => {
+		clock += 1;
+		await handle(row);
+	};
+	const cursor: DrainCursor = { after: '' };
+	await drainAccepted(deps, { budgetMs: 2, slice: 3, now: () => clock, cursor });
+	assert.deepEqual(handled, ['a0', 'a1']);
+	for (const row of a.slice(2)) state.set(row.id, { ...row });
+	clock = 0;
+	await drainAccepted(deps, { budgetMs: BUDGET, slice: 3, now: () => clock, cursor });
+	assert.deepEqual(handled.slice(2, 4), ['a2', 'b0']);
+});
+
 test('a lap in which every row has already failed ends the drain', async () => {
 	const rows = [...accepted(30, 'x', 'x.myshopify.com'), ...accepted(30, 'y', 'y.myshopify.com')];
 	const { deps, handled } = memDeps(rows, new Set(rows.map((r) => r.id)));
